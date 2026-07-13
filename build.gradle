@@ -41,8 +41,8 @@ dependencies {
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 
     // Swagger
-    implementation 'org.springdoc:springdoc-openapi-starter-webmvc-ui:2.7.0'
-    implementation 'org.springdoc:springdoc-openapi-starter-webmvc-api:2.7.0'
+    implementation 'org.springdoc:springdoc-openapi-starter-webmvc-ui:3.0.3'
+    implementation 'org.springdoc:springdoc-openapi-starter-webmvc-api:3.0.3'
 
     // Dotenv (환경변수)
     implementation 'me.paulschwarz:spring-dotenv:4.0.0'
