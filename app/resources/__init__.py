@@ -1,2 +1,0 @@
-"""Enterprise LLM Gateway application."""
-
