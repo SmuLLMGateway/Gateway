@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { PromptReqDTO } from '../dto/prompt.request.dto.js';
 import { PromptResDTO } from '../dto/prompt.response.dto.js';
+import { PromptMapper } from '../mapper/prompt.mapper.js';
 
 @Injectable()
 export class PromptService {
@@ -29,7 +30,7 @@ export class PromptService {
 
   async getLlmResponse(dto: PromptReqDTO.LlmResponse): Promise<PromptResDTO.LlmResponse> {
     void dto;
-    return '';
+    return PromptMapper.toLlmResponse('');
   }
 
   async getRecentPrompts(): Promise<PromptResDTO.RecentPromptList> {
@@ -38,11 +39,11 @@ export class PromptService {
 
   async downloadFile(dto: PromptReqDTO.FileDownload): Promise<PromptResDTO.FileDownload> {
     void dto;
-    return '';
+    return PromptMapper.toFileDownload('');
   }
 
   async searchPrompts(dto: PromptReqDTO.Search): Promise<PromptResDTO.Search> {
     void dto;
-    return null;
+    return PromptMapper.toSearch(null);
   }
 }
