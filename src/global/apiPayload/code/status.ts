@@ -26,8 +26,8 @@ export const SuccessStatus = {
 export const ErrorStatus = {
   INTERNAL_SERVER_ERROR: {
     httpStatus: HttpStatus.INTERNAL_SERVER_ERROR,
-    code: 'COMMON500',
-    message: '서버 에러가 발생했습니다.'
+    code: 'COMMON500_1',
+    message: '서버 내부 오류입니다.'
   },
 
   BAD_REQUEST: {
