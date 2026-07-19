@@ -5,7 +5,7 @@ import { ResponseInterceptor } from './global/apiPayload/interceptors/response.i
 import {
   GlobalExceptionFilter,
   HttpExceptionFilter,
-  BlockchainExceptionFilter,
+  GatewayExceptionFilter,
 } from './global/apiPayload/handler/exception.filter.js';
 import * as dotenv from 'dotenv';
 import express from 'express';
@@ -27,11 +27,11 @@ async function bootstrap() {
 
   // 3. 전역 응답 인터셉터 & 예외 필터 설정
   app.useGlobalInterceptors(new ResponseInterceptor());
-  // 에러 발생 시 처리 우선순위(역순): BlockchainException/HttpException -> GlobalException
+  // 에러 발생 시 처리 우선순위(역순): GatewayException/HttpException -> GlobalException
   app.useGlobalFilters(
     new GlobalExceptionFilter(),
     new HttpExceptionFilter(),
-    new BlockchainExceptionFilter()
+    new GatewayExceptionFilter()
   );
 
   // 4. 서버 시작
