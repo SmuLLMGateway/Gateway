@@ -2,14 +2,14 @@ import { ArgumentsHost, Catch, ExceptionFilter, HttpException } from '@nestjs/co
 import { Response } from 'express';
 import { GeneralResponse } from '../general.response.js';
 import { ErrorStatus } from '../code/status.js';
-import { BlockchainException } from '../exception/blockchain.exception.js';
+import { GatewayException } from '../exception/gateway.exception.js';
 
 /**
- * 1. BlockchainException 전담 필터
+ * 1. Gateway 도메인 예외 전담 필터
  */
-@Catch(BlockchainException)
-export class BlockchainExceptionFilter implements ExceptionFilter {
-  catch(exception: BlockchainException, host: ArgumentsHost) {
+@Catch(GatewayException)
+export class GatewayExceptionFilter implements ExceptionFilter {
+  catch(exception: GatewayException, host: ArgumentsHost) {
     console.log("[ %s ]: %s", exception.name, exception.baseStatus.message);
     const ctx = host.switchToHttp();
     const response = ctx.getResponse<Response>();
