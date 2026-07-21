@@ -54,7 +54,10 @@ export class GlobalExceptionFilter implements ExceptionFilter {
     const ctx = host.switchToHttp();
     const response = ctx.getResponse<Response>();
 
-    console.error('[ GlobalException ]: %s', exception);
+    const exceptionName = exception instanceof Error
+      ? exception.name
+      : 'UnknownException';
+    console.error('[ GlobalException ]: %s', exceptionName);
     const statusData = ErrorStatus.INTERNAL_SERVER_ERROR;
 
     response

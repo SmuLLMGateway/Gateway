@@ -41,6 +41,11 @@ export const AdminControllerDocs = () =>
     ApiTags('관리자'),
     ApiBearerAuth(),
     ApiExtraModels(
+      AdminResDTO.CreateUser,
+      AdminResDTO.CreateDepartment,
+      AdminResDTO.DepartmentListItem,
+      AdminResDTO.DepartmentList,
+      AdminResDTO.RegisterApiKey,
       AdminResDTO.Dashboard,
       AdminResDTO.AdminLog,
       AdminResDTO.PolicyDetect,
@@ -56,6 +61,74 @@ export const AdminControllerDocs = () =>
       AdminResDTO.LogListItem,
       AdminResDTO.LogList,
     ),
+  );
+
+export const CreateUserDocs = () =>
+  applyDecorators(
+    ApiOperation({ summary: '회원 생성 API' }),
+    ApiSuccessResponse(
+      AdminSuccessStatus.CREATE_USER,
+      SwaggerResultSchema.model(getSchemaPath(AdminResDTO.CreateUser)),
+    ),
+    ...ApiErrorResponses([
+      AdminErrorStatus.DUPLICATE_EMAIL,
+      AdminErrorStatus.INVALID_EMAIL,
+      AdminErrorStatus.INVALID_ROLE,
+      AdminErrorStatus.NOT_MANAGED_DEPARTMENT,
+      AdminErrorStatus.DEPARTMENT_NOT_FOUND,
+      AuthErrorStatus.DISABLE_ACCOUNT,
+      AuthErrorStatus.USER_NOT_FOUND,
+      AuthErrorStatus.TOKEN_EXPIRED,
+      AuthErrorStatus.FORBIDDEN,
+      ErrorStatus.INTERNAL_SERVER_ERROR,
+    ]),
+  );
+
+export const CreateDepartmentDocs = () =>
+  applyDecorators(
+    ApiOperation({ summary: '부서 생성 API' }),
+    ApiSuccessResponse(
+      AdminSuccessStatus.CREATE_DEPARTMENT,
+      SwaggerResultSchema.model(getSchemaPath(AdminResDTO.CreateDepartment)),
+    ),
+    ...ApiErrorResponses([
+      AdminErrorStatus.DUPLICATE_DEPARTMENT,
+      AuthErrorStatus.TOKEN_EXPIRED,
+      AuthErrorStatus.FORBIDDEN,
+      ErrorStatus.INTERNAL_SERVER_ERROR,
+    ]),
+  );
+
+export const DepartmentListDocs = () =>
+  applyDecorators(
+    ApiOperation({ summary: '부서 목록 조회 API' }),
+    ApiSuccessResponse(
+      AdminSuccessStatus.DEPARTMENT_LIST,
+      SwaggerResultSchema.model(getSchemaPath(AdminResDTO.DepartmentList)),
+    ),
+    ...commonErrors(),
+  );
+
+export const RegisterApiKeyDocs = () =>
+  applyDecorators(
+    ApiOperation({ summary: 'API 키 등록 API' }),
+    ApiParam({
+      name: 'departmentId',
+      type: Number,
+      example: 1,
+      description: 'API 키를 등록할 부서 ID',
+    }),
+    ApiSuccessResponse(
+      AdminSuccessStatus.REGISTER_API_KEY,
+      SwaggerResultSchema.model(getSchemaPath(AdminResDTO.RegisterApiKey)),
+    ),
+    ...ApiErrorResponses([
+      AdminErrorStatus.INVALID_API_KEY,
+      AdminErrorStatus.NOT_MANAGED_DEPARTMENT,
+      AuthErrorStatus.TOKEN_EXPIRED,
+      AuthErrorStatus.FORBIDDEN,
+      ErrorStatus.INTERNAL_SERVER_ERROR,
+    ]),
   );
 
 export const DashboardDocs = () =>

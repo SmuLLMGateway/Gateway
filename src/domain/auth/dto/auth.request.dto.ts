@@ -15,4 +15,13 @@ export namespace AuthReqDTO {
         })
         password!: string;
     }
+
+    @ApiSchema({ name: 'AuthRefreshTokenRequest' })
+    export class RefreshToken {
+        @ApiProperty({
+            example: 'ey~~',
+            description: '재발급에 사용할 리프레시 토큰'
+        })
+        refreshToken!: string;
+    }
 } 

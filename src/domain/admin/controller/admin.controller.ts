@@ -19,13 +19,17 @@ import { AdminService } from '../service/admin.service.js';
 import {
   AdminControllerDocs,
   AdminLogsDocs,
+  CreateDepartmentDocs,
+  CreateUserDocs,
   DashboardDocs,
+  DepartmentListDocs,
   DepartmentRisksDocs,
   DisableUserDocs,
   LogDetailDocs,
   LogListDocs,
   LogsSummaryDocs,
   PolicyDetectDocs,
+  RegisterApiKeyDocs,
   RestoreUserDocs,
   TrendsDocs,
   UpdateUserDocs,
@@ -33,11 +37,66 @@ import {
   UserListDocs,
   UserSummaryDocs,
 } from './docs/admin.controller.docs.js';
+import { Roles } from '../../../global/security/decorator/roles.decorator.js';
+import { UserRole } from '../../../global/security/type/user-role.enum.js';
+import { CurrentUser } from '../../../global/security/decorator/current-user.decorator.js';
+import type { AuthenticatedUser } from '../../../global/security/type/jwt-payload.type.js';
 
 @AdminControllerDocs()
+@Roles(UserRole.DEPART_ADMIN, UserRole.TOTAL_ADMIN)
 @Controller()
 export class AdminController {
   constructor(private readonly adminService: AdminService) {}
+
+  @CreateUserDocs()
+  @Post('/admin/v1/users')
+  @HttpCode(HttpStatus.CREATED)
+  async createUser(
+    @Body() dto: AdminReqDTO.CreateUser,
+    @CurrentUser() authentication: AuthenticatedUser,
+  ): Promise<GeneralResponse<AdminResDTO.CreateUser>> {
+    const result = await this.adminService.createUser(dto, authentication);
+    return GeneralResponse.onSuccess(AdminSuccessStatus.CREATE_USER, result);
+  }
+
+  @CreateDepartmentDocs()
+  @Post('/admin/v1/departments')
+  @HttpCode(HttpStatus.CREATED)
+  async createDepartment(
+    @Body() dto: AdminReqDTO.CreateDepartment,
+  ): Promise<GeneralResponse<AdminResDTO.CreateDepartment>> {
+    const result = await this.adminService.createDepartment(dto);
+    return GeneralResponse.onSuccess(
+      AdminSuccessStatus.CREATE_DEPARTMENT,
+      result,
+    );
+  }
+
+  @DepartmentListDocs()
+  @Get('/admin/v1/departments')
+  async getDepartments(
+    @Query() dto: AdminReqDTO.DepartmentList,
+  ): Promise<GeneralResponse<AdminResDTO.DepartmentList>> {
+    const result = await this.adminService.getDepartments(dto);
+    return GeneralResponse.onSuccess(
+      AdminSuccessStatus.DEPARTMENT_LIST,
+      result,
+    );
+  }
+
+  @RegisterApiKeyDocs()
+  @Post('/admin/v1/departments/:departmentId/api')
+  @HttpCode(HttpStatus.CREATED)
+  async registerApiKey(
+    @Param('departmentId', ParseIntPipe) departmentId: number,
+    @Body() dto: AdminReqDTO.RegisterApiKey,
+  ): Promise<GeneralResponse<AdminResDTO.RegisterApiKey>> {
+    const result = await this.adminService.registerApiKey(departmentId, dto);
+    return GeneralResponse.onSuccess(
+      AdminSuccessStatus.REGISTER_API_KEY,
+      result,
+    );
+  }
 
   @DashboardDocs()
   @Get('/admin/v1/dashboard')

@@ -1,15 +1,12 @@
 import { AuthResDTO } from "../dto/auth.response.dto.js";
+import type { TokenPair } from "../../../global/security/type/jwt-payload.type.js";
 
 export class AuthMapper {
-    static toLogin(
-        accessToken: string,
-        refreshToken: string,
-        refreshTokenExpiredAt: string
-    ): AuthResDTO.Login {
+    static toLogin(tokens: Readonly<TokenPair>): AuthResDTO.Login {
         return {
-            accessToken: accessToken,
-            refreshToken: refreshToken,
-            refreshTokenExpiredAt: refreshTokenExpiredAt
+            accessToken: tokens.accessToken,
+            refreshToken: tokens.refreshToken,
+            refreshTokenExpiredAt: tokens.refreshTokenExpiredAt
         }
     }
 }

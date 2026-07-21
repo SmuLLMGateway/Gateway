@@ -1,6 +1,54 @@
+import { Injectable } from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
 import { PromptResDTO } from '../dto/prompt.response.dto.js';
+import { PromptData } from '../data/prompt.data.js';
+import { PromptLogDAO } from '../dao/prompt-log.dao.js';
+import { PromptMaskingDAO } from '../dao/prompt-masking.dao.js';
+import { PromptRoomDAO } from '../dao/prompt-room.dao.js';
 
+@Injectable()
 export class PromptMapper {
+  constructor(
+    @InjectRepository(PromptRoomDAO)
+    private readonly promptRoomRepository: Repository<PromptRoomDAO>,
+    @InjectRepository(PromptLogDAO)
+    private readonly promptLogRepository: Repository<PromptLogDAO>,
+    @InjectRepository(PromptMaskingDAO)
+    private readonly promptMaskingRepository: Repository<PromptMaskingDAO>,
+  ) {}
+
+  toPromptRoomDAO(data: Readonly<PromptData.CreatePromptRoom>): PromptRoomDAO {
+    return this.promptRoomRepository.create({
+      startedAt: data.startedAt,
+      lastCommunicatedAt: data.lastCommunicatedAt,
+      promptRoomTitle: data.promptRoomTitle,
+      memberId: data.memberId,
+    });
+  }
+
+  toPromptLogDAO(data: Readonly<PromptData.CreatePromptLog>): PromptLogDAO {
+    return this.promptLogRepository.create({
+      originalText: data.originalText,
+      fileUrl: data.fileUrl,
+      maskingText: data.maskingText,
+      communicatedAt: data.communicatedAt,
+      modelType: data.modelType,
+      responseText: data.responseText,
+      promptRoomId: data.promptRoomId,
+    });
+  }
+
+  toPromptMaskingDAO(
+    data: Readonly<PromptData.CreatePromptMasking>,
+  ): PromptMaskingDAO {
+    return this.promptMaskingRepository.create({
+      maskingText: data.maskingText,
+      promptLogId: data.promptLogId,
+      policyId: data.policyId,
+    });
+  }
+
   static toMaskingFile(
     fileObjectId: number,
     maskingCategory: string,
@@ -40,11 +88,21 @@ export class PromptMapper {
   }
 
   static toRecentPrompt(
-    promptId: number,
-    title: string,
-    createdAt: string,
+    data: Readonly<PromptData.RecentPrompt>,
   ): PromptResDTO.RecentPrompt {
-    return { promptId, title, createdAt };
+    return {
+      promptId: data.promptId,
+      title: data.title,
+      createdAt: data.createdAt instanceof Date
+        ? data.createdAt.toISOString()
+        : data.createdAt,
+    };
+  }
+
+  static toRecentPromptList(
+    data: readonly PromptData.RecentPrompt[],
+  ): PromptResDTO.RecentPromptList {
+    return data.map((item) => this.toRecentPrompt(item));
   }
 
   static toLlmResponse(response: string): PromptResDTO.LlmResponse {

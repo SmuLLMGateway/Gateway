@@ -7,6 +7,7 @@ import {
   getSchemaPath,
 } from "@nestjs/swagger";
 import { AuthErrorStatus, AuthSuccessStatus } from "../../code/auth.status.js";
+import { AuthReqDTO } from "../../dto/auth.request.dto.js";
 import { AuthResDTO } from "../../dto/auth.response.dto.js";
 import { ErrorStatus } from "../../../../global/apiPayload/code/status.js";
 import {
@@ -18,7 +19,11 @@ import {
 export const AuthControllerDocs = () => {
   return applyDecorators(
     ApiTags('인증'),
-    ApiExtraModels(AuthResDTO.Login, AuthResDTO.RefreshToken),
+    ApiExtraModels(
+      AuthReqDTO.RefreshToken,
+      AuthResDTO.Login,
+      AuthResDTO.RefreshToken,
+    ),
   );
 };
 
@@ -32,6 +37,7 @@ export const LoginDocs = () => {
     ...ApiErrorResponses([
       AuthErrorStatus.PASSWORD_ERROR,
       AuthErrorStatus.DISABLE_ACCOUNT,
+      AuthErrorStatus.USER_NOT_FOUND,
       ErrorStatus.INTERNAL_SERVER_ERROR,
     ]),
   );
@@ -47,6 +53,12 @@ export const RefreshTokenDocs = () => {
     ),
     ...ApiErrorResponses([
       AuthErrorStatus.TOKEN_EXPIRED,
+      AuthErrorStatus.REFRESH_TOKEN_NOT_ALLOWED,
+      AuthErrorStatus.ACCESS_TOKEN_NOT_ALLOWED,
+      AuthErrorStatus.TOKEN_MISSING,
+      AuthErrorStatus.TOKEN_INVALID,
+      AuthErrorStatus.DISABLE_ACCOUNT,
+      AuthErrorStatus.USER_NOT_FOUND,
       ErrorStatus.INTERNAL_SERVER_ERROR,
     ]),
   );
@@ -59,6 +71,10 @@ export const LogoutDocs = () => {
     ApiSuccessResponse(AuthSuccessStatus.LOGOUT, SwaggerResultSchema.null()),
     ...ApiErrorResponses([
       AuthErrorStatus.TOKEN_EXPIRED,
+      AuthErrorStatus.REFRESH_TOKEN_NOT_ALLOWED,
+      AuthErrorStatus.TOKEN_MISSING,
+      AuthErrorStatus.TOKEN_INVALID,
+      AuthErrorStatus.USER_NOT_FOUND,
       ErrorStatus.INTERNAL_SERVER_ERROR,
     ]),
   );

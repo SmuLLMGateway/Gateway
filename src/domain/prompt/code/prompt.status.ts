@@ -62,6 +62,11 @@ export const PromptErrorStatus = {
         code: 'PROM400_2',
         message: '요청 티켓이 중복되어 요청되었습니다. 기존 요청 결과를 확인해주세요.'
     },
+    INVALID_ANALYZE_REQUEST: {
+        httpStatus: HttpStatus.BAD_REQUEST,
+        code: 'PROM400_3',
+        message: '마스킹 요소 분석 요청 형식이 올바르지 않습니다.'
+    },
 
     FORBIDDEN_LLM_MODEL: {
         httpStatus: HttpStatus.FORBIDDEN,
@@ -83,5 +88,15 @@ export const PromptErrorStatus = {
         httpStatus: HttpStatus.NOT_FOUND,
         code: 'PROM404_2',
         message: '해당 파일을 찾을 수 없습니다.'
+    },
+    NER_SERVER_ERROR: {
+        httpStatus: HttpStatus.BAD_GATEWAY,
+        code: 'PROM502_1',
+        message: '파일 분석 서버 요청에 실패했습니다.'
+    },
+    ANALYZE_SERVICE_UNAVAILABLE: {
+        httpStatus: HttpStatus.SERVICE_UNAVAILABLE,
+        code: 'PROM503_1',
+        message: '마스킹 요소 분석 요청을 처리할 수 없습니다.'
     },
 } as const satisfies Record<string, BaseStatus>;

@@ -28,7 +28,7 @@ const multipartBody = (example: string) =>
         file: {
           type: 'string',
           format: 'binary',
-          description: '선택 파일(.pdf, .jpeg, .jpg, .png)',
+          description: '선택 파일(.pdf, .jpeg, .jpg, .png, 최대 10MB)',
         },
         json: {
           type: 'string',
@@ -44,6 +44,17 @@ const requestErrors = () =>
     PromptErrorStatus.FORBIDDEN_LLM_MODEL,
     PromptErrorStatus.INVALID_FILE_FORM,
     PromptErrorStatus.DUPLICATED_TICKET,
+    AuthErrorStatus.TOKEN_EXPIRED,
+    ErrorStatus.INTERNAL_SERVER_ERROR,
+  ]);
+
+const analyzeRequestErrors = () =>
+  ApiErrorResponses([
+    PromptErrorStatus.INVALID_FILE_FORM,
+    PromptErrorStatus.DUPLICATED_TICKET,
+    PromptErrorStatus.INVALID_ANALYZE_REQUEST,
+    PromptErrorStatus.NER_SERVER_ERROR,
+    PromptErrorStatus.ANALYZE_SERVICE_UNAVAILABLE,
     AuthErrorStatus.TOKEN_EXPIRED,
     ErrorStatus.INTERNAL_SERVER_ERROR,
   ]);
@@ -67,7 +78,7 @@ export const PrePromptDocs = () =>
     ApiConsumes('multipart/form-data'),
     multipartBody('{"model":"Claude Sonnet 5","text":"원본 텍스트","ticket":"UUID"}'),
     ApiSuccessResponse(PromptSuccessStatus.PREPROMPT_REQUEST, SwaggerResultSchema.null()),
-    ...requestErrors(),
+    ...analyzeRequestErrors(),
   );
 
 export const AnalyzeDocs = () =>

@@ -22,7 +22,10 @@ export namespace PromptResDTO {
         @ApiProperty({ example: 6, description: '탐지 시작 인덱스' })
         startIdx!: number;
 
-        @ApiProperty({ example: 22, description: '탐지 종료 인덱스' })
+        @ApiProperty({
+            example: 22,
+            description: '탐지 종료 인덱스(JavaScript 문자열 기준, 해당 인덱스 미포함)'
+        })
         endIdx!: number;
 
         @ApiProperty({ example: '민감정보', description: '마스킹 분류' })

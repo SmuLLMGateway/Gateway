@@ -15,6 +15,9 @@ import { PromptSuccessStatus } from '../code/prompt.status.js';
 import { PromptReqDTO } from '../dto/prompt.request.dto.js';
 import { PromptResDTO } from '../dto/prompt.response.dto.js';
 import { PromptService } from '../service/prompt.service.js';
+import { ParsePrePromptJsonPipe } from '../pipe/parse-pre-prompt-json.pipe.js';
+import { CurrentUser } from '../../../global/security/decorator/current-user.decorator.js';
+import type { AuthenticatedUser } from '../../../global/security/type/jwt-payload.type.js';
 import {
   AnalyzeDocs,
   FileDownloadDocs,
@@ -34,12 +37,19 @@ export class PromptController {
   @PrePromptDocs()
   @Post('/api/v1/analyze')
   @HttpCode(HttpStatus.OK)
-  @UseInterceptors(FileInterceptor('file'))
+  @UseInterceptors(FileInterceptor('file', {
+    limits: { fileSize: 10 * 1024 * 1024, files: 1 },
+  }))
   async requestAnalyze(
-    @UploadedFile() file: unknown,
-    @Body('json') dto: PromptReqDTO.PrePrompt,
+    @UploadedFile() file: Express.Multer.File | undefined,
+    @Body('json', ParsePrePromptJsonPipe) dto: PromptReqDTO.PrePrompt,
+    @CurrentUser() authentication: AuthenticatedUser,
   ): Promise<GeneralResponse<PromptResDTO.Empty>> {
-    const result = await this.promptService.requestAnalyze(dto, file);
+    const result = await this.promptService.requestAnalyze(
+      dto,
+      file,
+      authentication,
+    );
     return GeneralResponse.onSuccess(PromptSuccessStatus.PREPROMPT_REQUEST, result);
   }
 

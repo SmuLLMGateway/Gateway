@@ -4,13 +4,15 @@ export namespace PromptReqDTO {
     export class PrePrompt {
         @ApiProperty({
             example: 'Claude Sonnet 5',
-            description: '사용할 LLM 모델'
+            description: '사용할 LLM 모델',
+            maxLength: 100
         })
         model!: string;
 
         @ApiProperty({
             example: '다음 주 A사와 체결 예정인 미공개...',
-            description: '마스킹 요소를 탐지할 원본 텍스트'
+            description: '마스킹 요소를 탐지할 원본 텍스트',
+            maxLength: 100000
         })
         text!: string;
 

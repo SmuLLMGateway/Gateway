@@ -1,6 +1,58 @@
 import { ApiProperty } from "@nestjs/swagger";
 
 export namespace AdminResDTO {
+    export class CreateUser {
+        @ApiProperty({ example: '김서윤' })
+        name!: string;
+
+        @ApiProperty({ example: '일반 사용자' })
+        role!: string;
+
+        @ApiProperty({ example: '2026-07-20T15:11:39Z', format: 'date-time' })
+        createdAt!: string;
+    }
+
+    export class CreateDepartment {
+        @ApiProperty({ example: '정책기획팀' })
+        name!: string;
+
+        @ApiProperty({ example: '2026-07-20T15:18:39Z', format: 'date-time' })
+        createdAt!: string;
+    }
+
+    export class DepartmentListItem {
+        @ApiProperty({ example: 1 })
+        departmentId!: number;
+
+        @ApiProperty({ example: '정책기획팀' })
+        departmentName!: string;
+    }
+
+    export class DepartmentList {
+        @ApiProperty({ type: () => [DepartmentListItem] })
+        data!: DepartmentListItem[];
+
+        @ApiProperty({ example: 20 })
+        totalCnt!: number;
+
+        @ApiProperty({ example: 7 })
+        dataCnt!: number;
+
+        @ApiProperty({ example: 1 })
+        pageNumber!: number;
+    }
+
+    export class RegisterApiKey {
+        @ApiProperty({ example: '정책기획팀' })
+        targetDepartment!: string;
+
+        @ApiProperty({ example: 'GPT' })
+        service!: string;
+
+        @ApiProperty({ example: '2026-07-20T15:45:39Z', format: 'date-time' })
+        createdAt!: string;
+    }
+
     export class Dashboard {
         @ApiProperty({ example: '2026-07-19T20:55:00Z', format: 'date-time' })
         updatedAt!: string;

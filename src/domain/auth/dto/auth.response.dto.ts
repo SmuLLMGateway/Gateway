@@ -7,19 +7,19 @@ export namespace AuthResDTO {
             example: 'ey~~',
             description: '엑세스 토큰'
         })
-        accessToken?: string;
+        accessToken!: string;
 
         @ApiProperty({
             example: 'ey~~',
-            description: '엑세스 토큰'
+            description: '리프레시 토큰'
         })
-        refreshToken?: string;
+        refreshToken!: string;
 
         @ApiProperty({
             example: '2026-07-19T15:04:50Z',
-            description: '엑세스 토큰 만료 기한'
+            description: '리프레시 토큰 만료 기한'
         })
-        refreshTokenExpiredAt?: string;
+        refreshTokenExpiredAt!: string;
     }
 
     @ApiSchema({ name: 'AuthRefreshTokenResponse' })
