@@ -3,6 +3,7 @@ import {
   Controller,
   HttpCode,
   HttpStatus,
+  Patch,
   Post,
   UseGuards,
 } from "@nestjs/common";
@@ -11,6 +12,7 @@ import {
   LoginDocs,
   LogoutDocs,
   RefreshTokenDocs,
+  UpdateUserPasswordDocs,
 } from "./docs/auth.controller.docs.js";
 import { GeneralResponse } from "../../../global/apiPayload/general.response.js";
 import { AuthSuccessStatus } from "../code/auth.status.js";
@@ -69,5 +71,15 @@ export class AuthController {
   ): Promise<GeneralResponse<AuthResDTO.Logout>> {
     const result = await this.authService.logout(authentication);
     return GeneralResponse.onSuccess(AuthSuccessStatus.LOGOUT, result);
+  }
+
+  @UpdateUserPasswordDocs()
+  @Patch('/auth/v1/password')
+  async updateUserPassword(
+    @Body() dto: AuthReqDTO.UpdatePassword,
+    @CurrentUser() authentication: AuthenticatedUser,
+  ): Promise<GeneralResponse<AuthResDTO.UpdatePassword>> {
+    const result = await this.authService.updatePassword(dto, authentication);
+    return GeneralResponse.onSuccess(AuthSuccessStatus.UPDATE_PASSWORD, result);
   }
 }

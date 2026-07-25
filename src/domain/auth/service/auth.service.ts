@@ -38,7 +38,7 @@ export class AuthService {
       .getOne();
 
     if (member === null) {
-      throw new AuthException(AuthErrorStatus.USER_NOT_FOUND);
+      throw new AuthException(AuthErrorStatus.PASSWORD_ERROR);
     }
 
     const passwordMatches = await this.passwordEncoder.matches(
@@ -141,6 +141,64 @@ export class AuthService {
     return null;
   }
 
+  async updatePassword(
+    dto: Readonly<AuthReqDTO.UpdatePassword>,
+    authentication: Readonly<AuthenticatedUser>,
+  ): Promise<AuthResDTO.UpdatePassword> {
+    if (
+      !this.isValidPassword(dto.oldPassword)
+      || !this.isValidPassword(dto.newPassword)
+    ) {
+      throw new AuthException(AuthErrorStatus.PASSWORD_ERROR);
+    }
+
+    const member = await this.memberRepository.findOne({
+      select: {
+        memberId: true,
+        password: true,
+        disabledAt: true,
+      },
+      where: { memberId: String(authentication.userId) },
+    });
+
+    if (member === null) {
+      throw new AuthException(AuthErrorStatus.USER_NOT_FOUND);
+    }
+
+    if (member.disabledAt !== null) {
+      throw new AuthException(AuthErrorStatus.DISABLE_ACCOUNT);
+    }
+
+    const passwordMatches = await this.passwordEncoder.matches(
+      dto.oldPassword,
+      member.password,
+    );
+
+    if (!passwordMatches) {
+      throw new AuthException(AuthErrorStatus.PASSWORD_ERROR);
+    }
+
+    const encodedPassword = await this.passwordEncoder.encode(dto.newPassword);
+    const updatedAt = new Date();
+    const updateResult = await this.memberRepository.update(
+      {
+        memberId: member.memberId,
+        password: member.password,
+        disabledAt: IsNull(),
+      },
+      { password: encodedPassword },
+    );
+
+    if (updateResult.affected !== 1) {
+      throw new AuthException(AuthErrorStatus.PASSWORD_ERROR);
+    }
+
+    return AuthMapper.toUpdatePassword(
+      this.toUserId(member.memberId),
+      updatedAt,
+    );
+  }
+
   private refreshTokensMatch(
     storedRefreshToken: string | null,
     presentedRefreshToken: string,
@@ -154,6 +212,10 @@ export class AuthService {
 
     return stored.length === presented.length
       && timingSafeEqual(stored, presented);
+  }
+
+  private isValidPassword(password: unknown): password is string {
+    return typeof password === 'string' && password.length > 0;
   }
 
   private toUserId(memberId: string): number {

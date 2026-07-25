@@ -1,6 +1,7 @@
 import { applyDecorators } from "@nestjs/common";
 import {
   ApiBearerAuth,
+  ApiBody,
   ApiExtraModels,
   ApiOperation,
   ApiTags,
@@ -20,16 +21,23 @@ export const AuthControllerDocs = () => {
   return applyDecorators(
     ApiTags('인증'),
     ApiExtraModels(
+      AuthReqDTO.Login,
       AuthReqDTO.RefreshToken,
+      AuthReqDTO.UpdatePassword,
       AuthResDTO.Login,
       AuthResDTO.RefreshToken,
+      AuthResDTO.UpdatePassword,
     ),
   );
 };
 
 export const LoginDocs = () => {
   return applyDecorators(
-    ApiOperation({ summary: '로그인 API' }),
+    ApiOperation({
+      summary: '로그인',
+      description: '이메일과 비밀번호로 로그인하고 인증 토큰을 발급합니다.',
+    }),
+    ApiBody({ type: AuthReqDTO.Login }),
     ApiSuccessResponse(
       AuthSuccessStatus.LOGIN,
       SwaggerResultSchema.model(getSchemaPath(AuthResDTO.Login)),
@@ -37,7 +45,6 @@ export const LoginDocs = () => {
     ...ApiErrorResponses([
       AuthErrorStatus.PASSWORD_ERROR,
       AuthErrorStatus.DISABLE_ACCOUNT,
-      AuthErrorStatus.USER_NOT_FOUND,
       ErrorStatus.INTERNAL_SERVER_ERROR,
     ]),
   );
@@ -46,19 +53,17 @@ export const LoginDocs = () => {
 export const RefreshTokenDocs = () => {
   return applyDecorators(
     ApiBearerAuth(),
-    ApiOperation({ summary: '토큰 갱신 API' }),
+    ApiOperation({
+      summary: '토큰 갱신',
+      description: '액세스 토큰과 리프레시 토큰을 검증하여 인증 토큰을 갱신합니다.',
+    }),
+    ApiBody({ type: AuthReqDTO.RefreshToken }),
     ApiSuccessResponse(
       AuthSuccessStatus.REFRESHTOKEN,
       SwaggerResultSchema.model(getSchemaPath(AuthResDTO.RefreshToken)),
     ),
     ...ApiErrorResponses([
       AuthErrorStatus.TOKEN_EXPIRED,
-      AuthErrorStatus.REFRESH_TOKEN_NOT_ALLOWED,
-      AuthErrorStatus.ACCESS_TOKEN_NOT_ALLOWED,
-      AuthErrorStatus.TOKEN_MISSING,
-      AuthErrorStatus.TOKEN_INVALID,
-      AuthErrorStatus.DISABLE_ACCOUNT,
-      AuthErrorStatus.USER_NOT_FOUND,
       ErrorStatus.INTERNAL_SERVER_ERROR,
     ]),
   );
@@ -67,13 +72,33 @@ export const RefreshTokenDocs = () => {
 export const LogoutDocs = () => {
   return applyDecorators(
     ApiBearerAuth(),
-    ApiOperation({ summary: '로그아웃 API' }),
+    ApiOperation({
+      summary: '로그아웃',
+      description: '현재 사용자의 인증 정보를 만료시켜 로그아웃합니다.',
+    }),
     ApiSuccessResponse(AuthSuccessStatus.LOGOUT, SwaggerResultSchema.null()),
     ...ApiErrorResponses([
       AuthErrorStatus.TOKEN_EXPIRED,
-      AuthErrorStatus.REFRESH_TOKEN_NOT_ALLOWED,
-      AuthErrorStatus.TOKEN_MISSING,
-      AuthErrorStatus.TOKEN_INVALID,
+      ErrorStatus.INTERNAL_SERVER_ERROR,
+    ]),
+  );
+};
+
+export const UpdateUserPasswordDocs = () => {
+  return applyDecorators(
+    ApiBearerAuth(),
+    ApiOperation({
+      summary: '사용자 비밀번호 수정',
+      description: '현재 비밀번호를 확인한 후 사용자 비밀번호를 수정합니다.',
+    }),
+    ApiBody({ type: AuthReqDTO.UpdatePassword }),
+    ApiSuccessResponse(
+      AuthSuccessStatus.UPDATE_PASSWORD,
+      SwaggerResultSchema.model(getSchemaPath(AuthResDTO.UpdatePassword)),
+    ),
+    ...ApiErrorResponses([
+      AuthErrorStatus.PASSWORD_ERROR,
+      AuthErrorStatus.TOKEN_EXPIRED,
       AuthErrorStatus.USER_NOT_FOUND,
       ErrorStatus.INTERNAL_SERVER_ERROR,
     ]),

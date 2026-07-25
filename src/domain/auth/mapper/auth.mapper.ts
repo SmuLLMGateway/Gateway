@@ -9,4 +9,14 @@ export class AuthMapper {
             refreshTokenExpiredAt: tokens.refreshTokenExpiredAt
         }
     }
+
+    static toUpdatePassword(
+        userId: number,
+        updatedAt: Date,
+    ): AuthResDTO.UpdatePassword {
+        return {
+            userId,
+            updatedAt: updatedAt.toISOString(),
+        };
+    }
 }

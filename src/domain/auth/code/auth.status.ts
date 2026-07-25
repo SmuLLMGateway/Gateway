@@ -17,6 +17,11 @@ export const AuthSuccessStatus = {
         httpStatus: HttpStatus.OK,
         code: 'AUTH200_3',
         message: '성공적으로 로그아웃했습니다.'
+    },
+    UPDATE_PASSWORD: {
+        httpStatus: HttpStatus.OK,
+        code: 'AUTH200_4',
+        message: '성공적으로 해당 사용자 비밀번호를 수정했습니다.'
     }
 } as const satisfies Record<string, BaseStatus>;
 
