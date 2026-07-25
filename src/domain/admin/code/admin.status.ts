@@ -62,20 +62,50 @@ export const AdminSuccessStatus = {
         code: 'ADMIN200_12',
         message: '성공적으로 감사 및 이용 로그 요약을 조회했습니다.'
     },
-    LOG_LIST: {
+    USER_PROMPT_OVERVIEW: {
+        httpStatus: HttpStatus.OK,
+        code: 'ADMIN200_13',
+        message: '성공적으로 사용자별 프롬프트 목록을 조회했습니다.'
+    },
+    USER_PROMPT_LIST: {
+        httpStatus: HttpStatus.OK,
+        code: 'ADMIN200_14',
+        message: '성공적으로 사용자 프롬프트 목록을 조회했습니다.'
+    },
+    PROMPT_DETAIL: {
+        httpStatus: HttpStatus.OK,
+        code: 'ADMIN200_15',
+        message: '성공적으로 프롬프트 상세 정보를 조회했습니다.'
+    },
+    DEPARTMENT_SUMMARY: {
+        httpStatus: HttpStatus.OK,
+        code: 'ADMIN200_16',
+        message: '성공적으로 부서 관리 요약을 조회했습니다.'
+    },
+    DEPARTMENT_LIST: {
+        httpStatus: HttpStatus.OK,
+        code: 'ADMIN200_17',
+        message: '성공적으로 부서 목록을 조회했습니다.'
+    },
+    DEPARTMENT_DETAIL: {
+        httpStatus: HttpStatus.OK,
+        code: 'ADMIN200_18',
+        message: '성공적으로 부서 상세정보를 조회했습니다.'
+    },
+    LEGACY_LOG_LIST: {
         httpStatus: HttpStatus.OK,
         code: 'ADMIN200_13',
         message: '성공적으로 이용 기록 목록을 조회했습니다.'
     },
-    LOG_DETAIL: {
+    LEGACY_LOG_DETAIL: {
         httpStatus: HttpStatus.OK,
         code: 'ADMIN200_14',
         message: '성공적으로 이용 기록 상세 정보를 조회했습니다.'
     },
-    DEPARTMENT_LIST: {
+    SYNC_POLICIES: {
         httpStatus: HttpStatus.OK,
-        code: 'ADMIN200_15',
-        message: '성공적으로 부서 목록을 조회했습니다.'
+        code: 'ADMIN200_19',
+        message: '성공적으로 부서 정책을 동기화했습니다.'
     },
     CREATE_USER: {
         httpStatus: HttpStatus.CREATED,
@@ -125,6 +155,31 @@ export const AdminErrorStatus = {
         code: 'ADMIN400_6',
         message: '사용자 역할이 올바르지 않습니다.'
     },
+    INVALID_DEPARTMENT_NAME: {
+        httpStatus: HttpStatus.BAD_REQUEST,
+        code: 'ADMIN400_7',
+        message: '부서 이름이 올바르지 않습니다.'
+    },
+    DUPLICATE_POLICY: {
+        httpStatus: HttpStatus.BAD_REQUEST,
+        code: 'ADMIN400_8',
+        message: '중복된 부서 정책이 요청되었습니다.'
+    },
+    INVALID_POLICY: {
+        httpStatus: HttpStatus.BAD_REQUEST,
+        code: 'ADMIN400_9',
+        message: '부서 정책 형식이 올바르지 않습니다.'
+    },
+    INVALID_USER_LIST_QUERY: {
+        httpStatus: HttpStatus.BAD_REQUEST,
+        code: 'ADMIN400_10',
+        message: '사용자 목록 조회 조건이 올바르지 않습니다.'
+    },
+    INVALID_DEPARTMENT_LIST_QUERY: {
+        httpStatus: HttpStatus.BAD_REQUEST,
+        code: 'ADMIN400_11',
+        message: '부서 목록 조회 조건이 올바르지 않습니다.'
+    },
     LOG_NOT_FOUND: {
         httpStatus: HttpStatus.NOT_FOUND,
         code: 'ADMIN404_1',
@@ -134,5 +189,10 @@ export const AdminErrorStatus = {
         httpStatus: HttpStatus.NOT_FOUND,
         code: 'ADMIN404_2',
         message: '존재하지 않는 부서입니다.'
+    },
+    POLICY_NOT_FOUND: {
+        httpStatus: HttpStatus.NOT_FOUND,
+        code: 'ADMIN404_3',
+        message: '해당 부서 정책이 존재하지 않습니다.'
     }
 } as const satisfies Record<string, BaseStatus>;

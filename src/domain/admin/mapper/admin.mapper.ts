@@ -43,6 +43,7 @@ export class AdminMapper {
     return this.policyRepository.create({
       maskingContent: data.maskingContent,
       maskingClass: data.maskingClass,
+      isActive: true,
       departmentId: data.departmentId,
     });
   }
@@ -106,6 +107,31 @@ export class AdminMapper {
     };
   }
 
+  static toPolicy(data: Readonly<AdminData.PolicyResult>): AdminResDTO.Policy {
+    return {
+      policyId: Number(data.policyId),
+      targetDepartment: data.targetDepartment,
+      maskingContent: data.maskingContent,
+      maskingClass: data.maskingClass,
+      changedAt: this.toDateTimeString(data.changedAt),
+    };
+  }
+
+  static toPolicyList(
+    targetDepartment: string,
+    policies: readonly Readonly<AdminData.PolicyListItem>[],
+  ): AdminResDTO.PolicyList {
+    return {
+      targetDepartment,
+      policies: policies.map((policy) => ({
+        policyId: Number(policy.policyId),
+        maskingContent: policy.maskingContent,
+        maskingClass: policy.maskingClass,
+      })),
+      totalCnt: policies.length,
+    };
+  }
+
   static toDashboard(data: Readonly<AdminResDTO.Dashboard>): AdminResDTO.Dashboard {
     return { ...data };
   }
@@ -159,7 +185,7 @@ export class AdminMapper {
       name: data.name,
       email: data.email,
       department: data.department,
-      role: data.role,
+      authorize: data.role,
       lastLoginAt: this.toDateTimeString(data.lastLoginAt),
       status: data.status,
     };

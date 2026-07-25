@@ -29,6 +29,20 @@ export namespace AdminData {
     createdAt: Date | string;
   }
 
+  export interface PolicyResult {
+    policyId: string;
+    targetDepartment: string;
+    maskingContent: string;
+    maskingClass: MaskingClass;
+    changedAt: Date | string;
+  }
+
+  export interface PolicyListItem {
+    policyId: string;
+    maskingContent: string;
+    maskingClass: MaskingClass;
+  }
+
   export interface CreateDepartment {
     departmentName: string;
   }
