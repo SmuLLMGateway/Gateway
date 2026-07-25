@@ -15,6 +15,7 @@ dotenv.config();
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
+  app.enableShutdownHooks();
 
   // 1. 기존 Express 미들웨어 설정
   app.use(cors());
@@ -36,7 +37,7 @@ async function bootstrap() {
 
   // 4. 서버 시작
   const port = process.env.PORT || 3000;
-  await app.listen(port);
+  await app.listen(port, '0.0.0.0');
   console.log(`[server]: Server is running at http://localhost:${port}`);
   console.log(`[swagger]: Swagger UI is running at http://localhost:${port}/api-docs`);
 }
