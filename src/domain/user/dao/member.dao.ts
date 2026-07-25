@@ -1,9 +1,10 @@
-import { Column, Entity, PrimaryGeneratedColumn } from "typeorm";
+import { Column, Entity, Index, PrimaryGeneratedColumn } from "typeorm";
 import { UserRole } from "../../../global/security/type/user-role.enum.js";
 
 export const MEMBER_TABLE = 'member' as const;
 
 @Entity(MEMBER_TABLE)
+@Index('UQ_member_email', ['email'], { unique: true })
 export class MemberDAO {
     @PrimaryGeneratedColumn({ name: 'member_id', type: 'bigint' })
     memberId!: string;
@@ -11,7 +12,7 @@ export class MemberDAO {
     @Column({ name: 'member_name', type: 'varchar', length: 10 })
     memberName!: string;
 
-    @Column({ name: 'email', type: 'varchar', length: 255, unique: true })
+    @Column({ name: 'email', type: 'varchar', length: 255 })
     email!: string;
 
     @Column({ name: 'password', type: 'varchar', length: 255, select: false })
@@ -31,7 +32,7 @@ export class MemberDAO {
     @Column({
         name: 'refresh_token',
         type: 'varchar',
-        length: 512,
+        length: 255,
         nullable: true,
         select: false
     })

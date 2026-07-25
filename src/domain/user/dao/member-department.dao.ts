@@ -1,6 +1,7 @@
 import {
     Column,
     Entity,
+    Index,
     JoinColumn,
     ManyToOne,
     PrimaryGeneratedColumn
@@ -12,9 +13,18 @@ import { DepartmentDAO } from "../../admin/dao/department.dao.js";
 export const MEMBER_DEPARTMENT_TABLE = 'member_department' as const;
 
 @Entity(MEMBER_DEPARTMENT_TABLE)
+@Index('IDX_member_department_member_id', ['memberId'])
+@Index(
+    'UQ_member_department_member_department',
+    ['memberId', 'departmentId'],
+    { unique: true }
+)
 export class MemberDepartmentDAO {
     @PrimaryGeneratedColumn({ name: 'member_department_id', type: 'bigint' })
     memberDepartmentId!: string;
+
+    @Column({ name: 'role', type: 'varchar', length: 10 })
+    role!: string;
 
     @Column({
         name: 'member_id',

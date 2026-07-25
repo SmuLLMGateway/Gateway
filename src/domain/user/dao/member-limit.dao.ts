@@ -1,6 +1,7 @@
 import {
   Column,
   Entity,
+  Index,
   JoinColumn,
   ManyToOne,
   PrimaryGeneratedColumn,
@@ -12,6 +13,11 @@ import { MemberDAO } from './member.dao.js';
 export const MEMBER_LIMIT_TABLE = 'member_limit' as const;
 
 @Entity(MEMBER_LIMIT_TABLE)
+@Index(
+  'UQ_member_limit_member_active_key',
+  ['memberId', 'activeApiKeyId'],
+  { unique: true },
+)
 export class MemberLimitDAO {
   @PrimaryGeneratedColumn({ name: 'member_limit_id', type: 'bigint' })
   memberLimitId!: string;

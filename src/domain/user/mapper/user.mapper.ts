@@ -47,6 +47,7 @@ export class UserMapper {
     data: Readonly<UserData.CreateMemberDepartment>,
   ): MemberDepartmentDAO {
     return this.memberDepartmentRepository.create({
+      role: data.role,
       memberId: data.memberId,
       departmentId: data.departmentId,
     });

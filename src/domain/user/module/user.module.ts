@@ -6,10 +6,16 @@ import { MemberDAO } from '../dao/member.dao.js';
 import { MemberDepartmentDAO } from '../dao/member-department.dao.js';
 import { MemberLimitDAO } from '../dao/member-limit.dao.js';
 import { UserMapper } from '../mapper/user.mapper.js';
+import { DepartmentDAO } from '../../admin/dao/department.dao.js';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([MemberDAO, MemberDepartmentDAO, MemberLimitDAO]),
+    TypeOrmModule.forFeature([
+      DepartmentDAO,
+      MemberDAO,
+      MemberDepartmentDAO,
+      MemberLimitDAO,
+    ]),
   ],
   controllers: [UserController],
   providers: [UserService, UserMapper],

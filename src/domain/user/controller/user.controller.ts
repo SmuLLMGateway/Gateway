@@ -5,26 +5,40 @@ import { UserReqDTO } from '../dto/user.request.dto.js';
 import { UserResDTO } from '../dto/user.response.dto.js';
 import { UserService } from '../service/user.service.js';
 import {
-  MessageListDocs,
-  MessageSummaryDocs,
+  MessageHistoryDocs,
+  MessageHistorySummaryDocs,
+  UserInfoDocs,
   UserControllerDocs,
 } from './docs/user.controller.docs.js';
+import { CurrentUser } from '../../../global/security/decorator/current-user.decorator.js';
+import type { AuthenticatedUser } from '../../../global/security/type/jwt-payload.type.js';
 
 @UserControllerDocs()
 @Controller()
 export class UserController {
   constructor(private readonly userService: UserService) {}
 
-  @MessageSummaryDocs()
+  @UserInfoDocs()
+  @Get('/api/v1/users/me')
+  async getUserInfo(
+    @CurrentUser() authentication: AuthenticatedUser,
+  ): Promise<GeneralResponse<UserResDTO.UserInfo>> {
+    const result = await this.userService.getUserInfo(authentication);
+    return GeneralResponse.onSuccess(UserSuccessStatus.USER_INFO, result);
+  }
+
+  @MessageHistorySummaryDocs()
   @Get('/api/v1/message-summary')
-  async getMessageSummary(): Promise<GeneralResponse<UserResDTO.MessageSummary>> {
+  async getMessageHistorySummary(): Promise<
+    GeneralResponse<UserResDTO.MessageSummary>
+  > {
     const result = await this.userService.getMessageSummary();
     return GeneralResponse.onSuccess(UserSuccessStatus.MESSAGE_SUMMARY, result);
   }
 
-  @MessageListDocs()
+  @MessageHistoryDocs()
   @Get('/api/v1/messages')
-  async getMessages(
+  async getMessageHistory(
     @Query() dto: UserReqDTO.MessageList,
   ): Promise<GeneralResponse<UserResDTO.MessageList>> {
     const result = await this.userService.getMessages(dto);
