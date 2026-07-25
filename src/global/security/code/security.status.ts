@@ -3,8 +3,8 @@ import { BaseStatus } from "../../apiPayload/code/status.js";
 
 export const SecurityErrorStatus = {
     TOKEN_EXPIRED: {
-        httpStatus: HttpStatus.BAD_REQUEST,
-        code: 'AUTH400_2',
+        httpStatus: HttpStatus.UNAUTHORIZED,
+        code: 'AUTH401_1',
         message: '토큰이 만료되었습니다.'
     },
     DISABLE_ACCOUNT: {
