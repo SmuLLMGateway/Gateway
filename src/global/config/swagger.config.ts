@@ -9,6 +9,9 @@ export function setupSwagger(app: INestApplication): void {
     .addBearerAuth()
     .build();
   
-  const documentFactory = () => SwaggerModule.createDocument(app, config);
+  const documentFactory = () =>
+    SwaggerModule.createDocument(app, config, {
+      autoTagControllers: false,
+    });
   SwaggerModule.setup('api-docs', app, documentFactory);
 }
