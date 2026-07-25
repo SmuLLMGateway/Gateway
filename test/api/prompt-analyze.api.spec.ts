@@ -1,16 +1,40 @@
 import type { INestApplication } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
+import { MulterModule } from '@nestjs/platform-express';
 import { Test } from '@nestjs/testing';
+import { getRepositoryToken } from '@nestjs/typeorm';
+import { Readable } from 'node:stream';
 import request from 'supertest';
-import { NerClient } from '../../src/domain/prompt/client/ner.client.js';
-import { NerConfig } from '../../src/domain/prompt/config/ner.config.js';
+import { ActiveApiKeyDAO } from '../../src/domain/admin/dao/active-api-key.dao.js';
+import { LlmDetailModelDAO } from '../../src/domain/admin/dao/llm-detail-model.dao.js';
+import {
+  MaskingClass,
+  PolicyDAO,
+} from '../../src/domain/admin/dao/policy.dao.js';
+import { NerClient } from '../../src/global/ner/client/ner.client.js';
+import { NerConfig } from '../../src/global/ner/config/ner.config.js';
+import { PromptErrorStatus } from '../../src/domain/prompt/code/prompt.status.js';
 import { PromptController } from '../../src/domain/prompt/controller/prompt.controller.js';
-import type { PromptResDTO } from '../../src/domain/prompt/dto/prompt.response.dto.js';
+import type { PromptData } from '../../src/domain/prompt/data/prompt.data.js';
+import { PromptException } from '../../src/domain/prompt/exception/prompt.exception.js';
+import { PromptFileExceptionInterceptor } from '../../src/domain/prompt/interceptor/prompt-file-exception.interceptor.js';
+import { PromptStagedFileCleanupInterceptor } from '../../src/domain/prompt/interceptor/prompt-staged-file-cleanup.interceptor.js';
+import { ParseAnalyzeQueryPipe } from '../../src/domain/prompt/pipe/parse-analyze-query.pipe.js';
+import { ParseFileDownloadBodyPipe } from '../../src/domain/prompt/pipe/parse-file-download-body.pipe.js';
 import { ParsePrePromptJsonPipe } from '../../src/domain/prompt/pipe/parse-pre-prompt-json.pipe.js';
-import { AnalyzeTicketRepository } from '../../src/domain/prompt/repository/analyze-ticket.repository.js';
-import { PromptFileValidatorService } from '../../src/domain/prompt/service/prompt-file-validator.service.js';
+import { ParseOptionalPromptFileFieldPipe } from '../../src/domain/prompt/pipe/parse-optional-prompt-file-field.pipe.js';
+import { MaskingReportRepository } from '../../src/domain/prompt/repository/masking-report.repository.js';
+import { PromptFileRepository } from '../../src/domain/prompt/repository/prompt-file.repository.js';
+import { PromptRoomRepository } from '../../src/domain/prompt/repository/prompt-room.repository.js';
 import { PromptService } from '../../src/domain/prompt/service/prompt.service.js';
-import { RegexMaskingDetectorService } from '../../src/domain/prompt/service/regex-masking-detector.service.js';
+import { PromptMinioStorage } from '../../src/domain/prompt/storage/prompt-minio.storage.js';
+import {
+  MASKING_CONTENT,
+  type DepartmentMaskingPolicy,
+} from '../../src/domain/prompt/type/masking-content.type.js';
+import { MaskingReportStatus } from '../../src/domain/prompt/type/masking-report-status.enum.js';
+import { MAX_PROMPT_FILE_SIZE_BYTES } from '../../src/domain/prompt/type/stored-prompt-file.type.js';
+import { MemberDepartmentDAO } from '../../src/domain/user/dao/member-department.dao.js';
 import {
   GatewayExceptionFilter,
   GlobalExceptionFilter,
@@ -26,9 +50,94 @@ import type {
   VerifiedAccessToken,
 } from '../../src/global/security/type/jwt-payload.type.js';
 import { UserRole } from '../../src/global/security/type/user-role.enum.js';
+import type {
+  CopiedObjectInfo,
+  CopyObjectRequest,
+  PutObjectRequest,
+  StoredObjectInfo,
+} from '../../src/global/storage/service/minio-object-storage.service.js';
+import { MinioObjectStorageService } from '../../src/global/storage/service/minio-object-storage.service.js';
+
+const STAGED_UUID = '11111111-1111-4111-8111-111111111111';
+const STAGED_OBJECT_KEY = `incoming/2026/07/21/${STAGED_UUID}.pdf`;
+const TEST_BUCKET = 'gateway-test';
+const NER_ANALYZE_URL = 'http://127.0.0.1:8000/';
+
+class FakeMinioObjectStorageService {
+  readonly objects = new Map<string, Buffer>();
+
+  readonly putObject = jest.fn(
+    async (input: Readonly<PutObjectRequest>): Promise<StoredObjectInfo> => {
+      const chunks: Buffer[] = [];
+
+      for await (const chunk of input.stream) {
+        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      }
+
+      this.objects.set(input.objectKey, Buffer.concat(chunks));
+      return {
+        bucket: TEST_BUCKET,
+        objectKey: input.objectKey,
+        etag: 'staged-etag',
+        versionId: 'staged-version',
+      };
+    },
+  );
+
+  readonly copyObject = jest.fn(
+    async (input: Readonly<CopyObjectRequest>): Promise<CopiedObjectInfo> => {
+      const source = this.objects.get(input.sourceObjectKey);
+      if (source === undefined) {
+        throw new Error('복사할 staging 객체가 없습니다.');
+      }
+
+      this.objects.set(input.destinationObjectKey, Buffer.from(source));
+      return {
+        bucket: TEST_BUCKET,
+        objectKey: input.destinationObjectKey,
+        etag: 'final-etag',
+        versionId: 'final-version',
+      };
+    },
+  );
+
+  readonly presignedGetObject = jest.fn(async (objectKey: string) =>
+    `https://minio.internal/${objectKey}`,
+  );
+
+  readonly getObjectUrl = jest.fn((objectKey: string) =>
+    `s3://${TEST_BUCKET}/${objectKey}`,
+  );
+
+  readonly parseObjectUrl = jest.fn((objectUrl: string) => {
+    const prefix = `s3://${TEST_BUCKET}/`;
+    if (!objectUrl.startsWith(prefix)) {
+      throw new Error('잘못된 테스트 객체 URL입니다.');
+    }
+
+    return objectUrl.slice(prefix.length);
+  });
+
+  readonly removeObject = jest.fn(
+    async (objectKey: string, _versionId?: string): Promise<void> => {
+      this.objects.delete(objectKey);
+    },
+  );
+
+  readonly removeIncompleteUpload = jest.fn(
+    async (_objectKey: string): Promise<void> => undefined,
+  );
+
+  reset(): void {
+    this.objects.clear();
+  }
+}
 
 describe('마스킹 요소 탐지 요청 HTTP API', () => {
   const ticket = 'a81cc17e-e10a-46ae-8113-dceffb932d6c';
+  const departmentId = '7';
+  const finalObjectKey = `masking/${ticket}/source`;
+  const file = Buffer.from('%PDF-1.7\nstreamed-mock-pdf');
   const authentication: AuthenticatedUser = {
     userId: 42,
     role: UserRole.USER,
@@ -45,7 +154,36 @@ describe('마스킹 요소 탐지 요청 HTTP API', () => {
       'api_key=AbCdEfGhIjKlMnOp1234',
     ].join(', '),
     ticket,
+    recentTicket: null,
+    chatRoomId: '840c66ce-0b5d-4663-bc63-b4c4666cd0f5',
   };
+  const policies: DepartmentMaskingPolicy[] = [
+    {
+      policyId: '101',
+      maskingContent: MASKING_CONTENT.PHONE,
+      maskingClass: MaskingClass.PRIVATE,
+    },
+    {
+      policyId: '102',
+      maskingContent: MASKING_CONTENT.RESIDENT,
+      maskingClass: MaskingClass.PRIVATE,
+    },
+    {
+      policyId: '103',
+      maskingContent: MASKING_CONTENT.CARD,
+      maskingClass: MaskingClass.PRIVATE,
+    },
+    {
+      policyId: '104',
+      maskingContent: MASKING_CONTENT.EMAIL,
+      maskingClass: MaskingClass.PRIVATE,
+    },
+    {
+      policyId: '105',
+      maskingContent: MASKING_CONTENT.API_KEY,
+      maskingClass: MaskingClass.SENSITIVE,
+    },
+  ];
 
   const tokenService = {
     verifyAccessToken: jest.fn(),
@@ -53,43 +191,109 @@ describe('마스킹 요소 탐지 요청 HTTP API', () => {
   const principalService = {
     getAuthenticatedUser: jest.fn(),
   };
-  const ticketRepository = {
-    createFingerprint: jest.fn(),
-    acquire: jest.fn(),
-    complete: jest.fn(),
-    fail: jest.fn(),
+  const memberDepartmentRepository = {
+    findOne: jest.fn(),
   };
+  const activeApiKeyRepository = {
+    findOne: jest.fn(),
+  };
+  const policyRepository = {
+    find: jest.fn(),
+  };
+  const llmDetailModelRepository = {
+    find: jest.fn(),
+  };
+  const reportRepository = {
+    create: jest.fn(),
+    findAnalyzeResult: jest.fn(),
+    saveRegexDetections: jest.fn(),
+    saveNerDetections: jest.fn(),
+    cancelRegex: jest.fn(),
+    cancelNer: jest.fn(),
+  };
+  const promptFileRepository = {
+    create: jest.fn(),
+    deleteById: jest.fn(),
+    findDownloadReferenceByFileUrl: jest.fn(),
+    findByReportId: jest.fn(),
+  };
+  const promptRoomRepository = {
+    findRecentByMemberId: jest.fn(),
+  };
+  const objectStorage = new FakeMinioObjectStorageService();
 
   let app: INestApplication;
-  let regexDetector: RegexMaskingDetectorService;
+  let nerClient: NerClient;
   let fetchSpy: jest.SpiedFunction<typeof fetch>;
+  let requestNerAnalyzeSpy: jest.SpiedFunction<NerClient['requestAnalyze']>;
 
   beforeAll(async () => {
     const moduleRef = await Test.createTestingModule({
+      imports: [
+        MulterModule.register({
+          storage: new PromptMinioStorage(
+            objectStorage as unknown as MinioObjectStorageService,
+            {
+              now: () => new Date('2026-07-21T00:00:00.000Z'),
+              randomId: () => STAGED_UUID,
+            },
+          ),
+          limits: {
+            fileSize: MAX_PROMPT_FILE_SIZE_BYTES,
+            files: 1,
+            fields: 2,
+            // busboy의 partsLimit 이벤트가 정상적인 json+file 경계에서
+            // 발생하지 않도록 허용 개수에 한 칸의 여유를 둡니다.
+            parts: 3,
+          },
+        }),
+      ],
       controllers: [PromptController],
       providers: [
         PromptService,
-        RegexMaskingDetectorService,
-        PromptFileValidatorService,
+        ParseOptionalPromptFileFieldPipe,
+        ParseAnalyzeQueryPipe,
+        ParseFileDownloadBodyPipe,
         ParsePrePromptJsonPipe,
+        PromptFileExceptionInterceptor,
+        PromptStagedFileCleanupInterceptor,
         NerClient,
+        {
+          provide: NerConfig,
+          useValue: {
+            analyzeUrl: NER_ANALYZE_URL,
+            requestTimeoutMs: 5_000,
+          },
+        },
         Reflector,
         AccessTokenGuard,
         RolesGuard,
         {
-          provide: NerConfig,
-          useValue: {
-            analyzeUrl: 'http://ner.internal/analyze',
-            timeoutMs: 1_000,
-            apiKey: undefined,
-          },
+          provide: getRepositoryToken(MemberDepartmentDAO),
+          useValue: memberDepartmentRepository,
         },
-        { provide: AnalyzeTicketRepository, useValue: ticketRepository },
+        {
+          provide: getRepositoryToken(ActiveApiKeyDAO),
+          useValue: activeApiKeyRepository,
+        },
+        {
+          provide: getRepositoryToken(PolicyDAO),
+          useValue: policyRepository,
+        },
+        {
+          provide: getRepositoryToken(LlmDetailModelDAO),
+          useValue: llmDetailModelRepository,
+        },
+        { provide: MaskingReportRepository, useValue: reportRepository },
+        { provide: PromptFileRepository, useValue: promptFileRepository },
+        { provide: PromptRoomRepository, useValue: promptRoomRepository },
+        { provide: MinioObjectStorageService, useValue: objectStorage },
         { provide: JwtTokenService, useValue: tokenService },
         { provide: SecurityPrincipalService, useValue: principalService },
       ],
     }).compile();
 
+    nerClient = moduleRef.get(NerClient);
     app = moduleRef.createNestApplication();
     app.useGlobalGuards(
       moduleRef.get(AccessTokenGuard),
@@ -101,12 +305,13 @@ describe('마스킹 요소 탐지 요청 HTTP API', () => {
       new HttpExceptionFilter(),
       new GatewayExceptionFilter(),
     );
-    regexDetector = moduleRef.get(RegexMaskingDetectorService);
     await app.init();
   });
 
   beforeEach(() => {
-    resetMocks();
+    jest.clearAllMocks();
+    objectStorage.reset();
+    requestNerAnalyzeSpy = jest.spyOn(nerClient, 'requestAnalyze');
 
     tokenService.verifyAccessToken.mockResolvedValue({
       userId: authentication.userId,
@@ -114,20 +319,28 @@ describe('마스킹 요소 탐지 요청 HTTP API', () => {
       accessToken: true,
     } satisfies VerifiedAccessToken);
     principalService.getAuthenticatedUser.mockResolvedValue(authentication);
-    ticketRepository.createFingerprint.mockReturnValue('request-fingerprint');
-    ticketRepository.acquire.mockResolvedValue({
-      type: 'ACQUIRED',
-      operationId: 'operation-id',
+    memberDepartmentRepository.findOne.mockResolvedValue({ departmentId });
+    activeApiKeyRepository.findOne.mockResolvedValue({ activeApiKeyId: '100' });
+    policyRepository.find.mockResolvedValue(policies);
+    reportRepository.create.mockResolvedValue(undefined);
+    reportRepository.findAnalyzeResult.mockResolvedValue(null);
+    reportRepository.saveRegexDetections.mockResolvedValue(true);
+    reportRepository.saveNerDetections.mockResolvedValue(true);
+    reportRepository.cancelRegex.mockResolvedValue(true);
+    reportRepository.cancelNer.mockResolvedValue(true);
+    promptFileRepository.create.mockResolvedValue({
+      promptFileId: '52',
+      fileOriginalName: 'report.pdf',
+      fileUrl: `s3://${TEST_BUCKET}/${finalObjectKey}`,
+      maskingReportId: ticket,
     });
-    ticketRepository.complete.mockResolvedValue(true);
-    ticketRepository.fail.mockResolvedValue(true);
+    promptFileRepository.deleteById.mockResolvedValue(undefined);
+    promptFileRepository.findDownloadReferenceByFileUrl.mockResolvedValue(null);
+    promptFileRepository.findByReportId.mockResolvedValue([]);
+    promptRoomRepository.findRecentByMemberId.mockResolvedValue([]);
 
     fetchSpy = jest.spyOn(globalThis, 'fetch').mockResolvedValue(
-      jsonResponse({
-        fileObjectId: 52,
-        maskingCategory: '개인정보',
-        detectCnt: 2,
-      }),
+      new Response(null, { status: 202 }),
     );
   });
 
@@ -139,40 +352,481 @@ describe('마스킹 요소 탐지 요청 HTTP API', () => {
     await app?.close();
   });
 
-  it('원본 텍스트에서 다섯 종류를 탐지하고 PROM200_1을 반환한다', async () => {
-    const response = await postAnalyze(JSON.stringify(dto)).expect(200);
+  describe('GET /api/v1/analyze', () => {
+    it('본인이 요청한 DONE 리포트의 탐지 결과를 PROM200_2로 반환한다', async () => {
+      const originText = '연락처 010-1234-5678, api_key=AbCdEfGhIjKlMnOp1234';
+      const phone = '010-1234-5678';
+      const apiKey = 'AbCdEfGhIjKlMnOp1234';
+      reportRepository.findAnalyzeResult.mockResolvedValueOnce({
+        status: MaskingReportStatus.DONE,
+        originalText: originText,
+        details: [
+          {
+            originalText: phone,
+            startIdx: originText.indexOf(phone),
+            endIdx: originText.indexOf(phone) + phone.length,
+            maskingContent: MASKING_CONTENT.PHONE,
+            maskingClass: MaskingClass.PRIVATE,
+          },
+          {
+            originalText: apiKey,
+            startIdx: originText.indexOf(apiKey),
+            endIdx: originText.indexOf(apiKey) + apiKey.length,
+            maskingContent: MASKING_CONTENT.API_KEY,
+            maskingClass: MaskingClass.SENSITIVE,
+          },
+        ],
+      } satisfies PromptData.AnalyzeReport);
 
-    expect(ticketRepository.createFingerprint).toHaveBeenCalledWith(
-      dto.model,
-      dto.text,
-      undefined,
-    );
-    expect(ticketRepository.acquire).toHaveBeenCalledWith(
-      authentication.userId,
+      const response = await getAnalyze().expect(200);
+
+      expect(reportRepository.findAnalyzeResult).toHaveBeenCalledWith(
+        ticket,
+        authentication.userId,
+      );
+      expect(response.headers['cache-control']).toBe('no-store');
+      expect(response.headers.pragma).toBe('no-cache');
+      expect(response.body).toEqual({
+        isSuccess: true,
+        code: 'PROM200_2',
+        message: '성공적으로 마스킹 요소를 탐지했습니다.',
+        result: {
+          originText,
+          masking: {
+            file: null,
+            text: [
+              {
+                targetText: phone,
+                startIdx: originText.indexOf(phone),
+                endIdx: originText.indexOf(phone) + phone.length,
+                maskingCategory: '개인정보',
+                detailCategory: '전화번호',
+              },
+              {
+                targetText: apiKey,
+                startIdx: originText.indexOf(apiKey),
+                endIdx: originText.indexOf(apiKey) + apiKey.length,
+                maskingCategory: '민감정보',
+                detailCategory: 'API Key',
+              },
+            ],
+          },
+        },
+      });
+    });
+
+    it('DONE 리포트에 탐지 내역이 없으면 결과를 null로 반환한다', async () => {
+      reportRepository.findAnalyzeResult.mockResolvedValueOnce({
+        status: MaskingReportStatus.DONE,
+        originalText: '탐지 항목이 없는 원문',
+        details: [],
+      } satisfies PromptData.AnalyzeReport);
+
+      const response = await getAnalyze().expect(200);
+
+      expect(response.body).toEqual({
+        isSuccess: true,
+        code: 'PROM200_2',
+        message: '성공적으로 마스킹 요소를 탐지했습니다.',
+        result: null,
+      });
+    });
+
+    it('파일 탐지 결과에는 DB 파일 URL과 탐지 건수를 반환한다', async () => {
+      reportRepository.findAnalyzeResult.mockResolvedValueOnce({
+        status: MaskingReportStatus.DONE,
+        originalText: dto.text,
+        details: [
+          {
+            originalText: null,
+            startIdx: null,
+            endIdx: null,
+            maskingContent: MASKING_CONTENT.PHONE,
+            maskingClass: MaskingClass.PRIVATE,
+          },
+          {
+            originalText: null,
+            startIdx: null,
+            endIdx: null,
+            maskingContent: MASKING_CONTENT.API_KEY,
+            maskingClass: MaskingClass.SENSITIVE,
+          },
+        ],
+      } satisfies PromptData.AnalyzeReport);
+      promptFileRepository.findByReportId.mockResolvedValueOnce([
+        {
+          promptFileId: '52',
+          fileOriginalName: 'report.pdf',
+          fileUrl: `s3://${TEST_BUCKET}/${finalObjectKey}`,
+          maskingReportId: ticket,
+        },
+      ]);
+
+      const response = await getAnalyze().expect(200);
+
+      expect(promptFileRepository.findByReportId).toHaveBeenCalledWith(ticket);
+      expect(response.body.result).toEqual({
+        originText: dto.text,
+        masking: {
+          file: {
+            fileOriginalName: 'report.pdf',
+            fileUrl: `s3://${TEST_BUCKET}/${finalObjectKey}`,
+            maskingCategory: '민감정보',
+            detectCnt: 2,
+          },
+          text: [],
+        },
+      });
+    });
+
+    it('PENDING 리포트는 PROM200_2_1을 반환한다', async () => {
+      reportRepository.findAnalyzeResult.mockResolvedValueOnce({
+        status: MaskingReportStatus.PENDING,
+        originalText: dto.text,
+        details: [],
+      } satisfies PromptData.AnalyzeReport);
+
+      const response = await getAnalyze().expect(200);
+
+      expect(response.body).toEqual({
+        isSuccess: true,
+        code: 'PROM200_2_1',
+        message: '아직 분석이 진행 중입니다.',
+        result: null,
+      });
+    });
+
+    it.each([
+      ['존재하지 않는 티켓', ticket],
+      ['다른 사용자 소유 티켓', 'b25e1559-bf8c-42f8-a1da-a56f013516ac'],
+    ])('%s은 소유 여부를 노출하지 않고 PROM404_1을 반환한다', async (
+      _caseName,
+      requestTicket,
+    ) => {
+      reportRepository.findAnalyzeResult.mockResolvedValueOnce(null);
+
+      const response = await getAnalyze(requestTicket).expect(404);
+
+      expect(reportRepository.findAnalyzeResult).toHaveBeenCalledWith(
+        requestTicket,
+        authentication.userId,
+      );
+      expect(response.body).toEqual({
+        isSuccess: false,
+        code: 'PROM404_1',
+        message: '해당 분석 요청을 찾을 수 없습니다.',
+      });
+    });
+
+    it('UUID가 아닌 티켓은 조회하지 않고 PROM400_3으로 거부한다', async () => {
+      const response = await getAnalyze('not-a-uuid').expect(400);
+
+      expect(reportRepository.findAnalyzeResult).not.toHaveBeenCalled();
+      expect(response.body).toEqual({
+        isSuccess: false,
+        code: 'PROM400_3',
+        message: '마스킹 요소 분석 요청 형식이 올바르지 않습니다.',
+      });
+    });
+
+    it('ticket을 body로만 보내면 PROM400_3으로 거부한다', async () => {
+      const response = await request(app.getHttpServer())
+        .get('/api/v1/analyze')
+        .set('Authorization', 'Bearer access-token')
+        .send({ ticket })
+        .expect(400);
+
+      expect(reportRepository.findAnalyzeResult).not.toHaveBeenCalled();
+      expect(response.body.code).toBe('PROM400_3');
+    });
+
+    it('CANCEL 리포트는 PROM503_1을 반환한다', async () => {
+      reportRepository.findAnalyzeResult.mockResolvedValueOnce({
+        status: MaskingReportStatus.CANCEL,
+        originalText: dto.text,
+        details: [],
+      } satisfies PromptData.AnalyzeReport);
+
+      const response = await getAnalyze().expect(503);
+
+      expect(response.body).toEqual({
+        isSuccess: false,
+        code: 'PROM503_1',
+        message: '마스킹 요소 분석 요청을 처리할 수 없습니다.',
+      });
+    });
+
+    it('인증 토큰이 없으면 AUTH401_1을 반환한다', async () => {
+      const response = await request(app.getHttpServer())
+        .get('/api/v1/analyze')
+        .query({ ticket })
+        .expect(401);
+
+      expect(reportRepository.findAnalyzeResult).not.toHaveBeenCalled();
+      expect(response.body).toEqual({
+        isSuccess: false,
+        code: 'AUTH401_1',
+        message: '인증 토큰이 필요합니다.',
+      });
+    });
+  });
+
+  describe('GET /api/v1/download', () => {
+    const fileUrl = `s3://${TEST_BUCKET}/${finalObjectKey}`;
+
+    it('파일 소유자에게 10분 유효 presigned URL을 반환한다', async () => {
+      promptFileRepository.findDownloadReferenceByFileUrl.mockResolvedValueOnce({
+        promptFileId: '52',
+        fileUrl,
+        maskingReportId: ticket,
+        memberId: String(authentication.userId),
+      });
+
+      const response = await getDownload().expect(200);
+
+      expect(
+        promptFileRepository.findDownloadReferenceByFileUrl,
+      ).toHaveBeenCalledWith(
+        fileUrl,
+      );
+      expect(objectStorage.parseObjectUrl).toHaveBeenCalledWith(fileUrl);
+      expect(objectStorage.presignedGetObject).toHaveBeenCalledWith(
+        finalObjectKey,
+      );
+      expect(response.headers['cache-control']).toBe('no-store');
+      expect(response.headers.pragma).toBe('no-cache');
+      expect(response.body).toEqual({
+        isSuccess: true,
+        code: 'PROM200_7',
+        message: '성공적으로 파일 다운로드 URL을 생성했습니다.',
+        result: `https://minio.internal/${finalObjectKey}`,
+      });
+    });
+
+    it.each([
+      ['누락', {}],
+      ['빈 문자열', { fileUrl: '' }],
+      ['복수 값', { fileUrl: [fileUrl, fileUrl] }],
+      ['최대 길이 초과', { fileUrl: `s3://${'a'.repeat(1_024)}` }],
+      ['추가 필드', { fileUrl, unexpected: 'field' }],
+    ])('fileUrl이 %s이면 PROM400_5로 거부한다', async (
+      _description,
+      body,
+    ) => {
+      const response = await getDownload(body).expect(400);
+
+      expect(
+        promptFileRepository.findDownloadReferenceByFileUrl,
+      ).not.toHaveBeenCalled();
+      expect(response.body).toEqual({
+        isSuccess: false,
+        code: 'PROM400_5',
+        message: '파일 다운로드 URL 생성 요청 형식이 올바르지 않습니다.',
+      });
+    });
+
+    it('파일 레코드가 없으면 PROM404_3을 반환한다', async () => {
+      const response = await getDownload().expect(404);
+
+      expect(objectStorage.presignedGetObject).not.toHaveBeenCalled();
+      expect(response.body).toEqual({
+        isSuccess: false,
+        code: 'PROM404_3',
+        message: '해당 파일을 찾을 수 없습니다.',
+      });
+    });
+
+    it('fileUrl을 body로만 보내면 PROM400_5로 거부한다', async () => {
+      const response = await request(app.getHttpServer())
+        .get('/api/v1/download')
+        .set('Authorization', 'Bearer access-token')
+        .send({ fileUrl })
+        .expect(400);
+
+      expect(
+        promptFileRepository.findDownloadReferenceByFileUrl,
+      ).not.toHaveBeenCalled();
+      expect(response.body.code).toBe('PROM400_5');
+    });
+
+    it('다른 사용자의 파일이면 PROM403_2를 반환한다', async () => {
+      promptFileRepository.findDownloadReferenceByFileUrl.mockResolvedValueOnce({
+        promptFileId: '52',
+        fileUrl,
+        maskingReportId: ticket,
+        memberId: '999',
+      });
+
+      const response = await getDownload().expect(403);
+
+      expect(objectStorage.presignedGetObject).not.toHaveBeenCalled();
+      expect(response.body).toEqual({
+        isSuccess: false,
+        code: 'PROM403_2',
+        message: '해당 파일을 업로드한 사용자가 아닙니다.',
+      });
+    });
+
+    it('DB 파일 URL이 현재 버킷의 canonical URL이 아니면 PROM404_3을 반환한다', async () => {
+      promptFileRepository.findDownloadReferenceByFileUrl.mockResolvedValueOnce({
+        promptFileId: '52',
+        fileUrl: 's3://other-bucket/masking/ticket/source',
+        maskingReportId: ticket,
+        memberId: String(authentication.userId),
+      });
+
+      const response = await getDownload().expect(404);
+
+      expect(objectStorage.presignedGetObject).not.toHaveBeenCalled();
+      expect(response.body.code).toBe('PROM404_3');
+    });
+
+    it('MinIO URL 발급이 실패하면 PROM503_2를 반환한다', async () => {
+      promptFileRepository.findDownloadReferenceByFileUrl.mockResolvedValueOnce({
+        promptFileId: '52',
+        fileUrl,
+        maskingReportId: ticket,
+        memberId: String(authentication.userId),
+      });
+      objectStorage.presignedGetObject.mockRejectedValueOnce(
+        new Error('minio unavailable'),
+      );
+
+      const response = await getDownload().expect(503);
+
+      expect(response.body).toEqual({
+        isSuccess: false,
+        code: 'PROM503_2',
+        message: '파일 다운로드 URL을 생성할 수 없습니다.',
+      });
+    });
+
+    it('인증 토큰이 없으면 AUTH401_1을 반환한다', async () => {
+      const response = await request(app.getHttpServer())
+        .get('/api/v1/download')
+        .query({ fileUrl })
+        .expect(401);
+
+      expect(
+        promptFileRepository.findDownloadReferenceByFileUrl,
+      ).not.toHaveBeenCalled();
+      expect(response.body.code).toBe('AUTH401_1');
+    });
+  });
+
+  describe('GET /api/v1/chat-rooms', () => {
+    it('토큰 사용자 소유의 최근 채팅방을 PROM200_5로 반환한다', async () => {
+      promptRoomRepository.findRecentByMemberId.mockResolvedValueOnce([
+        {
+          chatRoomId: '840c66ce-0b5d-4663-bc63-b4c4666cd0f5',
+          title: 'A사와 체결 보고서 작성',
+          createdAt: new Date('2026-07-19T17:33:30.000Z'),
+        },
+        {
+          chatRoomId: '57ed5b8b-e77b-49c7-823d-802537d756a3',
+          title: '보안 검토',
+          createdAt: '2026-07-18T09:15:00.000Z',
+        },
+      ] satisfies PromptData.RecentPrompt[]);
+
+      const response = await getRecentPrompts().expect(200);
+
+      expect(promptRoomRepository.findRecentByMemberId).toHaveBeenCalledWith(
+        String(authentication.userId),
+      );
+      expect(promptFileRepository.findByReportId).not.toHaveBeenCalled();
+      expect(response.body).toEqual({
+        isSuccess: true,
+        code: 'PROM200_5',
+        message: '성공적으로 채팅 과거 기록을 조회했습니다.',
+        result: [
+          {
+            chatRoomId: '840c66ce-0b5d-4663-bc63-b4c4666cd0f5',
+            title: 'A사와 체결 보고서 작성',
+            createdAt: '2026-07-19T17:33:30.000Z',
+          },
+          {
+            chatRoomId: '57ed5b8b-e77b-49c7-823d-802537d756a3',
+            title: '보안 검토',
+            createdAt: '2026-07-18T09:15:00.000Z',
+          },
+        ],
+      });
+    });
+
+    it('채팅방이 없으면 PROM200_5와 result null을 반환한다', async () => {
+      const response = await getRecentPrompts().expect(200);
+
+      expect(response.body).toEqual({
+        isSuccess: true,
+        code: 'PROM200_5',
+        message: '성공적으로 채팅 과거 기록을 조회했습니다.',
+        result: null,
+      });
+    });
+
+    it('인증 토큰이 없으면 AUTH401_1을 반환하고 조회하지 않는다', async () => {
+      const response = await request(app.getHttpServer())
+        .get('/api/v1/chat-rooms')
+        .expect(401);
+
+      expect(promptRoomRepository.findRecentByMemberId).not.toHaveBeenCalled();
+      expect(response.body).toEqual({
+        isSuccess: false,
+        code: 'AUTH401_1',
+        message: '인증 토큰이 필요합니다.',
+      });
+    });
+  });
+
+  it('부서 정책에 포함된 텍스트 다섯 종류를 저장하고 PROM200_1을 반환한다', async () => {
+    const response = await postAnalyze().expect(200);
+
+    expect(memberDepartmentRepository.findOne).toHaveBeenCalledWith({
+      select: { departmentId: true },
+      where: { memberId: String(authentication.userId) },
+    });
+    expect(activeApiKeyRepository.findOne).toHaveBeenCalledWith({
+      select: { activeApiKeyId: true },
+      where: { departmentId, serviceType: 'Claude' },
+    });
+    expect(policyRepository.find).toHaveBeenCalledWith({
+      select: {
+        policyId: true,
+        maskingContent: true,
+        maskingClass: true,
+      },
+      where: { departmentId, isActive: true },
+      order: { policyId: 'ASC' },
+    });
+    expect(reportRepository.create).toHaveBeenCalledWith(
       ticket,
-      'request-fingerprint',
+      authentication.userId,
+      dto.text,
+      false,
+      null,
     );
-    expect(fetchSpy).not.toHaveBeenCalled();
 
-    const completedResult = ticketRepository.complete.mock.calls[0]?.[4] as
-      | PromptResDTO.Analyze
-      | undefined;
-    expect(completedResult?.originText).toBe(dto.text);
-    expect(completedResult?.masking.file).toBeNull();
-    expect(
-      completedResult?.masking.text.map((item) => item.detailCategory),
-    ).toEqual([
-      '전화번호',
-      '주민등록번호',
-      '카드번호',
-      '이메일',
-      'API Key',
+    const savedDetections = reportRepository.saveRegexDetections.mock
+      .calls[0]?.[1] as PromptData.RegexDetection[] | undefined;
+    expect(savedDetections).toEqual([
+      expect.objectContaining({ originalText: '010-1234-5678', policyId: '101' }),
+      expect.objectContaining({ originalText: '900101-1234567', policyId: '102' }),
+      expect.objectContaining({ originalText: '4111 1111 1111 1111', policyId: '103' }),
+      expect.objectContaining({ originalText: 'member@example.com', policyId: '104' }),
+      expect.objectContaining({ originalText: 'AbCdEfGhIjKlMnOp1234', policyId: '105' }),
     ]);
     expect(
-      completedResult?.masking.text.every(
-        (item) => dto.text.slice(item.startIdx, item.endIdx) === item.targetText,
+      savedDetections?.every(
+        (detection) =>
+          dto.text.slice(detection.startIdx, detection.endIdx)
+          === detection.originalText,
       ),
     ).toBe(true);
+    expect(requestNerAnalyzeSpy).not.toHaveBeenCalled();
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(objectStorage.putObject).not.toHaveBeenCalled();
+    expect(objectStorage.copyObject).not.toHaveBeenCalled();
     expect(response.body).toEqual({
       isSuccess: true,
       code: 'PROM200_1',
@@ -181,86 +835,82 @@ describe('마스킹 요소 탐지 요청 HTTP API', () => {
     });
   });
 
-  it('업로드 파일을 NER 서버에 multipart로 전달하고 결과를 저장한다', async () => {
-    const file = Buffer.from('%PDF-1.7\nmock-pdf');
+  it('하이픈 없는 카드번호 후보는 Luhn 체크섬과 무관하게 탐지한다', async () => {
+    const cardNumber = '5327501123254829';
+    const cardDto = {
+      ...dto,
+      text: `카드번호 ${cardNumber}`,
+    };
 
-    await request(app.getHttpServer())
+    await postAnalyze(cardDto).expect(200);
+
+    expect(reportRepository.saveRegexDetections).toHaveBeenCalledWith(ticket, [
+      {
+        originalText: cardNumber,
+        startIdx: cardDto.text.indexOf(cardNumber),
+        endIdx: cardDto.text.indexOf(cardNumber) + cardNumber.length,
+        policyId: '103',
+      },
+    ]);
+  });
+
+  it('카드번호 앞의 일반 숫자와 공백은 탐지 범위에서 제외한다', async () => {
+    const cardNumber = '5327501134352675';
+    const cardDto = {
+      ...dto,
+      text: `원본 텍스트2 ${cardNumber} 테스트2`,
+    };
+
+    await postAnalyze(cardDto).expect(200);
+
+    expect(reportRepository.saveRegexDetections).toHaveBeenCalledWith(ticket, [
+      {
+        originalText: cardNumber,
+        startIdx: cardDto.text.indexOf(cardNumber),
+        endIdx: cardDto.text.indexOf(cardNumber) + cardNumber.length,
+        policyId: '103',
+      },
+    ]);
+  });
+
+  it('file= 빈 일반 필드는 파일 미첨부로 처리하고 MinIO 저장을 생략한다', async () => {
+    const response = await request(app.getHttpServer())
       .post('/api/v1/analyze')
       .set('Authorization', 'Bearer access-token')
+      .field('file', '')
       .field('json', JSON.stringify(dto))
-      .attach('file', file, {
-        filename: 'report.pdf',
-        contentType: 'application/pdf',
-      })
       .expect(200);
 
-    expect(ticketRepository.createFingerprint).toHaveBeenCalledWith(
-      dto.model,
+    expect(reportRepository.create).toHaveBeenCalledWith(
+      ticket,
+      authentication.userId,
       dto.text,
-      expect.any(Buffer),
+      false,
+      null,
     );
-    expect(fetchSpy).toHaveBeenCalledTimes(1);
-
-    const [url, requestInit] = fetchSpy.mock.calls[0] ?? [];
-    expect(url).toBe('http://ner.internal/analyze');
-    expect(requestInit?.method).toBe('POST');
-    expect(requestInit?.headers).toEqual({
-      'Idempotency-Key': `prompt-analyze:${authentication.userId}:${ticket}`,
-    });
-    expect(requestInit?.body).toBeInstanceOf(FormData);
-
-    const form = requestInit?.body as FormData;
-    expect(form.get('ticket')).toBe(ticket);
-    expect(form.get('file')).toBeInstanceOf(Blob);
-
-    const completedResult = ticketRepository.complete.mock.calls[0]?.[4] as
-      | PromptResDTO.Analyze
-      | undefined;
-    expect(completedResult?.masking.file).toEqual({
-      fileObjectId: 52,
-      maskingCategory: '개인정보',
-      detectCnt: 2,
-    });
-  });
-
-  it('동일 ticket과 동일 요청은 외부 처리를 반복하지 않는다', async () => {
-    ticketRepository.acquire.mockResolvedValue({
-      type: 'REPLAY',
-      record: {
-        version: 1,
-        status: 'PROCESSING',
-        fingerprint: 'request-fingerprint',
-        operationId: 'existing-operation',
-        createdAt: '2026-07-21T09:00:00.000Z',
-      },
-    });
-    const detectSpy = jest.spyOn(regexDetector, 'detect');
-
-    const response = await postAnalyze(JSON.stringify(dto)).expect(200);
-
-    expect(detectSpy).not.toHaveBeenCalled();
-    expect(fetchSpy).not.toHaveBeenCalled();
-    expect(ticketRepository.complete).not.toHaveBeenCalled();
-    expect(response.body.code).toBe('PROM200_1');
-  });
-
-  it('동일 ticket에 다른 요청이 오면 DUPLICATED_TICKET을 반환한다', async () => {
-    ticketRepository.acquire.mockResolvedValue({ type: 'CONFLICT' });
-
-    const response = await postAnalyze(JSON.stringify(dto)).expect(400);
-
-    expect(ticketRepository.complete).not.toHaveBeenCalled();
+    expect(objectStorage.putObject).not.toHaveBeenCalled();
+    expect(objectStorage.copyObject).not.toHaveBeenCalled();
+    expect(objectStorage.presignedGetObject).not.toHaveBeenCalled();
+    expect(promptFileRepository.create).not.toHaveBeenCalled();
     expect(response.body).toEqual({
-      isSuccess: false,
-      code: 'PROM400_2',
-      message: '요청 티켓이 중복되어 요청되었습니다. 기존 요청 결과를 확인해주세요.',
+      isSuccess: true,
+      code: 'PROM200_1',
+      message: '성공적으로 마스킹 요소 분석을 요청했습니다.',
+      result: null,
     });
   });
 
-  it('json 필드가 올바른 JSON이 아니면 INVALID_ANALYZE_REQUEST를 반환한다', async () => {
-    const response = await postAnalyze('{invalid-json').expect(400);
+  it('비어 있지 않은 일반 file 필드는 PROM400_3으로 거부한다', async () => {
+    const response = await request(app.getHttpServer())
+      .post('/api/v1/analyze')
+      .set('Authorization', 'Bearer access-token')
+      .field('file', 'not-a-file')
+      .field('json', JSON.stringify(dto))
+      .expect(400);
 
-    expect(ticketRepository.acquire).not.toHaveBeenCalled();
+    expect(memberDepartmentRepository.findOne).not.toHaveBeenCalled();
+    expect(reportRepository.create).not.toHaveBeenCalled();
+    expect(objectStorage.putObject).not.toHaveBeenCalled();
     expect(response.body).toEqual({
       isSuccess: false,
       code: 'PROM400_3',
@@ -268,18 +918,124 @@ describe('마스킹 요소 탐지 요청 HTTP API', () => {
     });
   });
 
-  it('확장자와 실제 파일 형식이 다르면 INVALID_FILE_FORM을 반환한다', async () => {
-    const response = await request(app.getHttpServer())
-      .post('/api/v1/analyze')
-      .set('Authorization', 'Bearer access-token')
-      .field('json', JSON.stringify(dto))
-      .attach('file', Buffer.from('not-a-pdf'), {
-        filename: 'report.pdf',
-        contentType: 'application/pdf',
-      })
-      .expect(400);
+  it('TEXT 용량인 UTF-8 65,535바이트를 초과한 원문은 PROM400_3으로 거부한다', async () => {
+    const response = await postAnalyze({
+      ...dto,
+      text: '가'.repeat(21_846),
+    }).expect(400);
 
-    expect(ticketRepository.acquire).not.toHaveBeenCalled();
+    expect(reportRepository.create).not.toHaveBeenCalled();
+    expect(response.body).toEqual({
+      isSuccess: false,
+      code: 'PROM400_3',
+      message: '마스킹 요소 분석 요청 형식이 올바르지 않습니다.',
+    });
+  });
+
+  it('NER 서버 요청이 비활성화되어 외부 요청 없이 NER 상태를 완료한다', async () => {
+    fetchSpy.mockResolvedValueOnce(new Response(null, { status: 503 }));
+
+    const response = await postAnalyzeWithFile(file).expect(200);
+
+    expect(requestNerAnalyzeSpy).not.toHaveBeenCalled();
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(objectStorage.presignedGetObject).not.toHaveBeenCalled();
+    expect(reportRepository.saveNerDetections).toHaveBeenCalledWith(
+      ticket,
+      `s3://${TEST_BUCKET}/${finalObjectKey}`,
+      [],
+    );
+    expect(promptFileRepository.create).toHaveBeenCalledWith(
+      ticket,
+      `s3://${TEST_BUCKET}/${finalObjectKey}`,
+      'report.pdf',
+    );
+    await waitForCall(() => hasRemovedObject(STAGED_OBJECT_KEY));
+    expect(objectStorage.objects.get(finalObjectKey)).toEqual(file);
+    expect(objectStorage.objects.has(STAGED_OBJECT_KEY)).toBe(false);
+    expect(response.body).toEqual({
+      isSuccess: true,
+      code: 'PROM200_1',
+      message: '성공적으로 마스킹 요소 분석을 요청했습니다.',
+      result: null,
+    });
+  });
+
+  it('부서 정책에 포함되지 않은 마스킹 항목은 탐지하지 않는다', async () => {
+    policyRepository.find.mockResolvedValueOnce([
+      policies[3],
+    ]);
+
+    await postAnalyze().expect(200);
+
+    expect(reportRepository.saveRegexDetections).toHaveBeenCalledWith(ticket, [
+      {
+        originalText: 'member@example.com',
+        startIdx: dto.text.indexOf('member@example.com'),
+        endIdx: dto.text.indexOf('member@example.com') + 'member@example.com'.length,
+        policyId: '104',
+      },
+    ]);
+  });
+
+  it('파일을 최종 위치에 저장하고 NER 외부 요청은 생략한다', async () => {
+    const response = await postAnalyzeWithFile(file).expect(200);
+
+    expect(reportRepository.create).toHaveBeenCalledWith(
+      ticket,
+      authentication.userId,
+      dto.text,
+      true,
+      null,
+    );
+    expect(objectStorage.putObject).toHaveBeenCalledTimes(1);
+    const putRequest = objectStorage.putObject.mock.calls[0]?.[0];
+    expect(putRequest).toEqual({
+      objectKey: STAGED_OBJECT_KEY,
+      stream: expect.any(Readable),
+      contentType: 'application/pdf',
+    });
+    expect(putRequest).not.toHaveProperty('buffer');
+    expect(objectStorage.copyObject).toHaveBeenCalledWith({
+      sourceObjectKey: STAGED_OBJECT_KEY,
+      destinationObjectKey: finalObjectKey,
+      sourceVersionId: 'staged-version',
+    });
+    expect(promptFileRepository.create).toHaveBeenCalledWith(
+      ticket,
+      `s3://${TEST_BUCKET}/${finalObjectKey}`,
+      'report.pdf',
+    );
+    expect(objectStorage.presignedGetObject).not.toHaveBeenCalled();
+    expect(requestNerAnalyzeSpy).not.toHaveBeenCalled();
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(reportRepository.saveNerDetections).toHaveBeenCalledWith(
+      ticket,
+      `s3://${TEST_BUCKET}/${finalObjectKey}`,
+      [],
+    );
+
+    await waitForCall(() => hasRemovedObject(STAGED_OBJECT_KEY));
+    expect(objectStorage.objects.get(finalObjectKey)).toEqual(file);
+    expect(objectStorage.objects.has(STAGED_OBJECT_KEY)).toBe(false);
+    expect(response.body).toEqual({
+      isSuccess: true,
+      code: 'PROM200_1',
+      message: '성공적으로 마스킹 요소 분석을 요청했습니다.',
+      result: null,
+    });
+  });
+
+  it('파일 확장자와 magic byte가 다르면 PROM400_1을 반환한다', async () => {
+    const response = await postAnalyzeWithFile(Buffer.from('not-a-pdf')).expect(400);
+
+    await waitForCall(() =>
+      objectStorage.removeIncompleteUpload.mock.calls.some(
+        ([objectKey]) => objectKey === STAGED_OBJECT_KEY,
+      ),
+    );
+    expect(memberDepartmentRepository.findOne).not.toHaveBeenCalled();
+    expect(reportRepository.create).not.toHaveBeenCalled();
     expect(fetchSpy).not.toHaveBeenCalled();
     expect(response.body).toEqual({
       isSuccess: false,
@@ -288,40 +1044,45 @@ describe('마스킹 요소 탐지 요청 HTTP API', () => {
     });
   });
 
-  it('NER 서버가 실패하면 FAILED 상태를 기록하고 NER_SERVER_ERROR를 반환한다', async () => {
-    fetchSpy.mockResolvedValueOnce(new Response(null, { status: 500 }));
+  it('파일 내용이 비어 있어도 저장하고 PROM200_1을 반환한다', async () => {
+    const response = await postAnalyzeWithFile(
+      Buffer.alloc(0),
+      'application/octet-stream',
+    ).expect(200);
 
-    const response = await request(app.getHttpServer())
-      .post('/api/v1/analyze')
-      .set('Authorization', 'Bearer access-token')
-      .field('json', JSON.stringify(dto))
-      .attach('file', Buffer.from('%PDF-1.7\nmock-pdf'), {
-        filename: 'report.pdf',
-        contentType: 'application/pdf',
-      })
-      .expect(502);
-
-    expect(ticketRepository.fail).toHaveBeenCalledWith(
-      authentication.userId,
+    expect(reportRepository.create).toHaveBeenCalledWith(
       ticket,
-      'operation-id',
-      'request-fingerprint',
-      'PROM502_1',
+      authentication.userId,
+      dto.text,
+      true,
+      null,
     );
+    expect(objectStorage.copyObject).toHaveBeenCalledWith({
+      sourceObjectKey: STAGED_OBJECT_KEY,
+      destinationObjectKey: finalObjectKey,
+      sourceVersionId: 'staged-version',
+    });
+    await waitForCall(() => hasRemovedObject(STAGED_OBJECT_KEY));
+    expect(objectStorage.objects.get(finalObjectKey)).toEqual(Buffer.alloc(0));
+    expect(objectStorage.objects.has(STAGED_OBJECT_KEY)).toBe(false);
     expect(response.body).toEqual({
-      isSuccess: false,
-      code: 'PROM502_1',
-      message: '파일 분석 서버 요청에 실패했습니다.',
+      isSuccess: true,
+      code: 'PROM200_1',
+      message: '성공적으로 마스킹 요소 분석을 요청했습니다.',
+      result: null,
     });
   });
 
-  it('Redis에서 ticket을 선점하지 못하면 외부 처리를 시작하지 않는다', async () => {
-    ticketRepository.acquire.mockRejectedValue(new Error('redis unavailable'));
+  it('파일 리포트 완료에 실패하면 prompt_file과 최종 객체를 보상 삭제한다', async () => {
+    reportRepository.saveNerDetections.mockResolvedValueOnce(false);
 
-    const response = await postAnalyze(JSON.stringify(dto)).expect(503);
+    const response = await postAnalyzeWithFile(file).expect(503);
 
-    expect(fetchSpy).not.toHaveBeenCalled();
-    expect(ticketRepository.complete).not.toHaveBeenCalled();
+    expect(promptFileRepository.deleteById).toHaveBeenCalledWith('52');
+    expect(objectStorage.removeObject).toHaveBeenCalledWith(
+      finalObjectKey,
+      'final-version',
+    );
     expect(response.body).toEqual({
       isSuccess: false,
       code: 'PROM503_1',
@@ -329,13 +1090,61 @@ describe('마스킹 요소 탐지 요청 HTTP API', () => {
     });
   });
 
-  it('인증 토큰이 없으면 TOKEN_MISSING을 반환한다', async () => {
+  it('모델 사용 권한이 없으면 staging 파일을 정리하고 PROM403_1을 반환한다', async () => {
+    activeApiKeyRepository.findOne.mockResolvedValueOnce(null);
+
+    const response = await postAnalyzeWithFile(file).expect(403);
+
+    await waitForCall(() => hasRemovedObject(STAGED_OBJECT_KEY));
+    expect(reportRepository.create).not.toHaveBeenCalled();
+    expect(objectStorage.copyObject).not.toHaveBeenCalled();
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(objectStorage.objects.has(STAGED_OBJECT_KEY)).toBe(false);
+    expect(response.body).toEqual({
+      isSuccess: false,
+      code: 'PROM403_1',
+      message: '해당 부서에선 사용이 제한된 모델입니다.',
+    });
+  });
+
+  it('DB에 같은 ticket이 존재하면 PROM400_2를 반환한다', async () => {
+    reportRepository.create.mockRejectedValueOnce(
+      new PromptException(PromptErrorStatus.DUPLICATED_TICKET),
+    );
+
+    const response = await postAnalyze().expect(400);
+
+    expect(reportRepository.saveRegexDetections).not.toHaveBeenCalled();
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(response.body).toEqual({
+      isSuccess: false,
+      code: 'PROM400_2',
+      message: '요청 티켓이 중복되어 요청되었습니다. 기존 요청 결과를 확인해주세요.',
+    });
+  });
+
+  it('DB 처리 중 예기치 않은 오류가 발생하면 PROM503_1을 반환한다', async () => {
+    reportRepository.create.mockRejectedValueOnce(new Error('database unavailable'));
+
+    const response = await postAnalyze().expect(503);
+
+    expect(reportRepository.saveRegexDetections).not.toHaveBeenCalled();
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(response.body).toEqual({
+      isSuccess: false,
+      code: 'PROM503_1',
+      message: '마스킹 요소 분석 요청을 처리할 수 없습니다.',
+    });
+  });
+
+  it('인증 토큰이 없으면 AUTH401_1을 반환한다', async () => {
     const response = await request(app.getHttpServer())
       .post('/api/v1/analyze')
       .field('json', JSON.stringify(dto))
       .expect(401);
 
-    expect(ticketRepository.acquire).not.toHaveBeenCalled();
+    expect(memberDepartmentRepository.findOne).not.toHaveBeenCalled();
+    expect(reportRepository.create).not.toHaveBeenCalled();
     expect(response.body).toEqual({
       isSuccess: false,
       code: 'AUTH401_1',
@@ -343,30 +1152,66 @@ describe('마스킹 요소 탐지 요청 HTTP API', () => {
     });
   });
 
-  function postAnalyze(json: string) {
+  function postAnalyze(requestDto: typeof dto = dto) {
     return request(app.getHttpServer())
       .post('/api/v1/analyze')
       .set('Authorization', 'Bearer access-token')
-      .field('json', json);
+      .field('json', JSON.stringify(requestDto));
   }
 
-  function resetMocks(): void {
-    const mocks = [
-      tokenService.verifyAccessToken,
-      principalService.getAuthenticatedUser,
-      ticketRepository.createFingerprint,
-      ticketRepository.acquire,
-      ticketRepository.complete,
-      ticketRepository.fail,
-    ];
+  function getAnalyze(requestTicket = ticket) {
+    return request(app.getHttpServer())
+      .get('/api/v1/analyze')
+      .set('Authorization', 'Bearer access-token')
+      .query({ ticket: requestTicket });
+  }
 
-    mocks.forEach((mock) => mock.mockReset());
+  function getDownload(
+    query: Record<string, unknown> = {
+      fileUrl: `s3://${TEST_BUCKET}/${finalObjectKey}`,
+    },
+  ) {
+    return request(app.getHttpServer())
+      .get('/api/v1/download')
+      .set('Authorization', 'Bearer access-token')
+      .query(query);
+  }
+
+  function getRecentPrompts() {
+    return request(app.getHttpServer())
+      .get('/api/v1/chat-rooms')
+      .set('Authorization', 'Bearer access-token');
+  }
+
+  function postAnalyzeWithFile(
+    contents: Buffer,
+    contentType = 'application/pdf',
+  ) {
+    return request(app.getHttpServer())
+      .post('/api/v1/analyze')
+      .set('Authorization', 'Bearer access-token')
+      .field('json', JSON.stringify(dto))
+      .attach('file', contents, {
+        filename: 'report.pdf',
+        contentType,
+      });
+  }
+
+  function hasRemovedObject(objectKey: string): boolean {
+    return objectStorage.removeObject.mock.calls.some(
+      ([removedObjectKey]) => removedObjectKey === objectKey,
+    );
   }
 });
 
-function jsonResponse(body: unknown): Response {
-  return new Response(JSON.stringify(body), {
-    status: 200,
-    headers: { 'content-type': 'application/json' },
-  });
+async function waitForCall(predicate: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    if (predicate()) {
+      return;
+    }
+
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+
+  expect(predicate()).toBe(true);
 }

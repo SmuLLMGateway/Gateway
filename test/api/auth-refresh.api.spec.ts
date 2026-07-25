@@ -363,7 +363,7 @@ describe('인증 토큰 HTTP API', () => {
     expect(memberRepository.update).not.toHaveBeenCalled();
   });
 
-  it('만료된 Refresh Token이면 AUTH400_2를 반환한다', async () => {
+  it('만료된 Refresh Token이면 AUTH401_1을 반환한다', async () => {
     const tokens = await tokenService.issueTokenPair(100);
     const expiredRefreshToken = await signToken({
       userId: 100,
@@ -375,11 +375,11 @@ describe('인증 토큰 HTTP API', () => {
     const response = await refreshRequest(
       tokens.accessToken,
       expiredRefreshToken,
-    ).expect(400);
+    ).expect(401);
 
     expect(response.body).toEqual({
       isSuccess: false,
-      code: 'AUTH400_2',
+      code: 'AUTH401_1',
       message: '토큰이 만료되었습니다.',
     });
     expect(memberRepository.findOne).not.toHaveBeenCalled();
