@@ -3,10 +3,13 @@ import {
     Entity,
     JoinColumn,
     ManyToOne,
+    OneToOne,
     PrimaryGeneratedColumn
 } from "typeorm";
 import type { Relation } from "typeorm";
+import { MaskingReportDAO } from "./masking-report.dao.js";
 import { PromptRoomDAO } from "./prompt-room.dao.js";
+import { MaskingReportStatus } from "../type/masking-report-status.enum.js";
 
 export const PROMPT_LOG_TABLE = 'prompt_log' as const;
 
@@ -15,19 +18,14 @@ export class PromptLogDAO {
     @PrimaryGeneratedColumn({ name: 'prompt_log_id', type: 'bigint' })
     promptLogId!: string;
 
-    @Column({ name: 'original_text', type: 'text' })
-    originalText!: string;
-
     @Column({
-        name: 'file_url',
+        name: 'status',
         type: 'varchar',
-        length: 255,
-        nullable: true
+        length: 10,
+        nullable: true,
+        default: MaskingReportStatus.PENDING
     })
-    fileUrl!: string | null;
-
-    @Column({ name: 'masking_text', type: 'text' })
-    maskingText!: string;
+    status!: MaskingReportStatus | null;
 
     @Column({ name: 'communicated_at', type: 'timestamp' })
     communicatedAt!: Date;
@@ -38,15 +36,32 @@ export class PromptLogDAO {
     @Column({ name: 'response_text', type: 'text', nullable: true })
     responseText!: string | null;
 
+    @Column({ name: 'prompt_summary', type: 'varchar', length: 50 })
+    promptSummary!: string;
+
     @Column({
         name: 'prompt_room_id',
-        type: 'bigint'
+        type: 'varchar',
+        length: 255
     })
     promptRoomId!: string;
+
+    @Column({
+        name: 'masking_report_id',
+        type: 'varchar',
+        length: 255
+    })
+    maskingReportId!: string;
 
     @ManyToOne(() => PromptRoomDAO, {
         nullable: false
     })
     @JoinColumn({ name: 'prompt_room_id' })
     promptRoom!: Relation<PromptRoomDAO>;
+
+    @OneToOne(() => MaskingReportDAO, {
+        nullable: false
+    })
+    @JoinColumn({ name: 'masking_report_id' })
+    maskingReport!: Relation<MaskingReportDAO>;
 }

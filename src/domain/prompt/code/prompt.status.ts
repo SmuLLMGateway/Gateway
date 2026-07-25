@@ -37,15 +37,35 @@ export const PromptSuccessStatus = {
         code: 'PROM200_7',
         message: '성공적으로 파일 다운로드 URL을 생성했습니다.'
     },
+    MODEL_LIST: {
+        httpStatus: HttpStatus.OK,
+        code: 'PROM200_8',
+        message: '성공적으로 모델 목록을 조회했습니다.'
+    },
+    PROMPT_LIST: {
+        httpStatus: HttpStatus.OK,
+        code: 'PROM200_9',
+        message: '성공적으로 프롬프트를 조회했습니다.'
+    },
+    RECENT_ANALYZE: {
+        httpStatus: HttpStatus.OK,
+        code: 'PROM200_10',
+        message: '성공적으로 직전 마스킹 요소 탐지 요청을 조회했습니다.'
+    },
+    NER_CALLBACK: {
+        httpStatus: HttpStatus.OK,
+        code: 'PROM200_11',
+        message: '성공적으로 파일 분석 결과를 반영했습니다.'
+    },
 
     BEFORE_ANALYZE: {
-        httpStatus: HttpStatus.NO_CONTENT,
-        code: 'PROM204_1',
+        httpStatus: HttpStatus.OK,
+        code: 'PROM200_2_1',
         message: '아직 분석이 진행 중입니다.'
     },
     BEFORE_LLM_RESPONSE: {
-        httpStatus: HttpStatus.NO_CONTENT,
-        code: 'PROM204_2',
+        httpStatus: HttpStatus.OK,
+        code: 'PROM200_4_1',
         message: '아직 결과 생성 중입니다.'
     }
 
@@ -67,7 +87,16 @@ export const PromptErrorStatus = {
         code: 'PROM400_3',
         message: '마스킹 요소 분석 요청 형식이 올바르지 않습니다.'
     },
-
+    INVALID_NER_CALLBACK: {
+        httpStatus: HttpStatus.BAD_REQUEST,
+        code: 'PROM400_4',
+        message: '파일 분석 결과 형식이 올바르지 않습니다.'
+    },
+    INVALID_FILE_DOWNLOAD_REQUEST: {
+        httpStatus: HttpStatus.BAD_REQUEST,
+        code: 'PROM400_5',
+        message: '파일 다운로드 URL 생성 요청 형식이 올바르지 않습니다.'
+    },
     FORBIDDEN_LLM_MODEL: {
         httpStatus: HttpStatus.FORBIDDEN,
         code: 'PROM403_1',
@@ -84,10 +113,25 @@ export const PromptErrorStatus = {
         code: 'PROM404_1',
         message: '해당 분석 요청을 찾을 수 없습니다.'
     },
-    NOT_FOUND_FILE: {
+    NOT_FOUND_PROMPT: {
         httpStatus: HttpStatus.NOT_FOUND,
         code: 'PROM404_2',
+        message: '해당 프롬프트를 찾을 수 없습니다.'
+    },
+    NOT_FOUND_FILE: {
+        httpStatus: HttpStatus.NOT_FOUND,
+        code: 'PROM404_3',
         message: '해당 파일을 찾을 수 없습니다.'
+    },
+    NOT_FOUND_RECENT_ANALYZE: {
+        httpStatus: HttpStatus.NOT_FOUND,
+        code: 'PROM404_4',
+        message: '직전 마스킹 요소 탐지 요청이 없습니다.'
+    },
+    NOT_FOUND_RECENT_TICKET: {
+        httpStatus: HttpStatus.NOT_FOUND,
+        code: 'PROM404_5',
+        message: '해당 직전 마스킹 요소 탐지 요청이 없습니다.'
     },
     NER_SERVER_ERROR: {
         httpStatus: HttpStatus.BAD_GATEWAY,
@@ -98,5 +142,10 @@ export const PromptErrorStatus = {
         httpStatus: HttpStatus.SERVICE_UNAVAILABLE,
         code: 'PROM503_1',
         message: '마스킹 요소 분석 요청을 처리할 수 없습니다.'
+    },
+    FILE_DOWNLOAD_SERVICE_UNAVAILABLE: {
+        httpStatus: HttpStatus.SERVICE_UNAVAILABLE,
+        code: 'PROM503_2',
+        message: '파일 다운로드 URL을 생성할 수 없습니다.'
     },
 } as const satisfies Record<string, BaseStatus>;

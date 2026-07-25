@@ -3,7 +3,7 @@ import {
     Entity,
     JoinColumn,
     ManyToOne,
-    PrimaryGeneratedColumn
+    PrimaryColumn
 } from "typeorm";
 import type { Relation } from "typeorm";
 import { MemberDAO } from "../../user/dao/member.dao.js";
@@ -12,7 +12,7 @@ export const PROMPT_ROOM_TABLE = 'prompt_room' as const;
 
 @Entity(PROMPT_ROOM_TABLE)
 export class PromptRoomDAO {
-    @PrimaryGeneratedColumn({ name: 'prompt_room_id', type: 'bigint' })
+    @PrimaryColumn({ name: 'prompt_room_id', type: 'varchar', length: 255 })
     promptRoomId!: string;
 
     @Column({ name: 'started_at', type: 'timestamp' })

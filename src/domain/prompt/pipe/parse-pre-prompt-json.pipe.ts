@@ -5,8 +5,15 @@ import { PromptException } from '../exception/prompt.exception.js';
 
 const MAX_JSON_LENGTH = 110_000;
 const MAX_MODEL_LENGTH = 100;
-const MAX_TEXT_LENGTH = 100_000;
-const PRE_PROMPT_FIELDS = ['model', 'text', 'ticket'] as const;
+const MAX_TEXT_LENGTH = 65_535;
+const MAX_TEXT_BYTES = 65_535;
+const PRE_PROMPT_FIELDS = [
+  'model',
+  'text',
+  'ticket',
+  'recentTicket',
+  'chatRoomId',
+] as const;
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -31,7 +38,7 @@ export class ParsePrePromptJsonPipe
       this.throwInvalidRequest();
     }
 
-    const { model, text, ticket } = parsed;
+    const { model, text, ticket, recentTicket, chatRoomId } = parsed;
 
     if (
       typeof model !== 'string' ||
@@ -40,8 +47,15 @@ export class ParsePrePromptJsonPipe
       typeof text !== 'string' ||
       text.trim().length === 0 ||
       text.length > MAX_TEXT_LENGTH ||
+      Buffer.byteLength(text, 'utf8') > MAX_TEXT_BYTES ||
       typeof ticket !== 'string' ||
-      !UUID_PATTERN.test(ticket.trim())
+      !UUID_PATTERN.test(ticket.trim()) ||
+      (recentTicket !== null && (
+        typeof recentTicket !== 'string'
+        || !UUID_PATTERN.test(recentTicket.trim())
+      )) ||
+      typeof chatRoomId !== 'string' ||
+      !UUID_PATTERN.test(chatRoomId.trim())
     ) {
       this.throwInvalidRequest();
     }
@@ -50,7 +64,11 @@ export class ParsePrePromptJsonPipe
       model: model.trim(),
       // 탐지 위치의 인덱스가 달라지지 않도록 원문은 변형하지 않습니다.
       text,
-      ticket: ticket.trim(),
+      ticket: ticket.trim().toLowerCase(),
+      recentTicket: recentTicket === null
+        ? null
+        : recentTicket.trim().toLowerCase(),
+      chatRoomId: chatRoomId.trim().toLowerCase(),
     };
   }
 
