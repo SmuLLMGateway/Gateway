@@ -1,6 +1,7 @@
 import {
     Column,
     Entity,
+    Index,
     JoinColumn,
     ManyToOne,
     PrimaryGeneratedColumn
@@ -11,11 +12,16 @@ import { DepartmentDAO } from "./department.dao.js";
 export const ACTIVE_API_KEY_TABLE = 'active_api_key' as const;
 
 @Entity(ACTIVE_API_KEY_TABLE)
+@Index(
+    'UQ_active_api_key_department_service',
+    ['departmentId', 'serviceType'],
+    { unique: true }
+)
 export class ActiveApiKeyDAO {
     @PrimaryGeneratedColumn({ name: 'active_api_key_id', type: 'bigint' })
     activeApiKeyId!: string;
 
-    @Column({ name: 'api_key', type: 'varchar', length: 255 })
+    @Column({ name: 'api_key', type: 'varchar', length: 1024 })
     apiKey!: string;
 
     @Column({ name: 'service_type', type: 'varchar', length: 255 })
@@ -23,6 +29,9 @@ export class ActiveApiKeyDAO {
 
     @Column({ name: 'department_limit', type: 'bigint' })
     departmentLimit!: string;
+
+    @Column({ name: 'must_filtering', type: 'boolean', default: true })
+    mustFiltering!: boolean;
 
     @Column({
         name: 'department_id',
