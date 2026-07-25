@@ -36,8 +36,7 @@ module.exports = {
     'src/domain/admin/service/admin.service.ts',
     'src/domain/prompt/controller/prompt.controller.ts',
     'src/domain/prompt/service/prompt.service.ts',
-    'src/domain/prompt/service/regex-masking-detector.service.ts',
-    'src/domain/prompt/client/ner.client.ts',
+    'src/global/ner/client/ner.client.ts',
     'src/global/security/guard/*.ts',
   ],
 };
