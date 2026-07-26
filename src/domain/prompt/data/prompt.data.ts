@@ -42,12 +42,14 @@ export namespace PromptData {
       startIdx: number;
       endIdx: number;
       fileUrl: null;
+      maskingText: string;
     }
     | {
       originalText: null;
       startIdx: null;
       endIdx: null;
       fileUrl: string;
+      maskingText: null;
     }
   );
 
@@ -55,6 +57,7 @@ export namespace PromptData {
     originalText: string;
     startIdx: number;
     endIdx: number;
+    maskingText: string;
     policyId: string;
   }
 

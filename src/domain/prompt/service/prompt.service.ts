@@ -1,15 +1,12 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { ActiveApiKeyDAO } from '../../admin/dao/active-api-key.dao.js';
-import { PolicyDAO } from '../../admin/dao/policy.dao.js';
-import { LlmDetailModelDAO } from '../../admin/dao/llm-detail-model.dao.js';
+import { MaskingClass, PolicyDAO } from '../../admin/dao/policy.dao.js';
+import { ActiveLlmDAO } from '../../admin/dao/active-llm.dao.js';
 import { MemberDepartmentDAO } from '../../user/dao/member-department.dao.js';
 import { GatewayException } from '../../../global/apiPayload/exception/gateway.exception.js';
-import { NerRequestException } from '../../../global/ner/exception/ner-request.exception.js';
 import type { AuthenticatedUser } from '../../../global/security/type/jwt-payload.type.js';
 import { MinioObjectStorageService } from '../../../global/storage/service/minio-object-storage.service.js';
-import { NerClient } from '../../../global/ner/client/ner.client.js';
 import { PromptErrorStatus } from '../code/prompt.status.js';
 import type { NerCallbackRequestDTO } from '../dto/ner-callback.request.dto.js';
 import { PromptReqDTO } from '../dto/prompt.request.dto.js';
@@ -27,26 +24,13 @@ import {
 } from '../type/masking-content.type.js';
 import { MaskingReportStatus } from '../type/masking-report-status.enum.js';
 import type { StoredPromptFile } from '../type/stored-prompt-file.type.js';
+import { LlmService } from '../../../global/llm/enum/llm-service.enum.js';
+import { resolveLlmServiceFromModelName } from '../../../global/llm/llm-service.mapping.js';
 
 const MASKING_OBJECT_PREFIX = 'masking';
 const MAX_STORED_DETECTION_LENGTH = 255;
-
-const LLM_PROVIDER = {
-  CLAUDE: 'Claude',
-  GPT: 'GPT',
-  GEMINI: 'Gemini',
-} as const;
-
-type LlmProvider = (typeof LLM_PROVIDER)[keyof typeof LLM_PROVIDER];
-
-const MODEL_PREFIXES: ReadonlyArray<{
-  readonly provider: LlmProvider;
-  readonly pattern: RegExp;
-}> = [
-  { provider: LLM_PROVIDER.CLAUDE, pattern: /^Claude(?=$|[\s-])/ },
-  { provider: LLM_PROVIDER.GPT, pattern: /^GPT(?=$|[\s-])/ },
-  { provider: LLM_PROVIDER.GEMINI, pattern: /^Gemini(?=$|[\s-])/ },
-];
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 const PHONE_PATTERNS = [
   /(?<!\d)01[016789][ .-]?\d{3,4}[ .-]?\d{4}(?!\d)/g,
@@ -97,17 +81,14 @@ export class PromptService {
   constructor(
     @InjectRepository(MemberDepartmentDAO)
     private readonly memberDepartmentRepository: Repository<MemberDepartmentDAO>,
-    @InjectRepository(ActiveApiKeyDAO)
-    private readonly activeApiKeyRepository: Repository<ActiveApiKeyDAO>,
     @InjectRepository(PolicyDAO)
     private readonly policyRepository: Repository<PolicyDAO>,
-    @InjectRepository(LlmDetailModelDAO)
-    private readonly llmDetailModelRepository: Repository<LlmDetailModelDAO>,
+    @InjectRepository(ActiveLlmDAO)
+    private readonly activeLlmRepository: Repository<ActiveLlmDAO>,
     private readonly maskingReportRepository: MaskingReportRepository,
     private readonly promptFileRepository: PromptFileRepository,
     private readonly promptRoomRepository: PromptRoomRepository,
     private readonly objectStorage: MinioObjectStorageService,
-    private readonly nerClient: NerClient,
   ) {}
 
   /** 마스킹 요소 탐지 요청의 전체 비즈니스 흐름을 수행합니다. */
@@ -125,16 +106,44 @@ export class PromptService {
     try {
       const departmentId = await this.resolveDepartmentId(authentication.userId);
       await this.assertModelAccessible(departmentId, dto.model);
-      const policies = await this.findSupportedPolicies(departmentId);
+      await this.maskingReportRepository.validateRequestTickets(
+        dto.ticket,
+        dto.recentTicket,
+        authentication.userId,
+      );
+      await this.assertChatRoomAccessible(
+        dto.chatRoomId,
+        authentication.userId,
+      );
+      const policies = await this.findSupportedPolicies(
+        departmentId,
+        MaskingClass.PRIVATE,
+      );
 
       await this.maskingReportRepository.create(
         dto.ticket,
         authentication.userId,
         dto.text,
-        file !== undefined,
         dto.recentTicket,
       );
       reportCreated = true;
+
+      if (file !== undefined) {
+        finalObjectKey = this.createFinalObjectKey(file);
+        const copiedObject = await this.objectStorage.copyObject({
+          sourceObjectKey: file.objectKey,
+          destinationObjectKey: finalObjectKey,
+          sourceVersionId: file.versionId ?? undefined,
+        });
+        finalObjectVersionId = copiedObject.versionId ?? undefined;
+        const fileUrl = this.objectStorage.getObjectUrl(copiedObject.objectKey);
+        const promptFile = await this.promptFileRepository.create(
+          dto.ticket,
+          fileUrl,
+          file.originalname,
+        );
+        promptFileId = promptFile.promptFileId;
+      }
 
       const policyByContent = new Map(
         policies.map((policy) => [policy.maskingContent, policy] as const),
@@ -149,6 +158,7 @@ export class PromptService {
           originalText: detection.targetText,
           startIdx: detection.startIdx,
           endIdx: detection.endIdx,
+          maskingText: this.maskDetectedText(detection.maskingContent),
           policyId: policyByContent.get(detection.maskingContent)!.policyId,
         })),
       );
@@ -158,52 +168,7 @@ export class PromptService {
       }
       regexCompleted = true;
 
-      if (file !== undefined) {
-        finalObjectKey = this.createFinalObjectKey(dto.ticket);
-        const copiedObject = await this.objectStorage.copyObject({
-          sourceObjectKey: file.objectKey,
-          destinationObjectKey: finalObjectKey,
-          sourceVersionId: file.versionId ?? undefined,
-        });
-        finalObjectVersionId = copiedObject.versionId ?? undefined;
-        const fileUrl = this.objectStorage.getObjectUrl(finalObjectKey);
-        const promptFile = await this.promptFileRepository.create(
-          dto.ticket,
-          fileUrl,
-          file.originalname,
-        );
-        promptFileId = promptFile.promptFileId;
-
-        // NER 서버 연동을 다시 활성화할 때 아래 요청 블록의 주석을 해제합니다.
-        /*
-        const presignedFileUrl = await this.objectStorage.presignedGetObject(
-          finalObjectKey,
-        );
-        await this.nerClient.requestAnalyze({
-          ticket: dto.ticket,
-          text: dto.text,
-          file: {
-            url: presignedFileUrl,
-            contentType: file.contentType,
-            size: file.size,
-            sha256: file.sha256,
-          },
-        });
-        */
-
-        // 콜백이 오지 않아 분석 상태가 영구 PENDING이 되는 것을 방지합니다.
-        const nerCompleted =
-          await this.maskingReportRepository.saveNerDetections(
-            dto.ticket,
-            fileUrl,
-            [],
-          );
-        if (!nerCompleted) {
-          throw new PromptException(
-            PromptErrorStatus.ANALYZE_SERVICE_UNAVAILABLE,
-          );
-        }
-      }
+      // NER 서버가 완성되면 json.text 전송과 ner_status 전이를 이 지점에 추가합니다.
 
       return null;
     } catch (error: unknown) {
@@ -263,12 +228,16 @@ export class PromptService {
       return { policyId: policy.policyId };
     });
 
-    const fileUrl = this.objectStorage.getObjectUrl(
-      this.createFinalObjectKey(dto.ticket),
+    const [promptFile] = await this.promptFileRepository.findByReportId(
+      dto.ticket,
     );
+    if (promptFile === undefined) {
+      throw new PromptException(PromptErrorStatus.INVALID_NER_CALLBACK);
+    }
+
     await this.maskingReportRepository.saveNerDetections(
       dto.ticket,
-      fileUrl,
+      promptFile.fileUrl,
       detections,
     );
     return null;
@@ -344,16 +313,17 @@ export class PromptService {
     authentication: Readonly<AuthenticatedUser>,
   ): Promise<PromptResDTO.ModelList> {
     const departmentId = await this.resolveDepartmentId(authentication.userId);
-    const models = await this.llmDetailModelRepository.find({
-      select: { llmName: true },
-      relations: { activeApiKey: true },
+    const activeLlms = await this.activeLlmRepository.find({
+      select: { llmDetailModel: { llmName: true } },
+      relations: { activeApiKey: true, llmDetailModel: true },
       where: { activeApiKey: { departmentId } },
-      order: { llmName: 'ASC' },
+      order: { llmDetailModel: { llmName: 'ASC' } },
     });
 
-    return models.flatMap((model) =>
-      model.llmName === null ? [] : [model.llmName],
-    );
+    return [...new Set(activeLlms.flatMap((activeLlm) => {
+      const llmName = activeLlm.llmDetailModel.llmName;
+      return llmName === null ? [] : [llmName];
+    }))];
   }
 
   async getRecentAnalyze(
@@ -415,9 +385,7 @@ export class PromptService {
 
     if (
       requestedObjectKey !== storedObjectKey
-      || storedObjectKey !== this.createFinalObjectKey(
-        promptFile.maskingReportId,
-      )
+      || !this.isFinalMaskingObjectKey(storedObjectKey)
     ) {
       throw new PromptException(PromptErrorStatus.NOT_FOUND_FILE);
     }
@@ -458,37 +426,70 @@ export class PromptService {
     departmentId: string,
     model: string,
   ): Promise<void> {
-    const provider = this.resolveModelProvider(model);
-    const activeApiKey = await this.activeApiKeyRepository.findOne({
-      select: { activeApiKeyId: true },
-      where: { departmentId, serviceType: provider },
+    const service = this.resolveModelService(model);
+    const activeLlm = await this.activeLlmRepository.findOne({
+      select: { activeLlmId: true },
+      where: {
+        activeApiKey: { departmentId, serviceType: service },
+        llmDetailModel: { llmName: model },
+      },
     });
 
-    if (activeApiKey === null) {
+    if (activeLlm === null) {
       this.throwForbiddenModel();
     }
   }
 
-  private resolveModelProvider(model: string): LlmProvider {
-    const match = MODEL_PREFIXES.find(({ pattern }) => pattern.test(model));
+  private resolveModelService(model: string): LlmService {
+    const service = resolveLlmServiceFromModelName(model);
 
-    if (match === undefined) {
+    if (service === null) {
       this.throwForbiddenModel();
     }
 
-    return match.provider;
+    return service;
+  }
+
+  private async assertChatRoomAccessible(
+    chatRoomId: string,
+    memberId: number,
+  ): Promise<void> {
+    const exists = await this.promptRoomRepository.existsByIdAndMemberId(
+      chatRoomId,
+      String(memberId),
+    );
+    if (!exists) {
+      throw new PromptException(PromptErrorStatus.NOT_FOUND_CHAT_ROOM);
+    }
   }
 
   private async findSupportedPolicies(
     departmentId: string,
+    maskingClass?: MaskingClass,
   ): Promise<DepartmentMaskingPolicy[]> {
+    const where = maskingClass === undefined
+      ? {
+        isActive: true,
+        departmentPolicies: {
+          departmentId,
+          isActive: true,
+        },
+      }
+      : {
+        isActive: true,
+        maskingClass,
+        departmentPolicies: {
+          departmentId,
+          isActive: true,
+        },
+      };
     const policies = await this.policyRepository.find({
       select: {
         policyId: true,
         maskingContent: true,
         maskingClass: true,
       },
-      where: { departmentId, isActive: true },
+      where,
       order: { policyId: 'ASC' },
     });
     const selectedContents = new Set<MaskingContent>();
@@ -735,8 +736,55 @@ export class PromptService {
     );
   }
 
-  private createFinalObjectKey(ticket: string): string {
-    return `${MASKING_OBJECT_PREFIX}/${ticket}/source`;
+  private maskDetectedText(maskingContent: MaskingContent): string {
+    return `[ ${this.toMaskingLabel(maskingContent)} ]`;
+  }
+
+  private toMaskingLabel(maskingContent: MaskingContent): string {
+    switch (maskingContent) {
+      case MASKING_CONTENT.PHONE:
+        return '전화번호';
+      case MASKING_CONTENT.RESIDENT:
+        return '주민등록번호';
+      case MASKING_CONTENT.CARD:
+        return '카드번호';
+      case MASKING_CONTENT.EMAIL:
+        return '이메일';
+      case MASKING_CONTENT.API_KEY:
+        return 'API Key';
+    }
+  }
+
+  private createFinalObjectKey(file: StoredPromptFile): string {
+    const separatorIndex = file.objectKey.lastIndexOf('/');
+    const objectName = file.objectKey.slice(separatorIndex + 1);
+    if (!objectName.endsWith(file.extension)) {
+      throw new Error('임시 파일 객체 이름이 올바르지 않습니다.');
+    }
+
+    const id = objectName.slice(0, -file.extension.length);
+    if (!UUID_PATTERN.test(id)) {
+      throw new Error('임시 파일 객체 이름이 올바르지 않습니다.');
+    }
+
+    return `${MASKING_OBJECT_PREFIX}/${id.toLowerCase()}${file.extension}`;
+  }
+
+  private isFinalMaskingObjectKey(objectKey: string): boolean {
+    const prefix = `${MASKING_OBJECT_PREFIX}/`;
+    if (!objectKey.startsWith(prefix)) {
+      return false;
+    }
+
+    const objectName = objectKey.slice(prefix.length);
+    const extension = ['.pdf', '.jpg', '.png'].find((candidate) =>
+      objectName.endsWith(candidate)
+    );
+    if (extension === undefined) {
+      return false;
+    }
+
+    return UUID_PATTERN.test(objectName.slice(0, -extension.length));
   }
 
   private async safeCancelRegex(ticket: string): Promise<void> {
@@ -781,10 +829,6 @@ export class PromptService {
   private normalizeRequestError(error: unknown): GatewayException {
     if (error instanceof GatewayException) {
       return error;
-    }
-
-    if (error instanceof NerRequestException) {
-      return new PromptException(PromptErrorStatus.NER_SERVER_ERROR);
     }
 
     return new PromptException(PromptErrorStatus.ANALYZE_SERVICE_UNAVAILABLE);

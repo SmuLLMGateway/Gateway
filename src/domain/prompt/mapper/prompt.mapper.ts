@@ -70,7 +70,7 @@ export class PromptMapper {
       startIdx: data.startIdx,
       endIdx: data.endIdx,
       fileUrl: data.fileUrl,
-      maskingText: null,
+      maskingText: data.maskingText,
       maskingReportId: data.maskingReportId,
       policyId: data.policyId,
     });

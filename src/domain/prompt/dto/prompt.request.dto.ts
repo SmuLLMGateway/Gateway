@@ -33,7 +33,7 @@ export namespace PromptReqDTO {
 
         @ApiProperty({
             example: '840c66ce-0b5d-4663-bc63-b4c4666cd0f5',
-            description: '채팅방 ID',
+            description: '요청자가 소유한 채팅방 ID',
             format: 'uuid'
         })
         chatRoomId!: string;

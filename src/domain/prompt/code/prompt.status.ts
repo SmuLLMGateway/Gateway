@@ -133,6 +133,11 @@ export const PromptErrorStatus = {
         code: 'PROM404_5',
         message: '해당 직전 마스킹 요소 탐지 요청이 없습니다.'
     },
+    NOT_FOUND_CHAT_ROOM: {
+        httpStatus: HttpStatus.NOT_FOUND,
+        code: 'PROM404_6',
+        message: '해당 채팅방을 찾을 수 없습니다.'
+    },
     NER_SERVER_ERROR: {
         httpStatus: HttpStatus.BAD_GATEWAY,
         code: 'PROM502_1',

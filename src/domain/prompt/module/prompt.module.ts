@@ -2,8 +2,10 @@ import { Module } from '@nestjs/common';
 import { MulterModule } from '@nestjs/platform-express';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ActiveApiKeyDAO } from '../../admin/dao/active-api-key.dao.js';
+import { ActiveLlmDAO } from '../../admin/dao/active-llm.dao.js';
 import { PolicyDAO } from '../../admin/dao/policy.dao.js';
 import { LlmDetailModelDAO } from '../../admin/dao/llm-detail-model.dao.js';
+import { DepartmentPolicyDAO } from '../../admin/dao/department-policy.dao.js';
 import { MemberDepartmentDAO } from '../../user/dao/member-department.dao.js';
 import { ObjectStorageModule } from '../../../global/storage/module/object-storage.module.js';
 import { MinioObjectStorageService } from '../../../global/storage/service/minio-object-storage.service.js';
@@ -35,6 +37,8 @@ import { MAX_PROMPT_FILE_SIZE_BYTES } from '../type/stored-prompt-file.type.js';
   imports: [
     TypeOrmModule.forFeature([
       ActiveApiKeyDAO,
+      ActiveLlmDAO,
+      DepartmentPolicyDAO,
       LlmDetailModelDAO,
       MaskingDetailDAO,
       MaskingReportDAO,

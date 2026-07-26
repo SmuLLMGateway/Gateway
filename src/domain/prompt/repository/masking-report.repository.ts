@@ -23,31 +23,14 @@ export class MaskingReportRepository {
     ticket: string,
     memberId: number,
     originalText: string,
-    hasFile: boolean,
     recentTicket: string | null,
   ): Promise<void> {
-    if (recentTicket !== null) {
-      const recentReport = await this.dataSource
-        .getRepository(MaskingReportDAO)
-        .findOne({
-          select: { maskingReportId: true },
-          where: {
-            maskingReportId: recentTicket,
-            memberId: String(memberId),
-          },
-        });
-      if (recentReport === null) {
-        throw new PromptException(PromptErrorStatus.NOT_FOUND_RECENT_TICKET);
-      }
-    }
-
     const report = this.promptMapper.toMaskingReportDAO({
       maskingReportId: ticket,
       status: MaskingReportStatus.PENDING,
       regexStatus: MaskingReportStatus.PENDING,
-      nerStatus: hasFile
-        ? MaskingReportStatus.PENDING
-        : MaskingReportStatus.DONE,
+      // NER 요청이 비활성화된 동안에는 미처리 상태로 남기지 않습니다.
+      nerStatus: MaskingReportStatus.DONE,
       memberId: String(memberId),
       originalText,
       recentMaskingReportId: recentTicket,
@@ -64,6 +47,36 @@ export class MaskingReportRepository {
     }
   }
 
+  async validateRequestTickets(
+    ticket: string,
+    recentTicket: string | null,
+    memberId: number,
+  ): Promise<void> {
+    const repository = this.dataSource.getRepository(MaskingReportDAO);
+    const existingReport = await repository.findOne({
+      select: { maskingReportId: true },
+      where: { maskingReportId: ticket },
+    });
+    if (existingReport !== null) {
+      throw new PromptException(PromptErrorStatus.DUPLICATED_TICKET);
+    }
+
+    if (recentTicket === null) {
+      return;
+    }
+
+    const recentReport = await repository.findOne({
+      select: { maskingReportId: true },
+      where: {
+        maskingReportId: recentTicket,
+        memberId: String(memberId),
+      },
+    });
+    if (recentReport === null) {
+      throw new PromptException(PromptErrorStatus.NOT_FOUND_RECENT_TICKET);
+    }
+  }
+
   async saveRegexDetections(
     ticket: string,
     detections: readonly Readonly<PromptData.RegexDetection>[],
@@ -76,6 +89,7 @@ export class MaskingReportRepository {
         startIdx: detection.startIdx,
         endIdx: detection.endIdx,
         fileUrl: null,
+        maskingText: detection.maskingText,
         maskingReportId: ticket,
         policyId: detection.policyId,
       })),
@@ -211,6 +225,7 @@ export class MaskingReportRepository {
         startIdx: null,
         endIdx: null,
         fileUrl,
+        maskingText: null,
         maskingReportId: ticket,
         policyId: detection.policyId,
       })),

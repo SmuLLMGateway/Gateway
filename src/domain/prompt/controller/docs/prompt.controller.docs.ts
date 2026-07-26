@@ -216,6 +216,7 @@ const analyzeRequestErrors = () =>
     PromptErrorStatus.DUPLICATED_TICKET,
     PromptErrorStatus.FORBIDDEN_LLM_MODEL,
     PromptErrorStatus.NOT_FOUND_RECENT_TICKET,
+    PromptErrorStatus.NOT_FOUND_CHAT_ROOM,
     tokenExpiredStatus,
     ErrorStatus.INTERNAL_SERVER_ERROR,
   ]);

@@ -13,6 +13,18 @@ export class PromptRoomRepository {
     private readonly repository: Repository<PromptRoomDAO>,
   ) {}
 
+  async existsByIdAndMemberId(
+    chatRoomId: string,
+    memberId: string,
+  ): Promise<boolean> {
+    return this.repository.exists({
+      where: {
+        promptRoomId: chatRoomId,
+        memberId,
+      },
+    });
+  }
+
   async findRecentByMemberId(
     memberId: string,
   ): Promise<readonly PromptData.RecentPrompt[]> {

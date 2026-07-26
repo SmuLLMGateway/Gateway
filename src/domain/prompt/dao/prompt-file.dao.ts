@@ -28,6 +28,7 @@ export class PromptFileDAO {
     collation: 'ascii_bin',
     nullable: false,
   })
+  /** `s3://{bucket}/{objectKey}` 형식으로 버킷과 객체명을 함께 보존합니다. */
   fileUrl!: string;
 
   @Column({
