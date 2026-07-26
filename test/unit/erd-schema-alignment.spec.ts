@@ -1,8 +1,11 @@
 import 'reflect-metadata';
 import { getMetadataArgsStorage } from 'typeorm';
+import { ActiveLlmDAO } from '../../src/domain/admin/dao/active-llm.dao.js';
 import { LlmDetailModelDAO } from '../../src/domain/admin/dao/llm-detail-model.dao.js';
 import { ActiveApiKeyDAO } from '../../src/domain/admin/dao/active-api-key.dao.js';
 import { PolicyDAO } from '../../src/domain/admin/dao/policy.dao.js';
+import { DepartmentDAO } from '../../src/domain/admin/dao/department.dao.js';
+import { DepartmentPolicyDAO } from '../../src/domain/admin/dao/department-policy.dao.js';
 import { MemberLimitDAO } from '../../src/domain/user/dao/member-limit.dao.js';
 import { MemberDepartmentDAO } from '../../src/domain/user/dao/member-department.dao.js';
 import { MemberDAO } from '../../src/domain/user/dao/member.dao.js';
@@ -16,29 +19,76 @@ import { MASKING_CONTENT } from '../../src/domain/prompt/type/masking-content.ty
 describe('ERD schema alignment', () => {
   const metadata = getMetadataArgsStorage();
 
-  it('llm_detail_model 엔티티와 active_api_key 외래 키를 등록한다', () => {
+  it('active_llm 연결 엔티티가 active_api_key와 llm_detail_model을 필수로 참조한다', () => {
+    const table = metadata.tables.find(
+      (candidate) => candidate.target === ActiveLlmDAO,
+    );
+    const expectedColumns = [
+      ['activeLlmId', { name: 'active_llm_id', type: 'bigint' }],
+      ['activeApiKeyId', { name: 'active_api_key_id', type: 'bigint' }],
+      ['llmDetailModelId', { name: 'llm_detail_model_id', type: 'bigint' }],
+    ] as const;
+
+    expect(table?.name).toBe('active_llm');
+    for (const [propertyName, expected] of expectedColumns) {
+      const column = metadata.columns.find(
+        (candidate) =>
+          candidate.target === ActiveLlmDAO
+          && candidate.propertyName === propertyName,
+      );
+      expect(column?.options).toMatchObject(expected);
+    }
+
+    const relations = [
+      ['activeApiKey', 'active_api_key_id'],
+      ['llmDetailModel', 'llm_detail_model_id'],
+    ] as const;
+    for (const [propertyName, columnName] of relations) {
+      const relation = metadata.relations.find(
+        (candidate) =>
+          candidate.target === ActiveLlmDAO
+          && candidate.propertyName === propertyName,
+      );
+      const joinColumn = metadata.joinColumns.find(
+        (candidate) =>
+          candidate.target === ActiveLlmDAO
+          && candidate.propertyName === propertyName,
+      );
+      expect(relation?.relationType).toBe('many-to-one');
+      expect(relation?.options.nullable).toBe(false);
+      expect(joinColumn?.name).toBe(columnName);
+    }
+
+    const activeLlmUniqueIndex = metadata.indices.find(
+      (candidate) =>
+        candidate.target === ActiveLlmDAO
+        && candidate.name === 'UQ_active_llm_active_key_detail_model',
+    );
+    expect(activeLlmUniqueIndex?.unique).toBe(true);
+    expect(activeLlmUniqueIndex?.columns).toEqual([
+      'activeApiKeyId',
+      'llmDetailModelId',
+    ]);
+  });
+
+  it('llm_detail_model은 active_api_key 직접 외래 키 없이 공통 모델을 보관한다', () => {
     const table = metadata.tables.find(
       (candidate) => candidate.target === LlmDetailModelDAO,
     );
     const nameColumn = metadata.columns.find(
       (candidate) =>
-        candidate.target === LlmDetailModelDAO &&
-        candidate.propertyName === 'llmName',
+        candidate.target === LlmDetailModelDAO
+        && candidate.propertyName === 'llmName',
     );
     const activeApiKeyColumn = metadata.columns.find(
       (candidate) =>
-        candidate.target === LlmDetailModelDAO &&
-        candidate.propertyName === 'activeApiKeyId',
+        candidate.target === LlmDetailModelDAO
+        && candidate.propertyName === 'activeApiKeyId',
     );
-    const relation = metadata.relations.find(
+    const activeApiKeyRelation = metadata.relations.find(
       (candidate) =>
-        candidate.target === LlmDetailModelDAO &&
-        candidate.propertyName === 'activeApiKey',
-    );
-    const joinColumn = metadata.joinColumns.find(
-      (candidate) =>
-        candidate.target === LlmDetailModelDAO &&
-        candidate.propertyName === 'activeApiKey',
+        candidate.target === LlmDetailModelDAO
+        && candidate.propertyName === 'activeApiKey',
     );
 
     expect(table?.name).toBe('llm_detail_model');
@@ -48,13 +98,22 @@ describe('ERD schema alignment', () => {
       length: 50,
       nullable: true,
     });
-    expect(activeApiKeyColumn?.options).toMatchObject({
-      name: 'active_api_key_id',
+    expect(activeApiKeyColumn).toBeUndefined();
+    expect(activeApiKeyRelation).toBeUndefined();
+  });
+
+  it('active_api_key에 부서별 무제한 한도값을 위한 department_limit 컬럼을 둔다', () => {
+    const departmentLimitColumn = metadata.columns.find(
+      (candidate) =>
+        candidate.target === ActiveApiKeyDAO
+        && candidate.propertyName === 'departmentLimit',
+    );
+
+    expect(departmentLimitColumn?.options).toMatchObject({
+      name: 'department_limit',
       type: 'bigint',
+      default: 0,
     });
-    expect(relation?.relationType).toBe('many-to-one');
-    expect(relation?.options.nullable).toBe(false);
-    expect(joinColumn?.name).toBe('active_api_key_id');
   });
 
   it('prompt_log가 masking_report를 필수 일대일 관계로 참조한다', () => {
@@ -184,7 +243,7 @@ describe('ERD schema alignment', () => {
   it('업무상 중복이 허용되지 않는 복합 키에 unique index를 등록한다', () => {
     const expected = [
       [ActiveApiKeyDAO, 'UQ_active_api_key_department_service'],
-      [LlmDetailModelDAO, 'UQ_llm_detail_model_active_key_name'],
+      [ActiveLlmDAO, 'UQ_active_llm_active_key_detail_model'],
       [MemberDepartmentDAO, 'UQ_member_department_member_department'],
       [MemberLimitDAO, 'UQ_member_limit_member_active_key'],
       [PromptFileDAO, 'UQ_prompt_file_file_url'],
@@ -254,5 +313,84 @@ describe('ERD schema alignment', () => {
     expect(maskingContentColumn?.options.enum).toEqual(
       Object.values(MASKING_CONTENT),
     );
+  });
+
+  it('부서와 정책의 N:N 관계를 department_policy 연결 엔티티로 등록한다', () => {
+    const table = metadata.tables.find(
+      (candidate) => candidate.target === DepartmentPolicyDAO,
+    );
+    const expectedColumns = [
+      ['departmentPolicyId', {
+        name: 'department_policy_id',
+        type: 'bigint',
+      }],
+      ['isActive', {
+        name: 'is_active',
+        type: 'boolean',
+      }],
+      ['departmentId', {
+        name: 'department_id',
+        type: 'bigint',
+      }],
+      ['policyId', {
+        name: 'policy_id',
+        type: 'bigint',
+      }],
+    ] as const;
+
+    expect(table?.name).toBe('department_policy');
+    for (const [propertyName, expected] of expectedColumns) {
+      const column = metadata.columns.find(
+        (candidate) =>
+          candidate.target === DepartmentPolicyDAO
+          && candidate.propertyName === propertyName,
+      );
+      expect(column?.options).toMatchObject(expected);
+    }
+
+    const relations = [
+      ['department', 'department_id'],
+      ['policy', 'policy_id'],
+    ] as const;
+    for (const [propertyName, columnName] of relations) {
+      const relation = metadata.relations.find(
+        (candidate) =>
+          candidate.target === DepartmentPolicyDAO
+          && candidate.propertyName === propertyName,
+      );
+      const joinColumn = metadata.joinColumns.find(
+        (candidate) =>
+          candidate.target === DepartmentPolicyDAO
+          && candidate.propertyName === propertyName,
+      );
+      expect(relation?.relationType).toBe('many-to-one');
+      expect(relation?.options.nullable).toBe(false);
+      expect(joinColumn?.name).toBe(columnName);
+    }
+
+    for (const target of [DepartmentDAO, PolicyDAO]) {
+      const inverseRelation = metadata.relations.find(
+        (candidate) =>
+          candidate.target === target
+          && candidate.propertyName === 'departmentPolicies',
+      );
+      expect(inverseRelation?.relationType).toBe('one-to-many');
+    }
+  });
+
+  it('policy에서 기존 department_id 직접 외래 키를 제거한다', () => {
+    const departmentIdColumn = metadata.columns.find(
+      (candidate) =>
+        candidate.target === PolicyDAO
+        && candidate.propertyName === 'departmentId',
+    );
+    const departmentRelation = metadata.relations.find(
+      (candidate) =>
+        candidate.target === PolicyDAO
+        && candidate.propertyName === 'department',
+    );
+
+    expect(departmentIdColumn).toBeUndefined();
+    expect(departmentRelation).toBeUndefined();
   });
 });

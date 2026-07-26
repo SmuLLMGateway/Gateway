@@ -342,7 +342,6 @@ const IN_PROGRESS_OPERATION_IDS: ReadonlySet<string> = new Set([
   'UserController_getMessageHistory',
   'UserController_getUserInfo',
   'UserController_getMessageHistorySummary',
-  'AdminController_validateAndRegisterLlmApiKey',
   'AdminController_syncDepartmentPolicies',
   'AdminController_getUserAccountList',
   'AdminController_getUserAccountDetail',
@@ -441,7 +440,7 @@ describe('Swagger와 Notion API 명세 정합성', () => {
       EXPECTED_OPERATIONS.map(({ operationId }) => operationId),
     );
 
-    expect(IN_PROGRESS_OPERATION_IDS.size).toBe(36);
+    expect(IN_PROGRESS_OPERATION_IDS.size).toBe(35);
     for (const operationId of IN_PROGRESS_OPERATION_IDS) {
       expect(knownOperationIds.has(operationId)).toBe(true);
     }

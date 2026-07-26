@@ -4,6 +4,7 @@ import { PromptRoomRepository } from '../../src/domain/prompt/repository/prompt-
 
 describe('PromptRoomRepository', () => {
   const typeormRepository = {
+    exists: jest.fn(),
     find: jest.fn(),
   };
   const repository = new PromptRoomRepository(
@@ -13,6 +14,27 @@ describe('PromptRoomRepository', () => {
   beforeEach(() => {
     jest.clearAllMocks();
   });
+
+  it.each([true, false])(
+    '채팅방 ID와 회원 ID의 소유 관계 존재 여부를 %s로 반환한다',
+    async (exists) => {
+      typeormRepository.exists.mockResolvedValueOnce(exists);
+
+      await expect(
+        repository.existsByIdAndMemberId(
+          '840c66ce-0b5d-4663-bc63-b4c4666cd0f5',
+          '42',
+        ),
+      ).resolves.toBe(exists);
+
+      expect(typeormRepository.exists).toHaveBeenCalledWith({
+        where: {
+          promptRoomId: '840c66ce-0b5d-4663-bc63-b4c4666cd0f5',
+          memberId: '42',
+        },
+      });
+    },
+  );
 
   it('회원의 최근 채팅방을 활동 시각과 ID 내림차순으로 최대 10개 조회한다', async () => {
     const startedAt = new Date('2026-07-19T17:33:30.000Z');

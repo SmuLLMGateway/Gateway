@@ -3,8 +3,7 @@ import { Reflector } from '@nestjs/core';
 import { Test } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import request from 'supertest';
-import { ActiveApiKeyDAO } from '../../src/domain/admin/dao/active-api-key.dao.js';
-import { LlmDetailModelDAO } from '../../src/domain/admin/dao/llm-detail-model.dao.js';
+import { ActiveLlmDAO } from '../../src/domain/admin/dao/active-llm.dao.js';
 import {
   MaskingClass,
   PolicyDAO,
@@ -34,23 +33,24 @@ import { MinioObjectStorageService } from '../../src/global/storage/service/mini
 describe('NER 분석 결과 콜백 HTTP API', () => {
   const ticket = 'a81cc17e-e10a-46ae-8113-dceffb932d6c';
   const callbackSecret = 'test-ner-callback-secret';
-  const finalObjectKey = `masking/${ticket}/source`;
-  const fileUrl = `s3://gateway-test/${finalObjectKey}`;
+  const fileUrl =
+    's3://gateway-test/masking/ce92a790-1622-41d9-b39f-fc7054ed2865.pdf';
   const maskingReportRepository = {
     cancelNer: jest.fn(),
     findMemberId: jest.fn(),
     saveNerDetections: jest.fn(),
   };
+  const promptFileRepository = {
+    findByReportId: jest.fn(),
+  };
   const memberDepartmentRepository = {
     findOne: jest.fn(),
   };
-  const activeApiKeyRepository = {
+  const activeLlmRepository = {
     findOne: jest.fn(),
-  };
-  const policyRepository = {
     find: jest.fn(),
   };
-  const llmDetailModelRepository = {
+  const policyRepository = {
     find: jest.fn(),
   };
   const tokenService = {
@@ -59,9 +59,7 @@ describe('NER 분석 결과 콜백 HTTP API', () => {
   const principalService = {
     getAuthenticatedUser: jest.fn(),
   };
-  const objectStorage = {
-    getObjectUrl: jest.fn(),
-  };
+  const objectStorage = {};
 
   let app: INestApplication;
 
@@ -86,7 +84,7 @@ describe('NER 분석 결과 콜백 HTTP API', () => {
         },
         {
           provide: PromptFileRepository,
-          useValue: {},
+          useValue: promptFileRepository,
         },
         {
           provide: PromptRoomRepository,
@@ -97,16 +95,12 @@ describe('NER 분석 결과 콜백 HTTP API', () => {
           useValue: memberDepartmentRepository,
         },
         {
-          provide: getRepositoryToken(ActiveApiKeyDAO),
-          useValue: activeApiKeyRepository,
+          provide: getRepositoryToken(ActiveLlmDAO),
+          useValue: activeLlmRepository,
         },
         {
           provide: getRepositoryToken(PolicyDAO),
           useValue: policyRepository,
-        },
-        {
-          provide: getRepositoryToken(LlmDetailModelDAO),
-          useValue: llmDetailModelRepository,
         },
         { provide: MinioObjectStorageService, useValue: objectStorage },
         { provide: NerClient, useValue: {} },
@@ -134,9 +128,16 @@ describe('NER 분석 결과 콜백 HTTP API', () => {
     maskingReportRepository.findMemberId.mockResolvedValue('42');
     maskingReportRepository.saveNerDetections.mockResolvedValue(true);
     maskingReportRepository.cancelNer.mockResolvedValue(true);
-    objectStorage.getObjectUrl.mockReturnValue(fileUrl);
+    promptFileRepository.findByReportId.mockResolvedValue([
+      {
+        promptFileId: '52',
+        fileUrl,
+        fileOriginalName: '[A사] 협력 파트너십 계약서.pdf',
+        maskingReportId: ticket,
+      },
+    ]);
     memberDepartmentRepository.findOne.mockResolvedValue({ departmentId: '10' });
-    activeApiKeyRepository.findOne.mockResolvedValue({ activeApiKeyId: '100' });
+    activeLlmRepository.findOne.mockResolvedValue({ activeLlmId: '100' });
     policyRepository.find.mockResolvedValue([
       {
         policyId: '101',
@@ -176,7 +177,13 @@ describe('NER 분석 결과 콜백 HTTP API', () => {
         maskingContent: true,
         maskingClass: true,
       },
-      where: { departmentId: '10', isActive: true },
+      where: {
+        isActive: true,
+        departmentPolicies: {
+          departmentId: '10',
+          isActive: true,
+        },
+      },
       order: { policyId: 'ASC' },
     });
     expect(maskingReportRepository.saveNerDetections).toHaveBeenCalledWith(
@@ -184,7 +191,7 @@ describe('NER 분석 결과 콜백 HTTP API', () => {
       fileUrl,
       [{ policyId: '101' }, { policyId: '102' }],
     );
-    expect(objectStorage.getObjectUrl).toHaveBeenCalledWith(finalObjectKey);
+    expect(promptFileRepository.findByReportId).toHaveBeenCalledWith(ticket);
     expect(response.body).toEqual({
       isSuccess: true,
       code: 'PROM200_11',
@@ -207,7 +214,7 @@ describe('NER 분석 결과 콜백 HTTP API', () => {
     expect(maskingReportRepository.cancelNer).toHaveBeenCalledWith(ticket);
     expect(maskingReportRepository.findMemberId).not.toHaveBeenCalled();
     expect(maskingReportRepository.saveNerDetections).not.toHaveBeenCalled();
-    expect(objectStorage.getObjectUrl).not.toHaveBeenCalled();
+    expect(promptFileRepository.findByReportId).not.toHaveBeenCalled();
     expect(response.body.code).toBe('PROM200_11');
   });
 
@@ -241,7 +248,7 @@ describe('NER 분석 결과 콜백 HTTP API', () => {
     }).expect(400);
 
     expect(maskingReportRepository.saveNerDetections).not.toHaveBeenCalled();
-    expect(objectStorage.getObjectUrl).not.toHaveBeenCalled();
+    expect(promptFileRepository.findByReportId).not.toHaveBeenCalled();
     expect(response.body).toEqual({
       isSuccess: false,
       code: 'PROM400_4',
@@ -261,7 +268,7 @@ describe('NER 분석 결과 콜백 HTTP API', () => {
     expect(memberDepartmentRepository.findOne).not.toHaveBeenCalled();
     expect(policyRepository.find).not.toHaveBeenCalled();
     expect(maskingReportRepository.saveNerDetections).not.toHaveBeenCalled();
-    expect(objectStorage.getObjectUrl).not.toHaveBeenCalled();
+    expect(promptFileRepository.findByReportId).not.toHaveBeenCalled();
     expect(response.body).toEqual({
       isSuccess: false,
       code: 'PROM404_1',
@@ -310,12 +317,12 @@ describe('NER 분석 결과 콜백 HTTP API', () => {
       maskingReportRepository.cancelNer,
       maskingReportRepository.findMemberId,
       maskingReportRepository.saveNerDetections,
+      promptFileRepository.findByReportId,
       memberDepartmentRepository.findOne,
-      activeApiKeyRepository.findOne,
+      activeLlmRepository.findOne,
       policyRepository.find,
       tokenService.verifyAccessToken,
       principalService.getAuthenticatedUser,
-      objectStorage.getObjectUrl,
     ];
 
     mocks.forEach((mock) => mock.mockReset());

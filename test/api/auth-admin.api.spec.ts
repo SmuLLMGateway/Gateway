@@ -7,7 +7,10 @@ import { DataSource, QueryFailedError } from 'typeorm';
 import type { EntityManager } from 'typeorm';
 import { DepartmentDAO } from '../../src/domain/admin/dao/department.dao.js';
 import { ActiveApiKeyDAO } from '../../src/domain/admin/dao/active-api-key.dao.js';
+import { ActiveLlmDAO } from '../../src/domain/admin/dao/active-llm.dao.js';
+import { LlmDetailModelDAO } from '../../src/domain/admin/dao/llm-detail-model.dao.js';
 import { MaskingClass, PolicyDAO } from '../../src/domain/admin/dao/policy.dao.js';
+import { DepartmentPolicyDAO } from '../../src/domain/admin/dao/department-policy.dao.js';
 import { AdminController } from '../../src/domain/admin/controller/admin.controller.js';
 import { AdminMapper } from '../../src/domain/admin/mapper/admin.mapper.js';
 import { AdminService } from '../../src/domain/admin/service/admin.service.js';
@@ -102,10 +105,22 @@ describe('로그인/회원 생성 HTTP API', () => {
     findOneBy: jest.fn(),
     save: jest.fn(),
   };
+  const activeLlmRepository = {
+    upsert: jest.fn(),
+  };
+  const llmDetailModelRepository = {
+    find: jest.fn(),
+  };
   const policyRepository = {
     delete: jest.fn(),
     find: jest.fn(),
+    findOne: jest.fn(),
     findOneBy: jest.fn(),
+    save: jest.fn(),
+  };
+  const departmentPolicyRepository = {
+    create: jest.fn(),
+    find: jest.fn(),
     save: jest.fn(),
   };
   const apiKeyValidationClient = {
@@ -169,6 +184,14 @@ describe('로그인/회원 생성 HTTP API', () => {
         {
           provide: getRepositoryToken(ActiveApiKeyDAO),
           useValue: activeApiKeyRepository,
+        },
+        {
+          provide: getRepositoryToken(ActiveLlmDAO),
+          useValue: activeLlmRepository,
+        },
+        {
+          provide: getRepositoryToken(LlmDetailModelDAO),
+          useValue: llmDetailModelRepository,
         },
         {
           provide: getRepositoryToken(PolicyDAO),
@@ -283,12 +306,21 @@ describe('로그인/회원 생성 HTTP API', () => {
     );
     activeApiKeyRepository.findOneBy.mockResolvedValue(null);
     activeApiKeyRepository.save.mockImplementation(
-      async (apiKey: ActiveApiKeyDAO) => apiKey,
+      async (apiKey: ActiveApiKeyDAO) => {
+        apiKey.activeApiKeyId ||= '71';
+        return apiKey;
+      },
     );
+    activeLlmRepository.upsert.mockResolvedValue(undefined);
+    llmDetailModelRepository.find.mockResolvedValue([
+      { llmDetailModelId: '301', llmName: 'gpt-4.1' },
+      { llmDetailModelId: '302', llmName: 'GPT-4o' },
+    ]);
     apiKeyValidationClient.validate.mockResolvedValue(
       LlmApiKeyValidationResult.VALID,
     );
     policyRepository.findOneBy.mockResolvedValue(null);
+    policyRepository.findOne.mockResolvedValue(null);
     policyRepository.find.mockResolvedValue([]);
     policyRepository.delete.mockResolvedValue({ affected: 1 });
     policyRepository.save.mockImplementation(async (value: PolicyDAO | PolicyDAO[]) => {
@@ -301,18 +333,38 @@ describe('로그인/회원 생성 HTTP API', () => {
         : saveOne(value);
     });
     adminMapper.toPolicyDAO.mockImplementation(
-      (data: Omit<PolicyDAO, 'policyId' | 'department' | 'isActive'>) => ({
+      (data: Omit<PolicyDAO, 'policyId' | 'departmentPolicies' | 'isActive'>) => ({
         policyId: '',
         isActive: true,
         ...data,
       }),
+    );
+    departmentPolicyRepository.find.mockResolvedValue([]);
+    departmentPolicyRepository.create.mockImplementation(
+      (
+        data: Omit<
+          DepartmentPolicyDAO,
+          'departmentPolicyId' | 'department'
+        >,
+      ): DepartmentPolicyDAO => ({
+        departmentPolicyId: '',
+        ...data,
+      } as DepartmentPolicyDAO),
+    );
+    departmentPolicyRepository.save.mockImplementation(
+      async (items: DepartmentPolicyDAO[]): Promise<DepartmentPolicyDAO[]> =>
+        items,
     );
     apiKeyEncryption.encrypt.mockReturnValue('v1.encrypted-api-key');
     entityManager.getRepository.mockImplementation((entity: unknown) => {
       if (entity === DepartmentDAO) return departmentRepository;
       if (entity === MemberDAO) return memberRepository;
       if (entity === MemberDepartmentDAO) return memberDepartmentRepository;
+      if (entity === ActiveApiKeyDAO) return activeApiKeyRepository;
+      if (entity === ActiveLlmDAO) return activeLlmRepository;
+      if (entity === LlmDetailModelDAO) return llmDetailModelRepository;
       if (entity === PolicyDAO) return policyRepository;
+      if (entity === DepartmentPolicyDAO) return departmentPolicyRepository;
       throw new Error('예상하지 못한 Repository입니다.');
     });
     dataSource.transaction.mockImplementation(
@@ -913,50 +965,96 @@ describe('로그인/회원 생성 HTTP API', () => {
   });
 
   describe('POST /admin/v1/departments/:departmentId/apis', () => {
-    const registerDto = { apiKey: 'sk-valid-key', service: LlmProvider.GPT };
+    const registerDto = { apiKey: 'sk-valid-key', service: 'oPeNaI' };
 
-    it('provider에서 검증된 키를 부서 활성 키로 저장한다', async () => {
-      const response = await request(app.getHttpServer())
-        .post('/admin/v1/departments/10/apis')
-        .set('Authorization', 'Bearer total-token')
-        .send({ ...registerDto, departmentId: 999 })
-        .expect(201);
+    it.each([
+      {
+        service: 'gOoGlE',
+        canonicalService: 'Google',
+        provider: LlmProvider.GEMINI,
+        model: 'gemini-2.5-pro',
+      },
+      {
+        service: 'oPeNaI',
+        canonicalService: 'OpenAI',
+        provider: LlmProvider.GPT,
+        model: 'gpt-4.1',
+      },
+      {
+        service: 'ANTHROPIC',
+        canonicalService: 'Anthropic',
+        provider: LlmProvider.CLAUDE,
+        model: 'claude-sonnet-4',
+      },
+    ])(
+      '$service 입력을 검증·암호화 provider로 변환하고 canonical $canonicalService 키와 모델 연결을 저장한다',
+      async ({ service, canonicalService, provider, model }) => {
+        llmDetailModelRepository.find.mockResolvedValueOnce([
+          { llmDetailModelId: '301', llmName: model },
+        ]);
 
-      expect(memberDepartmentRepository.findOne).not.toHaveBeenCalled();
-      expect(departmentRepository.findOneBy).toHaveBeenCalledWith({
-        departmentId: '10',
-      });
-      expect(apiKeyValidationClient.validate).toHaveBeenCalledWith(
-        LlmProvider.GPT,
-        registerDto.apiKey,
-      );
-      expect(apiKeyEncryption.encrypt).toHaveBeenCalledWith(
-        registerDto.apiKey,
-        '10',
-        LlmProvider.GPT,
-      );
-      expect(activeApiKeyRepository.findOneBy).toHaveBeenCalledWith({
-        departmentId: '10',
-        serviceType: LlmProvider.GPT,
-      });
-      expect(activeApiKeyRepository.save).toHaveBeenCalledWith(
-        expect.objectContaining({
-          apiKey: 'v1.encrypted-api-key',
-          serviceType: LlmProvider.GPT,
+        const response = await request(app.getHttpServer())
+          .post('/admin/v1/departments/10/apis')
+          .set('Authorization', 'Bearer total-token')
+          .send({ apiKey: registerDto.apiKey, service, departmentId: 999 })
+          .expect(201);
+
+        expect(memberDepartmentRepository.findOne).not.toHaveBeenCalled();
+        expect(departmentRepository.findOneBy).toHaveBeenCalledWith({
           departmentId: '10',
-        }),
-      );
-      expect(response.body).toEqual({
-        isSuccess: true,
-        code: 'ADMIN201_3',
-        message: '성공적으로 부서에 API키를 생성했습니다.',
-        result: {
-          targetDepartment: department.departmentName,
-          service: LlmProvider.GPT,
-          createdAt: expect.any(String),
-        },
-      });
-    });
+        });
+        expect(apiKeyValidationClient.validate).toHaveBeenCalledWith(
+          provider,
+          registerDto.apiKey,
+        );
+        expect(apiKeyEncryption.encrypt).toHaveBeenCalledWith(
+          registerDto.apiKey,
+          '10',
+          provider,
+        );
+        expect(dataSource.transaction).toHaveBeenCalledTimes(1);
+        expect(activeApiKeyRepository.findOneBy).toHaveBeenCalledWith({
+          departmentId: '10',
+          serviceType: canonicalService,
+        });
+        expect(adminMapper.toActiveApiKeyDAO).toHaveBeenCalledWith({
+          apiKey: 'v1.encrypted-api-key',
+          serviceType: canonicalService,
+          departmentLimit: '0',
+          mustFiltering: true,
+          departmentId: '10',
+        });
+        expect(activeApiKeyRepository.save).toHaveBeenCalledWith(
+          expect.objectContaining({
+            apiKey: 'v1.encrypted-api-key',
+            serviceType: canonicalService,
+            departmentLimit: '0',
+            mustFiltering: true,
+            departmentId: '10',
+          }),
+        );
+        expect(
+          JSON.stringify(activeApiKeyRepository.save.mock.calls),
+        ).not.toContain(registerDto.apiKey);
+        expect(llmDetailModelRepository.find).toHaveBeenCalledWith(
+          expect.objectContaining({ where: expect.anything() }),
+        );
+        expect(activeLlmRepository.upsert).toHaveBeenCalledWith(
+          [{ activeApiKeyId: '71', llmDetailModelId: '301' }],
+          expect.anything(),
+        );
+        expect(response.body).toEqual({
+          isSuccess: true,
+          code: 'ADMIN201_3',
+          message: '성공적으로 부서에 API키를 생성했습니다.',
+          result: {
+            targetDepartment: department.departmentName,
+            service: canonicalService,
+            createdAt: expect.any(String),
+          },
+        });
+      },
+    );
 
     it('provider가 거부한 키는 저장하지 않는다', async () => {
       apiKeyValidationClient.validate.mockResolvedValueOnce(
@@ -970,28 +1068,31 @@ describe('로그인/회원 생성 HTTP API', () => {
         .expect(400);
 
       expect(activeApiKeyRepository.save).not.toHaveBeenCalled();
+      expect(activeLlmRepository.upsert).not.toHaveBeenCalled();
+      expect(dataSource.transaction).not.toHaveBeenCalled();
       expect(response.body.code).toBe('ADMIN400_3');
     });
 
-    it('소속 부서 정보가 없는 관리자는 키를 등록할 수 없다', async () => {
-      memberDepartmentRepository.findOne.mockResolvedValueOnce(null);
+    it.each(['depart-token', 'user-token'])(
+      'TOTAL_ADMIN이 아닌 사용자는 키를 등록할 수 없다 (%s)',
+      async (token) => {
+        const response = await request(app.getHttpServer())
+          .post('/admin/v1/departments/10/apis')
+          .set('Authorization', `Bearer ${token}`)
+          .send(registerDto)
+          .expect(403);
 
-      const response = await request(app.getHttpServer())
-        .post('/admin/v1/departments/10/apis')
-        .set('Authorization', 'Bearer depart-token')
-        .send(registerDto)
-        .expect(403);
+        expect(apiKeyValidationClient.validate).not.toHaveBeenCalled();
+        expect(activeApiKeyRepository.save).not.toHaveBeenCalled();
+        expect(activeLlmRepository.upsert).not.toHaveBeenCalled();
+        expect(departmentRepository.findOneBy).not.toHaveBeenCalled();
+        expect(memberDepartmentRepository.findOne).not.toHaveBeenCalled();
+        expect(dataSource.transaction).not.toHaveBeenCalled();
+        expect(response.body.code).toBe('AUTH403_1');
+      },
+    );
 
-      expect(apiKeyValidationClient.validate).not.toHaveBeenCalled();
-      expect(activeApiKeyRepository.save).not.toHaveBeenCalled();
-      expect(memberDepartmentRepository.findOne).toHaveBeenCalledWith({
-        select: { departmentId: true },
-        where: { memberId: '2' },
-      });
-      expect(response.body.code).toBe('AUTH403_1');
-    });
-
-    it('소속 정보의 부서가 존재하지 않으면 provider를 호출하지 않는다', async () => {
+    it('존재하지 않는 부서는 provider를 호출하거나 데이터를 저장하지 않는다', async () => {
       departmentRepository.findOneBy.mockResolvedValueOnce(null);
 
       const response = await request(app.getHttpServer())
@@ -1002,31 +1103,44 @@ describe('로그인/회원 생성 HTTP API', () => {
 
       expect(apiKeyValidationClient.validate).not.toHaveBeenCalled();
       expect(activeApiKeyRepository.save).not.toHaveBeenCalled();
+      expect(activeLlmRepository.upsert).not.toHaveBeenCalled();
+      expect(dataSource.transaction).not.toHaveBeenCalled();
       expect(response.body.code).toBe('ADMIN404_2');
     });
 
-    it('일반 사용자는 키를 등록할 수 없다', async () => {
+    it.each([
+      { field: 'service', value: 'Azure' },
+      { field: 'service', value: '  ' },
+      { field: 'apiKey', value: '   ' },
+      { field: 'apiKey', value: 'key\r\ninjected-header' },
+    ])('$field 입력값 $value는 provider 호출 없이 거부한다', async ({ field, value }) => {
       const response = await request(app.getHttpServer())
         .post('/admin/v1/departments/10/apis')
-        .set('Authorization', 'Bearer user-token')
-        .send(registerDto)
-        .expect(403);
+        .set('Authorization', 'Bearer total-token')
+        .send({ ...registerDto, [field]: value })
+        .expect(400);
 
-      expect(memberDepartmentRepository.findOne).not.toHaveBeenCalled();
       expect(apiKeyValidationClient.validate).not.toHaveBeenCalled();
+      expect(apiKeyEncryption.encrypt).not.toHaveBeenCalled();
       expect(activeApiKeyRepository.save).not.toHaveBeenCalled();
-      expect(response.body.code).toBe('AUTH403_1');
+      expect(activeLlmRepository.upsert).not.toHaveBeenCalled();
+      expect(dataSource.transaction).not.toHaveBeenCalled();
+      expect(response.body.code).toBe('ADMIN400_3');
     });
 
-    it('같은 부서와 provider의 기존 활성 키는 새 키로 교체한다', async () => {
+    it('같은 부서와 service의 기존 활성 키도 무제한·강제 필터링 값으로 교체하고 모델 연결을 upsert한다', async () => {
       const existing = {
         activeApiKeyId: '7',
         apiKey: 'old-key',
-        serviceType: LlmProvider.GPT,
+        serviceType: 'OpenAI',
         departmentLimit: '100',
+        mustFiltering: false,
         departmentId: '10',
       } as ActiveApiKeyDAO;
       activeApiKeyRepository.findOneBy.mockResolvedValueOnce(existing);
+      llmDetailModelRepository.find.mockResolvedValueOnce([
+        { llmDetailModelId: '301', llmName: 'gpt-4.1' },
+      ]);
 
       await request(app.getHttpServer())
         .post('/admin/v1/departments/10/apis')
@@ -1039,8 +1153,14 @@ describe('로그인/회원 생성 HTTP API', () => {
         expect.objectContaining({
           activeApiKeyId: '7',
           apiKey: 'v1.encrypted-api-key',
-          departmentLimit: '100',
+          serviceType: 'OpenAI',
+          departmentLimit: '0',
+          mustFiltering: true,
         }),
+      );
+      expect(activeLlmRepository.upsert).toHaveBeenCalledWith(
+        [{ activeApiKeyId: '7', llmDetailModelId: '301' }],
+        expect.anything(),
       );
     });
   });
@@ -1075,7 +1195,13 @@ describe('로그인/회원 생성 HTTP API', () => {
           maskingContent: true,
           maskingClass: true,
         },
-        where: { departmentId: '10', isActive: true },
+        where: {
+          isActive: true,
+          departmentPolicies: {
+            departmentId: '10',
+            isActive: true,
+          },
+        },
         order: { policyId: 'ASC' },
       });
       expect(response.body).toEqual({
@@ -1122,7 +1248,13 @@ describe('로그인/회원 생성 HTTP API', () => {
           where: { memberId },
         });
         expect(policyRepository.find).toHaveBeenCalledWith(expect.objectContaining({
-          where: { departmentId: '10', isActive: true },
+          where: {
+            isActive: true,
+            departmentPolicies: {
+              departmentId: '10',
+              isActive: true,
+            },
+          },
         }));
         expect(response.body.result).toEqual({
           targetDepartment: department.departmentName,
@@ -1153,7 +1285,13 @@ describe('로그인/회원 생성 HTTP API', () => {
         departmentId: '20',
       });
       expect(policyRepository.find).toHaveBeenCalledWith(expect.objectContaining({
-        where: { departmentId: '20', isActive: true },
+        where: {
+          isActive: true,
+          departmentPolicies: {
+            departmentId: '20',
+            isActive: true,
+          },
+        },
       }));
       expect(response.body.result.targetDepartment).toBe('정책기획팀');
     });
@@ -1187,20 +1325,32 @@ describe('로그인/회원 생성 HTTP API', () => {
     });
 
     it('PUT 요청 목록을 최종 상태로 차등 동기화한다', async () => {
-      policyRepository.find.mockResolvedValueOnce([
+      const phonePolicy = {
+        policyId: '3',
+        maskingContent: 'PHONE',
+        maskingClass: MaskingClass.PRIVATE,
+        isActive: true,
+      } as PolicyDAO;
+      const cardPolicy = {
+        policyId: '4',
+        maskingContent: 'CARD',
+        maskingClass: MaskingClass.PRIVATE,
+        isActive: true,
+      } as PolicyDAO;
+      departmentPolicyRepository.find.mockResolvedValueOnce([
         {
-          policyId: '3',
+          departmentPolicyId: '30',
           departmentId: '10',
-          maskingContent: 'PHONE',
-          maskingClass: MaskingClass.PRIVATE,
+          policyId: phonePolicy.policyId,
           isActive: true,
+          policy: phonePolicy,
         },
         {
-          policyId: '4',
+          departmentPolicyId: '40',
           departmentId: '10',
-          maskingContent: 'CARD',
-          maskingClass: MaskingClass.PRIVATE,
+          policyId: cardPolicy.policyId,
           isActive: true,
+          policy: cardPolicy,
         },
       ]);
 
@@ -1228,26 +1378,33 @@ describe('로그인/회원 생성 HTTP API', () => {
         where: { departmentId: '10' },
         lock: { mode: 'pessimistic_write' },
       });
-      expect(policyRepository.find).toHaveBeenCalledWith({
+      expect(departmentPolicyRepository.find).toHaveBeenCalledWith({
         where: { departmentId: '10' },
-        order: { policyId: 'ASC' },
+        relations: { policy: true },
+        order: { departmentPolicyId: 'ASC' },
       });
       expect(adminMapper.toPolicyDAO).toHaveBeenCalledTimes(1);
       expect(adminMapper.toPolicyDAO).toHaveBeenCalledWith({
-        departmentId: '10',
         maskingContent: 'API_KEY',
         maskingClass: MaskingClass.SENSITIVE,
       });
-      expect(policyRepository.save).toHaveBeenCalledWith([
+      expect(policyRepository.save).toHaveBeenCalledWith(
         expect.objectContaining({
           policyId: '',
           maskingContent: 'API_KEY',
           maskingClass: MaskingClass.SENSITIVE,
           isActive: true,
         }),
+      );
+      expect(departmentPolicyRepository.save).toHaveBeenCalledWith([
         expect.objectContaining({
+          departmentId: '10',
+          policyId: '7',
+          isActive: true,
+        }),
+        expect.objectContaining({
+          departmentPolicyId: '40',
           policyId: '4',
-          maskingContent: 'CARD',
           isActive: false,
         }),
       ]);
@@ -1267,22 +1424,29 @@ describe('로그인/회원 생성 HTTP API', () => {
     });
 
     it('동일한 최종 목록을 다시 요청하면 기존 policyId를 유지하고 쓰기를 생략한다', async () => {
-      policyRepository.find.mockResolvedValueOnce([
+      const policies = [
         {
           policyId: '3',
-          departmentId: '10',
           maskingContent: 'PHONE',
           maskingClass: MaskingClass.PRIVATE,
           isActive: true,
         },
         {
           policyId: '8',
-          departmentId: '10',
           maskingContent: 'API_KEY',
           maskingClass: MaskingClass.SENSITIVE,
           isActive: true,
         },
-      ]);
+      ] as PolicyDAO[];
+      departmentPolicyRepository.find.mockResolvedValueOnce(
+        policies.map((policy, index) => ({
+          departmentPolicyId: String(index + 1),
+          departmentId: '10',
+          policyId: policy.policyId,
+          isActive: true,
+          policy,
+        })),
+      );
 
       const response = await request(app.getHttpServer())
         .put('/admin/v1/departments/10/policies')
@@ -1295,6 +1459,7 @@ describe('로그인/회원 생성 HTTP API', () => {
 
       expect(adminMapper.toPolicyDAO).not.toHaveBeenCalled();
       expect(policyRepository.save).not.toHaveBeenCalled();
+      expect(departmentPolicyRepository.save).not.toHaveBeenCalled();
       expect(response.body.result).toEqual({
         targetDepartment: department.departmentName,
         policies: [
@@ -1305,14 +1470,65 @@ describe('로그인/회원 생성 HTTP API', () => {
       });
     });
 
-    it('비활성 정책이 다시 요청되면 같은 policyId로 재활성화한다', async () => {
-      policyRepository.find.mockResolvedValueOnce([
-        {
-          policyId: '3',
-          departmentId: '10',
+    it('다른 부서도 사용할 수 있는 기존 정책은 새로 만들지 않고 연결만 추가한다', async () => {
+      const sharedPolicy = {
+        policyId: '9',
+        maskingContent: 'PHONE',
+        maskingClass: MaskingClass.PRIVATE,
+        isActive: true,
+      } as PolicyDAO;
+      policyRepository.findOne.mockResolvedValueOnce(sharedPolicy);
+
+      const response = await request(app.getHttpServer())
+        .put('/admin/v1/departments/10/policies')
+        .set('Authorization', 'Bearer depart-token')
+        .send({ policies: [
+          { maskingContent: 'PHONE', maskingClass: MaskingClass.PRIVATE },
+        ] })
+        .expect(200);
+
+      expect(policyRepository.findOne).toHaveBeenCalledWith({
+        where: {
           maskingContent: 'PHONE',
           maskingClass: MaskingClass.PRIVATE,
+          isActive: true,
+        },
+        order: { policyId: 'ASC' },
+      });
+      expect(adminMapper.toPolicyDAO).not.toHaveBeenCalled();
+      expect(policyRepository.save).not.toHaveBeenCalled();
+      expect(departmentPolicyRepository.create).toHaveBeenCalledWith({
+        isActive: true,
+        departmentId: '10',
+        policyId: '9',
+        policy: sharedPolicy,
+      });
+      expect(departmentPolicyRepository.save).toHaveBeenCalledWith([
+        expect.objectContaining({
+          departmentId: '10',
+          policyId: '9',
+          isActive: true,
+        }),
+      ]);
+      expect(response.body.result.policies).toEqual([
+        { policyId: 9, maskingContent: 'PHONE', maskingClass: 'PRIVATE' },
+      ]);
+    });
+
+    it('비활성 부서 정책 연결이 다시 요청되면 같은 policyId로 재활성화한다', async () => {
+      const policy = {
+        policyId: '3',
+        maskingContent: 'PHONE',
+        maskingClass: MaskingClass.PRIVATE,
+        isActive: true,
+      } as PolicyDAO;
+      departmentPolicyRepository.find.mockResolvedValueOnce([
+        {
+          departmentPolicyId: '30',
+          departmentId: '10',
+          policyId: policy.policyId,
           isActive: false,
+          policy,
         },
       ]);
 
@@ -1324,8 +1540,13 @@ describe('로그인/회원 생성 HTTP API', () => {
         ] })
         .expect(200);
 
-      expect(policyRepository.save).toHaveBeenCalledWith([
-        expect.objectContaining({ policyId: '3', isActive: true }),
+      expect(policyRepository.save).not.toHaveBeenCalled();
+      expect(departmentPolicyRepository.save).toHaveBeenCalledWith([
+        expect.objectContaining({
+          departmentPolicyId: '30',
+          policyId: '3',
+          isActive: true,
+        }),
       ]);
       expect(response.body.result.policies).toEqual([
         { policyId: 3, maskingContent: 'PHONE', maskingClass: 'PRIVATE' },
@@ -1439,6 +1660,12 @@ describe('로그인/회원 생성 HTTP API', () => {
       memberDepartmentRepository.save,
       activeApiKeyRepository.findOneBy,
       activeApiKeyRepository.save,
+      activeLlmRepository.upsert,
+      llmDetailModelRepository.find,
+      departmentPolicyRepository.create,
+      departmentPolicyRepository.find,
+      departmentPolicyRepository.save,
+      policyRepository.findOne,
       policyRepository.findOneBy,
       policyRepository.find,
       policyRepository.delete,

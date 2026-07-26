@@ -1,14 +1,13 @@
 import { Test } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
-import { ActiveApiKeyDAO } from '../../src/domain/admin/dao/active-api-key.dao.js';
-import { LlmDetailModelDAO } from '../../src/domain/admin/dao/llm-detail-model.dao.js';
+import { ActiveLlmDAO } from '../../src/domain/admin/dao/active-llm.dao.js';
 import {
   MaskingClass,
   PolicyDAO,
 } from '../../src/domain/admin/dao/policy.dao.js';
-import { NerClient } from '../../src/global/ner/client/ner.client.js';
 import { PromptErrorStatus } from '../../src/domain/prompt/code/prompt.status.js';
 import type { PromptData } from '../../src/domain/prompt/data/prompt.data.js';
+import { PromptException } from '../../src/domain/prompt/exception/prompt.exception.js';
 import { MaskingReportRepository } from '../../src/domain/prompt/repository/masking-report.repository.js';
 import { PromptFileRepository } from '../../src/domain/prompt/repository/prompt-file.repository.js';
 import { PromptRoomRepository } from '../../src/domain/prompt/repository/prompt-room.repository.js';
@@ -20,6 +19,8 @@ import { MinioObjectStorageService } from '../../src/global/storage/service/mini
 
 describe('PromptService 부서 접근 및 정책 조회', () => {
   const ticket = 'a81cc17e-e10a-46ae-8113-dceffb932d6c';
+  const recentTicket = '8e88c068-722e-4c04-93c5-906cea400be2';
+  const chatRoomId = '840c66ce-0b5d-4663-bc63-b4c4666cd0f5';
   const authentication: AuthenticatedUser = {
     userId: 42,
     role: UserRole.USER,
@@ -29,20 +30,22 @@ describe('PromptService 부서 접근 및 정책 조회', () => {
   const memberDepartmentRepository = {
     findOne: jest.fn(),
   };
-  const activeApiKeyRepository = {
+  const activeLlmRepository = {
     findOne: jest.fn(),
+    find: jest.fn(),
   };
   const policyRepository = {
     find: jest.fn(),
   };
-  const llmDetailModelRepository = {
-    find: jest.fn(),
-  };
   const maskingReportRepository = {
+    validateRequestTickets: jest.fn(),
     create: jest.fn(),
     saveRegexDetections: jest.fn(),
     cancelRegex: jest.fn(),
     cancelNer: jest.fn(),
+  };
+  const promptRoomRepository = {
+    existsByIdAndMemberId: jest.fn(),
   };
 
   let service: PromptService;
@@ -56,16 +59,12 @@ describe('PromptService 부서 접근 및 정책 조회', () => {
           useValue: memberDepartmentRepository,
         },
         {
-          provide: getRepositoryToken(ActiveApiKeyDAO),
-          useValue: activeApiKeyRepository,
+          provide: getRepositoryToken(ActiveLlmDAO),
+          useValue: activeLlmRepository,
         },
         {
           provide: getRepositoryToken(PolicyDAO),
           useValue: policyRepository,
-        },
-        {
-          provide: getRepositoryToken(LlmDetailModelDAO),
-          useValue: llmDetailModelRepository,
         },
         {
           provide: MaskingReportRepository,
@@ -77,10 +76,9 @@ describe('PromptService 부서 접근 및 정책 조회', () => {
         },
         {
           provide: PromptRoomRepository,
-          useValue: {},
+          useValue: promptRoomRepository,
         },
         { provide: MinioObjectStorageService, useValue: {} },
-        { provide: NerClient, useValue: {} },
       ],
     }).compile();
 
@@ -90,7 +88,12 @@ describe('PromptService 부서 접근 및 정책 조회', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     memberDepartmentRepository.findOne.mockResolvedValue({ departmentId: '10' });
-    activeApiKeyRepository.findOne.mockResolvedValue({ activeApiKeyId: '100' });
+    activeLlmRepository.findOne.mockResolvedValue({
+      activeLlmId: '100',
+    });
+    activeLlmRepository.find.mockResolvedValue([]);
+    maskingReportRepository.validateRequestTickets.mockResolvedValue(undefined);
+    promptRoomRepository.existsByIdAndMemberId.mockResolvedValue(true);
     policyRepository.find.mockResolvedValue([]);
     maskingReportRepository.create.mockResolvedValue(undefined);
     maskingReportRepository.saveRegexDetections.mockResolvedValue(true);
@@ -98,17 +101,117 @@ describe('PromptService 부서 접근 및 정책 조회', () => {
     maskingReportRepository.cancelNer.mockResolvedValue(true);
   });
 
-  it('memberId로 회원이 소속된 departmentId를 조회해 분석을 진행한다', async () => {
+  it('회원 부서에서 활성화된 모델, 요청 티켓, 소유 채팅방을 검증한 뒤 리포트를 생성한다', async () => {
     await expect(requestAnalyze('Claude Sonnet 5')).resolves.toBeNull();
 
     expect(memberDepartmentRepository.findOne).toHaveBeenCalledWith({
       select: { departmentId: true },
       where: { memberId: '42' },
     });
-    expect(activeApiKeyRepository.findOne).toHaveBeenCalledWith({
-      select: { activeApiKeyId: true },
-      where: { departmentId: '10', serviceType: 'Claude' },
+    expect(activeLlmRepository.findOne).toHaveBeenCalledWith({
+      select: { activeLlmId: true },
+      where: {
+        activeApiKey: { departmentId: '10', serviceType: 'Anthropic' },
+        llmDetailModel: { llmName: 'Claude Sonnet 5' },
+      },
     });
+    expect(maskingReportRepository.validateRequestTickets).toHaveBeenCalledWith(
+      ticket,
+      null,
+      authentication.userId,
+    );
+    expect(promptRoomRepository.existsByIdAndMemberId).toHaveBeenCalledWith(
+      chatRoomId,
+      String(authentication.userId),
+    );
+    expect(maskingReportRepository.create).toHaveBeenCalledWith(
+      ticket,
+      authentication.userId,
+      '',
+      null,
+    );
+
+    const validationOrder = [
+      memberDepartmentRepository.findOne,
+      activeLlmRepository.findOne,
+      maskingReportRepository.validateRequestTickets,
+      promptRoomRepository.existsByIdAndMemberId,
+      policyRepository.find,
+      maskingReportRepository.create,
+    ].map((mock) => mock.mock.invocationCallOrder[0]);
+    expect(validationOrder).toEqual([...validationOrder].sort((a, b) => a! - b!));
+  });
+
+  it.each([
+    ['Claude Sonnet 5', 'Anthropic'],
+    ['GPT-4o', 'OpenAI'],
+    ['Gemini 2.5 Pro', 'Google'],
+  ] as const)(
+    '%s 모델과 %s provider가 모두 활성화되어 있는지 조회한다',
+    async (model, provider) => {
+      await expect(requestAnalyze(model)).resolves.toBeNull();
+
+      expect(activeLlmRepository.findOne).toHaveBeenCalledWith({
+        select: { activeLlmId: true },
+        where: {
+          activeApiKey: { departmentId: '10', serviceType: provider },
+          llmDetailModel: { llmName: model },
+        },
+      });
+    },
+  );
+
+  it('부서에서 활성화된 모델 이름을 active_llm 연결로 조회한다', async () => {
+    activeLlmRepository.find.mockResolvedValueOnce([
+      { llmDetailModel: { llmName: 'Claude Sonnet 5' } },
+      { llmDetailModel: { llmName: null } },
+      { llmDetailModel: { llmName: 'GPT-4o' } },
+    ]);
+
+    await expect(service.getModels(authentication)).resolves.toEqual([
+      'Claude Sonnet 5',
+      'GPT-4o',
+    ]);
+
+    expect(memberDepartmentRepository.findOne).toHaveBeenCalledWith({
+      select: { departmentId: true },
+      where: { memberId: '42' },
+    });
+    expect(activeLlmRepository.find).toHaveBeenCalledWith({
+      select: { llmDetailModel: { llmName: true } },
+      relations: { activeApiKey: true, llmDetailModel: true },
+      where: { activeApiKey: { departmentId: '10' } },
+      order: { llmDetailModel: { llmName: 'ASC' } },
+    });
+  });
+
+  it('미지원 모델 prefix는 PROM403_1을 반환하고 리포트를 생성하지 않는다', async () => {
+    await expect(requestAnalyze('Llama 3.1')).rejects.toMatchObject({
+      baseStatus: PromptErrorStatus.FORBIDDEN_LLM_MODEL,
+    });
+
+    expect(activeLlmRepository.findOne).not.toHaveBeenCalled();
+    expect(maskingReportRepository.validateRequestTickets).not.toHaveBeenCalled();
+    expect(promptRoomRepository.existsByIdAndMemberId).not.toHaveBeenCalled();
+    expect(maskingReportRepository.create).not.toHaveBeenCalled();
+  });
+
+  it('부서에 활성화된 모델 연결이 없으면 PROM403_1을 반환하고 리포트를 생성하지 않는다', async () => {
+    activeLlmRepository.findOne.mockResolvedValueOnce(null);
+
+    await expect(requestAnalyze('Claude 미등록 모델')).rejects.toMatchObject({
+      baseStatus: PromptErrorStatus.FORBIDDEN_LLM_MODEL,
+    });
+    expect(activeLlmRepository.findOne).toHaveBeenCalledWith({
+      select: { activeLlmId: true },
+      where: {
+        activeApiKey: { departmentId: '10', serviceType: 'Anthropic' },
+        llmDetailModel: { llmName: 'Claude 미등록 모델' },
+      },
+    });
+    expect(maskingReportRepository.validateRequestTickets).not.toHaveBeenCalled();
+    expect(promptRoomRepository.existsByIdAndMemberId).not.toHaveBeenCalled();
+    expect(maskingReportRepository.create).not.toHaveBeenCalled();
   });
 
   it('회원의 부서 소속 정보가 없으면 PROM403_1을 반환한다', async () => {
@@ -117,64 +220,67 @@ describe('PromptService 부서 접근 및 정책 조회', () => {
     await expect(requestAnalyze('Claude Sonnet 5')).rejects.toMatchObject({
       baseStatus: PromptErrorStatus.FORBIDDEN_LLM_MODEL,
     });
-    expect(activeApiKeyRepository.findOne).not.toHaveBeenCalled();
+    expect(activeLlmRepository.findOne).not.toHaveBeenCalled();
+    expect(maskingReportRepository.validateRequestTickets).not.toHaveBeenCalled();
     expect(maskingReportRepository.create).not.toHaveBeenCalled();
   });
 
-  it.each([
-    ['Claude Sonnet 5', 'Claude'],
-    ['GPT-4o', 'GPT'],
-    ['Gemini 2.5 Pro', 'Gemini'],
-  ] as const)(
-    '%s 모델 prefix를 %s provider로 변환하여 부서 API 키를 조회한다',
-    async (model, provider) => {
-      await expect(requestAnalyze(model)).resolves.toBeNull();
-
-      expect(activeApiKeyRepository.findOne).toHaveBeenCalledWith({
-        select: { activeApiKeyId: true },
-        where: { departmentId: '10', serviceType: provider },
-      });
-    },
-  );
-
-  it.each([
-    'Llama 3.1',
-    'claude Sonnet 5',
-    'gpt-4o',
-    'gemini 2.5 Pro',
-  ])('알 수 없거나 소문자인 모델 %s는 PROM403_1을 반환한다', async (model) => {
-    await expect(requestAnalyze(model)).rejects.toMatchObject({
-      baseStatus: PromptErrorStatus.FORBIDDEN_LLM_MODEL,
-    });
-    expect(activeApiKeyRepository.findOne).not.toHaveBeenCalled();
-    expect(maskingReportRepository.create).not.toHaveBeenCalled();
-  });
-
-  it('provider에 등록된 부서 API 키가 없으면 PROM403_1을 반환한다', async () => {
-    activeApiKeyRepository.findOne.mockResolvedValue(null);
+  it('사용자 소유 채팅방이 없으면 PROM404_6을 반환하고 리포트를 생성하지 않는다', async () => {
+    promptRoomRepository.existsByIdAndMemberId.mockResolvedValueOnce(false);
 
     await expect(requestAnalyze('Claude Sonnet 5')).rejects.toMatchObject({
-      baseStatus: PromptErrorStatus.FORBIDDEN_LLM_MODEL,
+      baseStatus: PromptErrorStatus.NOT_FOUND_CHAT_ROOM,
     });
-    expect(activeApiKeyRepository.findOne).toHaveBeenCalledWith({
-      select: { activeApiKeyId: true },
-      where: { departmentId: '10', serviceType: 'Claude' },
-    });
+    expect(promptRoomRepository.existsByIdAndMemberId).toHaveBeenCalledWith(
+      chatRoomId,
+      String(authentication.userId),
+    );
+    expect(policyRepository.find).not.toHaveBeenCalled();
     expect(maskingReportRepository.create).not.toHaveBeenCalled();
   });
 
-  it('정책 문자열을 정규화하고 미지원 값과 중복 정책을 제외한다', async () => {
+  it.each([
+    {
+      description: '중복 ticket',
+      requestRecentTicket: null,
+      errorStatus: PromptErrorStatus.DUPLICATED_TICKET,
+    },
+    {
+      description: '존재하지 않는 recentTicket',
+      requestRecentTicket: recentTicket,
+      errorStatus: PromptErrorStatus.NOT_FOUND_RECENT_TICKET,
+    },
+  ])('$description 검증이 실패하면 리포트를 생성하지 않는다', async ({
+    requestRecentTicket,
+    errorStatus,
+  }) => {
+    maskingReportRepository.validateRequestTickets.mockRejectedValueOnce(
+      new PromptException(errorStatus),
+    );
+
+    await expect(
+      requestAnalyze('Claude Sonnet 5', '', requestRecentTicket),
+    ).rejects.toMatchObject({ baseStatus: errorStatus });
+    expect(maskingReportRepository.validateRequestTickets).toHaveBeenCalledWith(
+      ticket,
+      requestRecentTicket,
+      authentication.userId,
+    );
+    expect(promptRoomRepository.existsByIdAndMemberId).not.toHaveBeenCalled();
+    expect(policyRepository.find).not.toHaveBeenCalled();
+    expect(maskingReportRepository.create).not.toHaveBeenCalled();
+  });
+
+  it('활성 PRIVATE 부서 정책만 조회하고 탐지 텍스트와 마스킹 텍스트를 저장한다', async () => {
     policyRepository.find.mockImplementation(async () => [
-      createPolicy('20', ' phone ', MaskingClass.SENSITIVE),
       createPolicy('5', 'PHONE', MaskingClass.PRIVATE),
-      createPolicy('7', 'api key', MaskingClass.SENSITIVE),
       createPolicy('8', 'NOT_SUPPORTED', MaskingClass.PRIVATE),
       createPolicy('11', 'resident', MaskingClass.PRIVATE),
     ].sort((left, right) => Number(left.policyId) - Number(right.policyId)));
 
     await requestAnalyze(
       'Claude Sonnet 5',
-      '010-1234-5678, 900101-1234567, api_key=AbCdEfGhIjKlMnOp1234',
+      '010-1234-5678, 900101-1234567',
     );
 
     expect(policyRepository.find).toHaveBeenCalledWith({
@@ -183,7 +289,14 @@ describe('PromptService 부서 접근 및 정책 조회', () => {
         maskingContent: true,
         maskingClass: true,
       },
-      where: { departmentId: '10', isActive: true },
+      where: {
+        isActive: true,
+        maskingClass: MaskingClass.PRIVATE,
+        departmentPolicies: {
+          departmentId: '10',
+          isActive: true,
+        },
+      },
       order: { policyId: 'ASC' },
     });
 
@@ -192,27 +305,29 @@ describe('PromptService 부서 접근 및 정책 조회', () => {
     expect(detections).toEqual([
       expect.objectContaining({
         originalText: '010-1234-5678',
+        maskingText: '[ 전화번호 ]',
         policyId: '5',
       }),
       expect.objectContaining({
         originalText: '900101-1234567',
+        maskingText: '[ 주민등록번호 ]',
         policyId: '11',
-      }),
-      expect.objectContaining({
-        originalText: 'AbCdEfGhIjKlMnOp1234',
-        policyId: '7',
       }),
     ]);
   });
 
-  function requestAnalyze(model: string, text = ''): Promise<null> {
+  function requestAnalyze(
+    model: string,
+    text = '',
+    requestRecentTicket: string | null = null,
+  ): Promise<null> {
     return service.requestAnalyze(
       {
         model,
         text,
         ticket,
-        recentTicket: null,
-        chatRoomId: '840c66ce-0b5d-4663-bc63-b4c4666cd0f5',
+        recentTicket: requestRecentTicket,
+        chatRoomId,
       },
       undefined,
       authentication,
@@ -230,6 +345,5 @@ function createPolicy(
     maskingContent,
     maskingClass,
     isActive: true,
-    departmentId: '10',
   } as PolicyDAO;
 }

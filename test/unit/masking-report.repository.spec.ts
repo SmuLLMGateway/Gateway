@@ -11,6 +11,7 @@ import { MaskingReportStatus } from '../../src/domain/prompt/type/masking-report
 
 describe('MaskingReportRepository', () => {
   const ticket = 'a81cc17e-e10a-46ae-8113-dceffb932d6c';
+  const recentTicket = '8e88c068-722e-4c04-93c5-906cea400be2';
   const originalText = '원본 텍스트 010-1234-5678';
   const fileUrl = `s3://gateway-test/masking/${ticket}/source`;
   const reportRepository = {
@@ -93,25 +94,14 @@ describe('MaskingReportRepository', () => {
     }));
   });
 
-  it.each([
-    {
-      hasFile: true,
-      expectedNerStatus: MaskingReportStatus.PENDING,
-      description: '파일이 있으면 NER 상태를 PENDING으로 생성한다',
-    },
-    {
-      hasFile: false,
-      expectedNerStatus: MaskingReportStatus.DONE,
-      description: '파일이 없으면 NER 상태를 DONE으로 생성한다',
-    },
-  ])('$description', async ({ hasFile, expectedNerStatus }) => {
-    await repository.create(ticket, 42, originalText, hasFile, null);
+  it('최종·정규식은 PENDING, 비활성화된 NER는 DONE으로 생성한다', async () => {
+    await repository.create(ticket, 42, originalText, null);
 
     const expected = {
       maskingReportId: ticket,
       status: MaskingReportStatus.PENDING,
       regexStatus: MaskingReportStatus.PENDING,
-      nerStatus: expectedNerStatus,
+      nerStatus: MaskingReportStatus.DONE,
       memberId: '42',
       originalText,
       recentMaskingReportId: null,
@@ -130,9 +120,79 @@ describe('MaskingReportRepository', () => {
     );
 
     await expect(
-      repository.create(ticket, 42, originalText, false, null),
+      repository.create(ticket, 42, originalText, null),
     ).rejects.toMatchObject({
       baseStatus: PromptErrorStatus.DUPLICATED_TICKET,
+    });
+  });
+
+  it('요청 ticket이 이미 존재하면 PROM400_2로 거부한다', async () => {
+    reportRepository.findOne.mockResolvedValueOnce({
+      maskingReportId: ticket,
+    });
+
+    await expect(
+      repository.validateRequestTickets(ticket, recentTicket, 42),
+    ).rejects.toMatchObject({
+      baseStatus: PromptErrorStatus.DUPLICATED_TICKET,
+    });
+
+    expect(reportRepository.findOne).toHaveBeenCalledTimes(1);
+    expect(reportRepository.findOne).toHaveBeenCalledWith({
+      select: { maskingReportId: true },
+      where: { maskingReportId: ticket },
+    });
+  });
+
+  it('recentTicket이 null이면 요청 ticket 중복만 검증한다', async () => {
+    reportRepository.findOne.mockResolvedValueOnce(null);
+
+    await expect(
+      repository.validateRequestTickets(ticket, null, 42),
+    ).resolves.toBeUndefined();
+
+    expect(reportRepository.findOne).toHaveBeenCalledTimes(1);
+    expect(reportRepository.findOne).toHaveBeenCalledWith({
+      select: { maskingReportId: true },
+      where: { maskingReportId: ticket },
+    });
+  });
+
+  it('요청 ticket이 없고 recentTicket이 요청자 소유이면 검증을 통과한다', async () => {
+    reportRepository.findOne
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ maskingReportId: recentTicket });
+
+    await expect(
+      repository.validateRequestTickets(ticket, recentTicket, 42),
+    ).resolves.toBeUndefined();
+
+    expect(reportRepository.findOne).toHaveBeenNthCalledWith(2, {
+      select: { maskingReportId: true },
+      where: {
+        maskingReportId: recentTicket,
+        memberId: '42',
+      },
+    });
+  });
+
+  it('recentTicket이 없거나 다른 사용자 소유이면 PROM404_5로 거부한다', async () => {
+    reportRepository.findOne
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null);
+
+    await expect(
+      repository.validateRequestTickets(ticket, recentTicket, 42),
+    ).rejects.toMatchObject({
+      baseStatus: PromptErrorStatus.NOT_FOUND_RECENT_TICKET,
+    });
+
+    expect(reportRepository.findOne).toHaveBeenNthCalledWith(2, {
+      select: { maskingReportId: true },
+      where: {
+        maskingReportId: recentTicket,
+        memberId: '42',
+      },
     });
   });
 
@@ -154,7 +214,6 @@ describe('MaskingReportRepository', () => {
           maskingContent: 'PHONE',
           maskingClass: MaskingClass.PRIVATE,
           isActive: true,
-          departmentId: '3',
         },
       } as MaskingDetailDAO,
     ]);
@@ -242,12 +301,14 @@ describe('MaskingReportRepository', () => {
         originalText: '010-1234-5678',
         startIdx: 3,
         endIdx: 16,
+        maskingText: '[ 전화번호 ]',
         policyId: '101',
       },
       {
         originalText: 'member@example.com',
         startIdx: 20,
         endIdx: 38,
+        maskingText: '[ 이메일 ]',
         policyId: '104',
       },
     ];
@@ -262,6 +323,7 @@ describe('MaskingReportRepository', () => {
         startIdx: 3,
         endIdx: 16,
         fileUrl: null,
+        maskingText: '[ 전화번호 ]',
         maskingReportId: ticket,
         policyId: '101',
       },
@@ -270,6 +332,7 @@ describe('MaskingReportRepository', () => {
         startIdx: 20,
         endIdx: 38,
         fileUrl: null,
+        maskingText: '[ 이메일 ]',
         maskingReportId: ticket,
         policyId: '104',
       },
@@ -321,6 +384,7 @@ describe('MaskingReportRepository', () => {
         startIdx: null,
         endIdx: null,
         fileUrl,
+        maskingText: null,
         maskingReportId: ticket,
         policyId: '101',
       },
@@ -329,6 +393,7 @@ describe('MaskingReportRepository', () => {
         startIdx: null,
         endIdx: null,
         fileUrl,
+        maskingText: null,
         maskingReportId: ticket,
         policyId: '105',
       },
@@ -403,6 +468,7 @@ describe('MaskingReportRepository', () => {
       originalText: '010-1234-5678',
       startIdx: 0,
       endIdx: 13,
+      maskingText: '[ 전화번호 ]',
       policyId: '101',
     }])).resolves.toBe(false);
 
