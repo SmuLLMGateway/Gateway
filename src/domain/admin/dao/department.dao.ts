@@ -1,4 +1,12 @@
-import { Column, Entity, Index, PrimaryGeneratedColumn } from "typeorm";
+import {
+    Column,
+    Entity,
+    Index,
+    OneToMany,
+    PrimaryGeneratedColumn
+} from "typeorm";
+import type { Relation } from "typeorm";
+import { DepartmentPolicyDAO } from "./department-policy.dao.js";
 
 export const DEPARTMENT_TABLE = 'department' as const;
 
@@ -14,4 +22,10 @@ export class DepartmentDAO {
         length: 255
     })
     departmentName!: string;
+
+    @OneToMany(
+        () => DepartmentPolicyDAO,
+        (departmentPolicy) => departmentPolicy.department
+    )
+    departmentPolicies?: Relation<DepartmentPolicyDAO[]>;
 }

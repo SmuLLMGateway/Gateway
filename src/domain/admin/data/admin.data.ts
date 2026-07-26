@@ -51,13 +51,13 @@ export namespace AdminData {
     apiKey: string;
     serviceType: string;
     departmentLimit: string;
+    mustFiltering: boolean;
     departmentId: string;
   }
 
   export interface CreatePolicy {
     maskingContent: string;
     maskingClass: MaskingClass;
-    departmentId: string;
   }
 
   export interface CreateAdminLog {

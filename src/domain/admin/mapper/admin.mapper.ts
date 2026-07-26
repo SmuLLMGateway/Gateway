@@ -35,6 +35,7 @@ export class AdminMapper {
       apiKey: data.apiKey,
       serviceType: data.serviceType,
       departmentLimit: data.departmentLimit,
+      mustFiltering: data.mustFiltering,
       departmentId: data.departmentId,
     });
   }
@@ -44,7 +45,6 @@ export class AdminMapper {
       maskingContent: data.maskingContent,
       maskingClass: data.maskingClass,
       isActive: true,
-      departmentId: data.departmentId,
     });
   }
 

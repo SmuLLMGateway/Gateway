@@ -1,13 +1,12 @@
 import {
     Column,
     Entity,
-    JoinColumn,
-    ManyToOne,
+    OneToMany,
     PrimaryGeneratedColumn
 } from "typeorm";
 import type { Relation } from "typeorm";
-import { DepartmentDAO } from "./department.dao.js";
 import { MASKING_CONTENT } from "../../prompt/type/masking-content.type.js";
+import { DepartmentPolicyDAO } from "./department-policy.dao.js";
 
 export const POLICY_TABLE = 'policy' as const;
 
@@ -34,15 +33,9 @@ export class PolicyDAO {
     @Column({ name: 'is_active', type: 'boolean', default: true })
     isActive!: boolean;
 
-    @Column({
-        name: 'department_id',
-        type: 'bigint'
-    })
-    departmentId!: string;
-
-    @ManyToOne(() => DepartmentDAO, {
-        nullable: false
-    })
-    @JoinColumn({ name: 'department_id' })
-    department!: Relation<DepartmentDAO>;
+    @OneToMany(
+        () => DepartmentPolicyDAO,
+        (departmentPolicy) => departmentPolicy.policy
+    )
+    departmentPolicies?: Relation<DepartmentPolicyDAO[]>;
 }

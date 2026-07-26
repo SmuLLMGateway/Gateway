@@ -129,6 +129,7 @@ export class AdminController {
   }
 
   @RegisterApiKeyDocs()
+  @Roles(UserRole.TOTAL_ADMIN)
   @Post('/admin/v1/departments/:departmentId/apis')
   @HttpCode(HttpStatus.CREATED)
   async validateAndRegisterLlmApiKey(

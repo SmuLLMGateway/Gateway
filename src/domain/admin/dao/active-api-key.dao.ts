@@ -4,9 +4,11 @@ import {
     Index,
     JoinColumn,
     ManyToOne,
+    OneToMany,
     PrimaryGeneratedColumn
 } from "typeorm";
 import type { Relation } from "typeorm";
+import { ActiveLlmDAO } from "./active-llm.dao.js";
 import { DepartmentDAO } from "./department.dao.js";
 
 export const ACTIVE_API_KEY_TABLE = 'active_api_key' as const;
@@ -27,7 +29,7 @@ export class ActiveApiKeyDAO {
     @Column({ name: 'service_type', type: 'varchar', length: 255 })
     serviceType!: string;
 
-    @Column({ name: 'department_limit', type: 'bigint' })
+    @Column({ name: 'department_limit', type: 'bigint', default: 0 })
     departmentLimit!: string;
 
     @Column({ name: 'must_filtering', type: 'boolean', default: true })
@@ -44,4 +46,10 @@ export class ActiveApiKeyDAO {
     })
     @JoinColumn({ name: 'department_id' })
     department!: Relation<DepartmentDAO>;
+
+    @OneToMany(
+        () => ActiveLlmDAO,
+        (activeLlm) => activeLlm.activeApiKey
+    )
+    activeLlms?: Relation<ActiveLlmDAO[]>;
 }

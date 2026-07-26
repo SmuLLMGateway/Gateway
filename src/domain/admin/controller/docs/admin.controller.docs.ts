@@ -152,7 +152,7 @@ export const RegisterApiKeyDocs = () =>
   applyDecorators(
     adminTag(),
     ApiOperation({
-      summary: 'LLM API 키 검증 및 등록 (구현 중)',
+      summary: 'LLM API 키 검증 및 등록',
       description: '부서의 LLM API 키를 검증하고 등록합니다.',
     }),
     departmentIdParam(),

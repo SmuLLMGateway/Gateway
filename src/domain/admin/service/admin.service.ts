@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { DataSource, IsNull, Not, QueryFailedError } from 'typeorm';
+import { DataSource, IsNull, Not, QueryFailedError, Raw } from 'typeorm';
 import { AdminReqDTO } from '../dto/admin.request.dto.js';
 import { AdminResDTO } from '../dto/admin.response.dto.js';
 import { AdminMapper } from '../mapper/admin.mapper.js';
@@ -19,11 +19,18 @@ import { AuthErrorStatus } from '../../auth/code/auth.status.js';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { ActiveApiKeyDAO } from '../dao/active-api-key.dao.js';
+import { ActiveLlmDAO } from '../dao/active-llm.dao.js';
+import { LlmDetailModelDAO } from '../dao/llm-detail-model.dao.js';
 import { LlmApiKeyValidationClient } from '../../../global/llm/client/llm-api-key-validation.client.js';
 import { LlmApiKeyValidationResult } from '../../../global/llm/enum/llm-api-key-validation-result.enum.js';
-import { LlmProvider } from '../../../global/llm/enum/llm-provider.enum.js';
+import { LlmService } from '../../../global/llm/enum/llm-service.enum.js';
+import {
+  getLlmServiceDescriptor,
+  normalizeLlmService,
+} from '../../../global/llm/llm-service.mapping.js';
 import { ApiKeyEncryptionService } from '../../../global/llm/service/api-key-encryption.service.js';
 import { MaskingClass, PolicyDAO } from '../dao/policy.dao.js';
+import { DepartmentPolicyDAO } from '../dao/department-policy.dao.js';
 import {
   normalizeMaskingContent,
   type MaskingContent,
@@ -300,13 +307,14 @@ export class AdminService {
     dto: AdminReqDTO.RegisterApiKey,
     authentication: Readonly<AuthenticatedUser>,
   ): Promise<AdminResDTO.RegisterApiKey> {
-    const department = await this.findManagedDepartmentById(
+    const department = await this.findApiKeyRegistrationDepartment(
       departmentId,
       authentication,
     );
     const targetDepartmentId = department.departmentId;
 
-    const provider = this.toLlmProvider(dto.service);
+    const service = this.toLlmService(dto.service);
+    const { provider, llmNamePrefix } = getLlmServiceDescriptor(service);
     const apiKey = this.normalizeApiKey(dto.apiKey);
     const validation = await this.apiKeyValidationClient.validate(provider, apiKey);
 
@@ -320,26 +328,54 @@ export class AdminService {
       provider,
     );
 
-    const existingApiKey = await this.activeApiKeyRepository.findOneBy({
-      departmentId: targetDepartmentId,
-      serviceType: provider,
-    });
-    const activeApiKey = existingApiKey ?? this.adminMapper.toActiveApiKeyDAO({
-      apiKey: encryptedApiKey,
-      serviceType: provider,
-      departmentLimit: '0',
-      departmentId: targetDepartmentId,
-    });
+    return this.dataSource.transaction(async (manager) => {
+      const activeApiKeyRepository = manager.getRepository(ActiveApiKeyDAO);
+      const activeLlmRepository = manager.getRepository(ActiveLlmDAO);
+      const llmDetailModelRepository = manager.getRepository(LlmDetailModelDAO);
+      const existingApiKey = await activeApiKeyRepository.findOneBy({
+        departmentId: targetDepartmentId,
+        serviceType: service,
+      });
+      const activeApiKey = existingApiKey
+        ?? this.adminMapper.toActiveApiKeyDAO({
+          apiKey: encryptedApiKey,
+          serviceType: service,
+          departmentLimit: '0',
+          mustFiltering: true,
+          departmentId: targetDepartmentId,
+        });
 
-    activeApiKey.apiKey = encryptedApiKey;
-    activeApiKey.serviceType = provider;
-    activeApiKey.departmentId = targetDepartmentId;
-    await this.activeApiKeyRepository.save(activeApiKey);
+      activeApiKey.apiKey = encryptedApiKey;
+      activeApiKey.serviceType = service;
+      activeApiKey.departmentLimit = '0';
+      activeApiKey.mustFiltering = true;
+      activeApiKey.departmentId = targetDepartmentId;
+      const savedApiKey = await activeApiKeyRepository.save(activeApiKey);
 
-    return AdminMapper.toRegisterApiKey({
-      targetDepartment: department.departmentName,
-      service: provider,
-      createdAt: new Date(),
+      const llmDetailModels = await llmDetailModelRepository.find({
+        select: { llmDetailModelId: true },
+        where: {
+          llmName: Raw(
+            (columnAlias) => `LOWER(${columnAlias}) LIKE :llmNamePrefix`,
+            { llmNamePrefix: `${llmNamePrefix}%` },
+          ),
+        },
+      });
+      if (llmDetailModels.length > 0) {
+        await activeLlmRepository.upsert(
+          llmDetailModels.map((llmDetailModel) => ({
+            activeApiKeyId: savedApiKey.activeApiKeyId,
+            llmDetailModelId: llmDetailModel.llmDetailModelId,
+          })),
+          ['activeApiKeyId', 'llmDetailModelId'],
+        );
+      }
+
+      return AdminMapper.toRegisterApiKey({
+        targetDepartment: department.departmentName,
+        service,
+        createdAt: new Date(),
+      });
     });
   }
 
@@ -364,75 +400,77 @@ export class AdminService {
         throw new AdminException(AdminErrorStatus.DEPARTMENT_NOT_FOUND);
       }
 
-      const repository = manager.getRepository(PolicyDAO);
-      const existingPolicies = await repository.find({
+      const policyRepository = manager.getRepository(PolicyDAO);
+      const departmentPolicyRepository =
+        manager.getRepository(DepartmentPolicyDAO);
+      const existingDepartmentPolicies = await departmentPolicyRepository.find({
         where: { departmentId: department.departmentId },
-        order: { policyId: 'ASC' },
+        relations: { policy: true },
+        order: { departmentPolicyId: 'ASC' },
       });
-      const selectedByContent = this.selectPoliciesByContent(existingPolicies);
-      const requestedContents = new Set(
-        requestedPolicies.map((policy) => policy.maskingContent),
-      );
-      const desiredPolicies: PolicyDAO[] = [];
-      const changedPolicies: PolicyDAO[] = [];
+      const desiredDepartmentPolicies: DepartmentPolicyDAO[] = [];
+      const changedDepartmentPolicies = new Set<DepartmentPolicyDAO>();
 
       for (const requested of requestedPolicies) {
-        const existing = selectedByContent.get(requested.maskingContent);
-        if (existing === undefined) {
-          const created = this.adminMapper.toPolicyDAO({
-            departmentId: department.departmentId,
-            ...requested,
+        let departmentPolicy = existingDepartmentPolicies.find((candidate) =>
+          candidate.policy.isActive
+          && this.toMaskingContent(candidate.policy.maskingContent)
+            === requested.maskingContent
+          && candidate.policy.maskingClass === requested.maskingClass
+        );
+
+        if (departmentPolicy === undefined) {
+          let policy = await policyRepository.findOne({
+            where: {
+              maskingContent: requested.maskingContent,
+              maskingClass: requested.maskingClass,
+              isActive: true,
+            },
+            order: { policyId: 'ASC' },
           });
-          created.isActive = true;
-          desiredPolicies.push(created);
-          changedPolicies.push(created);
-          continue;
+
+          if (policy === null) {
+            policy = await policyRepository.save(
+              this.adminMapper.toPolicyDAO(requested),
+            );
+          }
+
+          departmentPolicy = departmentPolicyRepository.create({
+            isActive: true,
+            departmentId: department.departmentId,
+            policyId: policy.policyId,
+            policy,
+          });
+          existingDepartmentPolicies.push(departmentPolicy);
+          changedDepartmentPolicies.add(departmentPolicy);
+        } else if (!departmentPolicy.isActive) {
+          departmentPolicy.isActive = true;
+          changedDepartmentPolicies.add(departmentPolicy);
         }
 
-        if (!existing.isActive || existing.maskingClass !== requested.maskingClass) {
-          existing.isActive = true;
-          existing.maskingClass = requested.maskingClass;
-          changedPolicies.push(existing);
-        }
-        desiredPolicies.push(existing);
+        desiredDepartmentPolicies.push(departmentPolicy);
       }
 
-      for (const existing of existingPolicies) {
-        const maskingContent = this.toMaskingContent(existing.maskingContent);
-        const selected = selectedByContent.get(maskingContent);
+      const desiredSet = new Set(desiredDepartmentPolicies);
+      for (const existing of existingDepartmentPolicies) {
         if (
           existing.isActive
-          && (
-            !requestedContents.has(maskingContent)
-            || selected !== existing
-          )
+          && !desiredSet.has(existing)
         ) {
           existing.isActive = false;
-          changedPolicies.push(existing);
+          changedDepartmentPolicies.add(existing);
         }
       }
 
-      const savedPolicies = changedPolicies.length === 0
-        ? []
-        : await repository.save(changedPolicies);
-      const savedActiveByContent = new Map<MaskingContent, PolicyDAO>();
-      for (const saved of savedPolicies) {
-        if (!saved.isActive) {
-          continue;
-        }
-        savedActiveByContent.set(
-          this.toMaskingContent(saved.maskingContent),
-          saved,
+      if (changedDepartmentPolicies.size > 0) {
+        await departmentPolicyRepository.save(
+          [...changedDepartmentPolicies],
         );
       }
 
-      const finalPolicies = desiredPolicies.map((policy) =>
-        savedActiveByContent.get(this.toMaskingContent(policy.maskingContent))
-        ?? policy,
-      );
       return AdminMapper.toPolicyList(
         department.departmentName,
-        finalPolicies,
+        desiredDepartmentPolicies.map((item) => item.policy),
       );
     });
   }
@@ -447,7 +485,13 @@ export class AdminService {
         maskingContent: true,
         maskingClass: true,
       },
-      where: { departmentId: department.departmentId, isActive: true },
+      where: {
+        isActive: true,
+        departmentPolicies: {
+          departmentId: department.departmentId,
+          isActive: true,
+        },
+      },
       order: { policyId: 'ASC' },
     });
     return AdminMapper.toPolicyList(department.departmentName, policies);
@@ -823,15 +867,13 @@ export class AdminService {
     }
   }
 
-  private toLlmProvider(service: unknown): LlmProvider {
-    switch (service) {
-      case LlmProvider.CLAUDE:
-      case LlmProvider.GPT:
-      case LlmProvider.GEMINI:
-        return service;
-      default:
-        throw new AdminException(AdminErrorStatus.INVALID_API_KEY);
+  private toLlmService(service: unknown): LlmService {
+    const normalizedService = normalizeLlmService(service);
+    if (normalizedService === null) {
+      throw new AdminException(AdminErrorStatus.INVALID_API_KEY);
     }
+
+    return normalizedService;
   }
 
   private normalizeApiKey(value: unknown): string {
@@ -888,6 +930,27 @@ export class AdminService {
       if (managedDepartment.departmentId !== department.departmentId) {
         throw new SecurityException(SecurityErrorStatus.FORBIDDEN);
       }
+    }
+
+    return department;
+  }
+
+  private async findApiKeyRegistrationDepartment(
+    departmentId: number,
+    authentication: Readonly<AuthenticatedUser>,
+  ): Promise<DepartmentDAO> {
+    if (authentication.role !== UserRole.TOTAL_ADMIN) {
+      throw new SecurityException(SecurityErrorStatus.FORBIDDEN);
+    }
+    if (!Number.isSafeInteger(departmentId) || departmentId <= 0) {
+      throw new AdminException(AdminErrorStatus.DEPARTMENT_NOT_FOUND);
+    }
+
+    const department = await this.departmentRepository.findOneBy({
+      departmentId: String(departmentId),
+    });
+    if (department === null) {
+      throw new AdminException(AdminErrorStatus.DEPARTMENT_NOT_FOUND);
     }
 
     return department;
@@ -971,22 +1034,6 @@ export class AdminService {
       throw new AdminException(AdminErrorStatus.DUPLICATE_POLICY);
     }
     return normalized;
-  }
-
-  private selectPoliciesByContent(
-    policies: readonly PolicyDAO[],
-  ): Map<MaskingContent, PolicyDAO> {
-    const selected = new Map<MaskingContent, PolicyDAO>();
-
-    for (const policy of policies) {
-      const maskingContent = this.toMaskingContent(policy.maskingContent);
-      const current = selected.get(maskingContent);
-      if (current === undefined || (!current.isActive && policy.isActive)) {
-        selected.set(maskingContent, policy);
-      }
-    }
-
-    return selected;
   }
 
   private toPolicyResponse(

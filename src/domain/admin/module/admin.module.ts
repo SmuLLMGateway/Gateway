@@ -11,15 +11,19 @@ import { UserModule } from '../../user/module/user.module.js';
 import { SecurityModule } from '../../../global/security/module/security.module.js';
 import { LlmModule } from '../../../global/llm/module/llm.module.js';
 import { MemberDepartmentDAO } from '../../user/dao/member-department.dao.js';
+import { ActiveLlmDAO } from '../dao/active-llm.dao.js';
 import { LlmDetailModelDAO } from '../dao/llm-detail-model.dao.js';
 import { MemberDAO } from '../../user/dao/member.dao.js';
+import { DepartmentPolicyDAO } from '../dao/department-policy.dao.js';
 
 @Module({
   imports: [
     TypeOrmModule.forFeature([
       ActiveApiKeyDAO,
+      ActiveLlmDAO,
       AdminLogDAO,
       DepartmentDAO,
+      DepartmentPolicyDAO,
       LlmDetailModelDAO,
       MemberDAO,
       MemberDepartmentDAO,
