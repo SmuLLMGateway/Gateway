@@ -1,4 +1,4 @@
-import { ApiProperty, ApiSchema } from "@nestjs/swagger";
+import { ApiProperty, ApiPropertyOptional, ApiSchema } from "@nestjs/swagger";
 
 export namespace PromptReqDTO {
     export class PrePrompt {
@@ -24,6 +24,7 @@ export namespace PromptReqDTO {
         ticket!: string;
 
         @ApiProperty({
+            type: String,
             example: '8e88c068-722e-4c04-93c5-906cea400be2',
             nullable: true,
             description: '직전 분석 요청 티켓. 첫 요청이면 null',
@@ -32,11 +33,12 @@ export namespace PromptReqDTO {
         recentTicket!: string | null;
 
         @ApiProperty({
+            type: String,
             example: '840c66ce-0b5d-4663-bc63-b4c4666cd0f5',
-            description: '요청자가 소유한 채팅방 ID',
+            description: '채팅방 ID. 새 채팅방이면 요청자가 생성한 UUID를 전달',
             format: 'uuid'
         })
-        chatRoomId!: string;
+        chatRoomId!: string | null;
     }
 
     @ApiSchema({ name: 'PromptAnalyzeRequest' })
@@ -77,10 +79,9 @@ export namespace PromptReqDTO {
     }
 
     export class PromptList {
-        @ApiProperty({
+        @ApiPropertyOptional({
             example: '1784957118000',
-            description: '최신순 페이지네이션 커서(UNIX timestamp ms)',
-            required: false
+            description: '최신순 페이지네이션 커서(UNIX timestamp ms)'
         })
         cursor?: string;
 
@@ -91,11 +92,4 @@ export namespace PromptReqDTO {
         pageSize!: number;
     }
 
-    export class Search {
-        @ApiProperty({
-            example: '계약 보고서',
-            description: '대화 검색 키워드'
-        })
-        query!: string;
-    }
 }

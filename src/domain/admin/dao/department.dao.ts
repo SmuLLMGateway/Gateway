@@ -23,6 +23,9 @@ export class DepartmentDAO {
     })
     departmentName!: string;
 
+    @Column({ name: 'must_filtering', type: 'boolean', default: true })
+    mustFiltering!: boolean;
+
     @OneToMany(
         () => DepartmentPolicyDAO,
         (departmentPolicy) => departmentPolicy.department

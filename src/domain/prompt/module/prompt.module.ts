@@ -28,7 +28,9 @@ import { ParseOptionalPromptFileFieldPipe } from '../pipe/parse-optional-prompt-
 import { ParsePrePromptJsonPipe } from '../pipe/parse-pre-prompt-json.pipe.js';
 import { MaskingReportRepository } from '../repository/masking-report.repository.js';
 import { PromptFileRepository } from '../repository/prompt-file.repository.js';
+import { PromptLogRepository } from '../repository/prompt-log.repository.js';
 import { PromptRoomRepository } from '../repository/prompt-room.repository.js';
+import { MaskingPromptLogCleanupService } from '../service/masking-prompt-log-cleanup.service.js';
 import { PromptService } from '../service/prompt.service.js';
 import { PromptMinioStorage } from '../storage/prompt-minio.storage.js';
 import { MAX_PROMPT_FILE_SIZE_BYTES } from '../type/stored-prompt-file.type.js';
@@ -78,8 +80,10 @@ import { MAX_PROMPT_FILE_SIZE_BYTES } from '../type/stored-prompt-file.type.js';
     PromptFileExceptionInterceptor,
     PromptMapper,
     PromptFileRepository,
+    PromptLogRepository,
     PromptRoomRepository,
     PromptService,
+    MaskingPromptLogCleanupService,
     PromptStagedFileCleanupInterceptor,
   ],
 })

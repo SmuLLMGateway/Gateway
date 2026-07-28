@@ -11,15 +11,15 @@ export interface LlmServiceDescriptor {
 const LLM_SERVICE_DESCRIPTORS: Readonly<
   Record<LlmService, LlmServiceDescriptor>
 > = Object.freeze({
-  [LlmService.GOOGLE]: Object.freeze({
+  [LlmService.GEMINI]: Object.freeze({
     provider: LlmProvider.GEMINI,
     llmNamePrefix: 'gemini',
   }),
-  [LlmService.OPENAI]: Object.freeze({
+  [LlmService.GPT]: Object.freeze({
     provider: LlmProvider.GPT,
     llmNamePrefix: 'gpt',
   }),
-  [LlmService.ANTHROPIC]: Object.freeze({
+  [LlmService.CLAUDE]: Object.freeze({
     provider: LlmProvider.CLAUDE,
     llmNamePrefix: 'claude',
   }),
@@ -27,13 +27,13 @@ const LLM_SERVICE_DESCRIPTORS: Readonly<
 
 const LLM_SERVICE_BY_NORMALIZED_NAME: Readonly<Record<string, LlmService>> =
   Object.freeze({
-    google: LlmService.GOOGLE,
-    openai: LlmService.OPENAI,
-    anthropic: LlmService.ANTHROPIC,
+    gemini: LlmService.GEMINI,
+    gpt: LlmService.GPT,
+    claude: LlmService.CLAUDE,
   });
 
 /**
- * 외부 입력을 ERD에 저장할 canonical 서비스명으로 변환합니다.
+ * 외부 입력을 API와 DB에 사용하는 canonical 서비스명으로 변환합니다.
  * 입력의 앞뒤 공백과 대소문자는 구분하지 않습니다.
  */
 export function normalizeLlmService(value: unknown): LlmService | null {

@@ -54,13 +54,13 @@ const maskingAnalysisMultipartBody = () =>
         },
         json: {
           type: 'string',
-          description: '마스킹 요소 탐지 요청 JSON 문자열',
+          description:
+            '마스킹 요소 탐지 요청 JSON 문자열. model, text, ticket은 필수이고 '
+            + 'recentTicket과 chatRoomId는 생략하거나 null로 보낼 수 있습니다.',
           example:
             '{"model":"Claude Sonnet 5",'
             + '"text":"다음 주 A사와 체결 예정인 미공개...",'
-            + '"ticket":"a81cc17e-e10a-46ae-8113-dceffb932d6c",'
-            + '"recentTicket":"8e88c068-722e-4c04-93c5-906cea400be2",'
-            + '"chatRoomId":"840c66ce-0b5d-4663-bc63-b4c4666cd0f5"}',
+            + '"ticket":"a81cc17e-e10a-46ae-8113-dceffb932d6c"}',
         },
       },
     },
@@ -118,17 +118,17 @@ const analyzeSuccessResponse = () =>
               result: {
                 originText: '다음 주 A사와 체결 예정인...',
                 masking: {
-                  file: {
+                  file: [{
                     fileOriginalName: '[A사] 협력 파트너십 계약서.pdf',
                     fileUrl: 'http://local-llm...',
                     maskingCategory: '민감정보',
                     detectCnt: 2,
-                  },
+                  }],
                   text: [
                     {
                       targetText: 'A사와 체결 예정인...',
                       startIdx: 6,
-                      endIdx: 21,
+                      endIdx: 20,
                       maskingCategory: '민감정보',
                       detailCategory: '조달 및 계약 정보',
                     },
@@ -235,13 +235,13 @@ export const PromptControllerDocs = () =>
     ApiTags('프롬프트'),
     ApiBearerAuth(),
     ApiExtraModels(
+      PromptResDTO.AnalyzeRequest,
       PromptResDTO.Analyze,
       PromptResDTO.Masking,
       PromptResDTO.MaskingFile,
       PromptResDTO.MaskingText,
       PromptResDTO.PromptListFile,
       PromptResDTO.PromptListItem,
-      PromptResDTO.PromptListPage,
       PromptResDTO.RecentPrompt,
       PromptResDTO.RecentAnalyze,
     ),
@@ -253,14 +253,16 @@ export const MaskingElementDetectionRequestDocs = () =>
       summary: '마스킹 요소 탐지 요청 (구현 중)',
       description:
         'multipart/form-data로 전송합니다. 각 프롬프트의 ticket은 새로운 UUID를 '
-        + '사용하고 같은 채팅방에서는 chatRoomId를 유지합니다. 첫 요청의 '
-        + 'recentTicket은 null입니다. 현재 NER 서버 실제 호출은 비활성화되어 있습니다.',
+        + '사용합니다. recentTicket은 생략하거나 null로 보내면 이전 분석 요청 없이 '
+        + '시작합니다. chatRoomId는 생략하거나 null로 보내면 새 채팅방을 생성하고, '
+        + '응답 result.chatRoomId를 후속 요청에 사용합니다. 기존 채팅방을 사용할 때만 '
+        + '소유한 chatRoomId(UUID)를 보냅니다. 현재 NER 서버 실제 호출은 비활성화되어 있습니다.',
     }),
     ApiConsumes('multipart/form-data'),
     maskingAnalysisMultipartBody(),
     ApiSuccessResponse(
       PromptSuccessStatus.PREPROMPT_REQUEST,
-      SwaggerResultSchema.null(),
+      SwaggerResultSchema.model(getSchemaPath(PromptResDTO.AnalyzeRequest)),
     ),
     ...analyzeRequestErrors(),
   );
@@ -268,11 +270,11 @@ export const MaskingElementDetectionRequestDocs = () =>
 export const AnalysisStatusCheckDocs = () =>
   applyDecorators(
     ApiOperation({
-      summary: '분석 여부 확인 (구현 중)',
+      summary: '분석 여부 확인',
       description:
         '마스킹 요소 탐지 요청 티켓으로 처리 상태와 결과를 조회합니다. '
         + 'startIdx는 탐지 시작 위치이고 endIdx는 탐지 문자열의 마지막 문자 '
-        + '다음 위치입니다. 처리 중에는 HTTP 200과 PROM200_2_1을 반환합니다.',
+        + '위치입니다. 처리 중에는 HTTP 200과 PROM200_2_1을 반환합니다.',
     }),
     ApiQuery({
       name: 'ticket',
@@ -359,6 +361,7 @@ export const ChatRoomListDocs = () =>
       SwaggerResultSchema.array(getSchemaPath(PromptResDTO.RecentPrompt), true),
     ),
     ...ApiErrorResponses([
+      PromptErrorStatus.NOT_FOUND_CHAT_ROOM,
       tokenExpiredStatus,
       ErrorStatus.INTERNAL_SERVER_ERROR,
     ]),
@@ -367,7 +370,7 @@ export const ChatRoomListDocs = () =>
 export const ModelListDocs = () =>
   applyDecorators(
     ApiOperation({
-      summary: '모델 목록 조회 (구현 중)',
+      summary: '모델 목록 조회',
       description: '사용자의 부서에서 사용할 수 있는 LLM 모델 목록을 조회합니다.',
     }),
     ApiSuccessResponse(
@@ -389,11 +392,11 @@ export const ModelListDocs = () =>
 export const RecentMaskingElementDetectionDocs = () =>
   applyDecorators(
     ApiOperation({
-      summary: '직전 마스킹 요소 탐지 요청 조회 (구현 중)',
+      summary: '직전 마스킹 요소 탐지 요청 조회',
       description:
         '채팅방의 가장 최근 마스킹 요소 탐지 요청과 그 분석 결과를 조회합니다. '
         + 'startIdx는 탐지 시작 위치이고 endIdx는 탐지 문자열의 마지막 문자 '
-        + '다음 위치입니다.',
+        + '위치입니다.',
     }),
     ApiParam({
       name: 'chatRoomId',
@@ -417,11 +420,10 @@ export const RecentMaskingElementDetectionDocs = () =>
 export const PromptListDocs = () =>
   applyDecorators(
     ApiOperation({
-      summary: '프롬프트 조회 (구현 중)',
+      summary: '프롬프트 조회',
       description:
-        '채팅방의 프롬프트를 최신순으로 조회합니다. cursor는 UNIX timestamp '
-        + '밀리초 형식이며, 프롬프트가 없으면 result는 null입니다. 현재 조회 '
-        + '비즈니스 로직은 구현되지 않았습니다.',
+        '채팅방의 모든 프롬프트 로그를 오래된 순으로 조회합니다. '
+        + '프롬프트가 없으면 result는 null입니다.',
     }),
     ApiParam({
       name: 'chatRoomId',
@@ -431,28 +433,12 @@ export const PromptListDocs = () =>
       description: '조회할 채팅방 ID',
       example: '840c66ce-0b5d-4663-bc63-b4c4666cd0f5',
     }),
-    ApiQuery({
-      name: 'cursor',
-      required: false,
-      type: String,
-      description: '최신순 페이지네이션 커서(UNIX timestamp ms)',
-      example: '1784957118000',
-    }),
-    ApiQuery({
-      name: 'pageSize',
-      required: true,
-      type: Number,
-      description: '불러올 데이터 수',
-      example: 10,
-    }),
     ApiSuccessResponse(
       PromptSuccessStatus.PROMPT_LIST,
-      SwaggerResultSchema.model(
-        getSchemaPath(PromptResDTO.PromptListPage),
-        true,
-      ),
+      SwaggerResultSchema.array(getSchemaPath(PromptResDTO.PromptListItem), true),
     ),
     ...ApiErrorResponses([
+      PromptErrorStatus.NOT_FOUND_CHAT_ROOM,
       tokenExpiredStatus,
       ErrorStatus.INTERNAL_SERVER_ERROR,
     ]),
@@ -461,7 +447,7 @@ export const PromptListDocs = () =>
 export const FileDownloadDocs = () =>
   applyDecorators(
     ApiOperation({
-      summary: '파일 다운로드 (구현 중)',
+      summary: '파일 다운로드',
       description:
         'Query Parameter로 전달한 분석 결과의 fileUrl을 이용해 파일 다운로드 '
         + 'URL을 조회합니다.',
@@ -485,31 +471,6 @@ export const FileDownloadDocs = () =>
     ...ApiErrorResponses([
       PromptErrorStatus.NOT_FOUND_FILE,
       PromptErrorStatus.FORBIDDEN_FILE_DOWNLOAD,
-      tokenExpiredStatus,
-      ErrorStatus.INTERNAL_SERVER_ERROR,
-    ]),
-  );
-
-export const ConversationSearchDocs = () =>
-  applyDecorators(
-    ApiOperation({
-      summary: '대화 검색 (구현 중)',
-      description:
-        '검색 키워드로 채팅 내역을 조회합니다. 검색 결과 응답 구조는 아직 '
-        + '명세에서 확정되지 않았으며 현재 구현은 항상 null을 반환합니다.',
-    }),
-    ApiQuery({
-      name: 'query',
-      required: true,
-      type: String,
-      description: '검색 키워드',
-      example: '계약 보고서',
-    }),
-    ApiSuccessResponse(
-      PromptSuccessStatus.SEARCH_PROMPT,
-      SwaggerResultSchema.unknown(),
-    ),
-    ...ApiErrorResponses([
       tokenExpiredStatus,
       ErrorStatus.INTERNAL_SERVER_ERROR,
     ]),

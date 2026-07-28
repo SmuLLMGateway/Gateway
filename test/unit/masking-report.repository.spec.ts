@@ -3,11 +3,14 @@ import type { DataSource, EntityManager } from 'typeorm';
 import { MaskingClass } from '../../src/domain/admin/dao/policy.dao.js';
 import { PromptErrorStatus } from '../../src/domain/prompt/code/prompt.status.js';
 import { MaskingDetailDAO } from '../../src/domain/prompt/dao/masking-detail.dao.js';
+import { PromptLogDAO } from '../../src/domain/prompt/dao/prompt-log.dao.js';
+import { PromptRoomDAO } from '../../src/domain/prompt/dao/prompt-room.dao.js';
 import { MaskingReportDAO } from '../../src/domain/prompt/dao/masking-report.dao.js';
 import type { PromptData } from '../../src/domain/prompt/data/prompt.data.js';
 import { PromptMapper } from '../../src/domain/prompt/mapper/prompt.mapper.js';
 import { MaskingReportRepository } from '../../src/domain/prompt/repository/masking-report.repository.js';
 import { MaskingReportStatus } from '../../src/domain/prompt/type/masking-report-status.enum.js';
+import { PromptLogStatus } from '../../src/domain/prompt/type/prompt-log-status.enum.js';
 
 describe('MaskingReportRepository', () => {
   const ticket = 'a81cc17e-e10a-46ae-8113-dceffb932d6c';
@@ -20,6 +23,12 @@ describe('MaskingReportRepository', () => {
   };
   const detailRepository = {
     find: jest.fn(),
+  };
+  const promptLogRepository = {
+    findOne: jest.fn(),
+  };
+  const promptRoomRepository = {
+    findOne: jest.fn(),
   };
   const transactionReportRepository = {
     findOne: jest.fn(),
@@ -51,6 +60,14 @@ describe('MaskingReportRepository', () => {
         return detailRepository;
       }
 
+      if (entity === PromptLogDAO) {
+        return promptLogRepository;
+      }
+
+      if (entity === PromptRoomDAO) {
+        return promptRoomRepository;
+      }
+
       throw new Error('예상하지 못한 DataSource Repository입니다.');
     }),
     transaction: jest.fn(
@@ -77,6 +94,8 @@ describe('MaskingReportRepository', () => {
     jest.clearAllMocks();
     reportRepository.insert.mockResolvedValue(undefined);
     detailRepository.find.mockResolvedValue([]);
+    promptLogRepository.findOne.mockResolvedValue(null);
+    promptRoomRepository.findOne.mockResolvedValue(null);
     transactionReportRepository.update.mockResolvedValue(undefined);
     transactionDetailRepository.insert.mockResolvedValue(undefined);
   });
@@ -213,7 +232,6 @@ describe('MaskingReportRepository', () => {
           policyId: '101',
           maskingContent: 'PHONE',
           maskingClass: MaskingClass.PRIVATE,
-          isActive: true,
         },
       } as MaskingDetailDAO,
     ]);
@@ -488,6 +506,34 @@ describe('MaskingReportRepository', () => {
     expectLockedReportLookup();
     expect(transactionDetailRepository.insert).not.toHaveBeenCalled();
     expect(transactionReportRepository.update).not.toHaveBeenCalled();
+  });
+
+  it('직전 분석은 MASKING 로그와 채팅방 소유자를 별도 조회한다', async () => {
+    const chatRoomId = '840c66ce-0b5d-4663-bc63-b4c4666cd0f5';
+    promptLogRepository.findOne.mockResolvedValueOnce({ maskingReportId: ticket });
+    promptRoomRepository.findOne.mockResolvedValueOnce({ promptRoomId: chatRoomId });
+    reportRepository.findOne
+      .mockResolvedValueOnce(createReport({ status: MaskingReportStatus.DONE }))
+      .mockResolvedValueOnce({
+        maskingReportId: ticket,
+        recentMaskingReportId: null,
+      });
+
+    await expect(repository.findRecentAnalyzeResult(chatRoomId, 42)).resolves
+      .toMatchObject({ ticket, recentTicket: null, originalText: '원본 텍스트' });
+
+    expect(promptLogRepository.findOne).toHaveBeenCalledWith({
+      select: { maskingReportId: true },
+      where: {
+        promptRoomId: chatRoomId,
+        status: PromptLogStatus.MASKING,
+      },
+      order: { promptLogId: 'DESC' },
+    });
+    expect(promptRoomRepository.findOne).toHaveBeenCalledWith({
+      select: { promptRoomId: true },
+      where: { promptRoomId: chatRoomId, memberId: '42' },
+    });
   });
 
   function expectLockedReportLookup(): void {

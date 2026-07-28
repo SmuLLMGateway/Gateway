@@ -37,9 +37,9 @@ LLM API 키 등록 API는 검증된 키를 AES로 암호화해 `active_api_key`�
 
 정규식 탐지 코드는 `PHONE`, `RESIDENT`, `CARD`, `EMAIL`, `API_KEY`를
 지원하지만, 이번 단계에서는 `masking_class=PRIVATE`인 정책만 사용합니다.
-등록 서비스는 대소문자와 관계없이 `Google`, `OpenAI`, `Anthropic`만 허용합니다.
-모델 연결은 서비스별 모델명 접두사 `Google → gemini`, `OpenAI → gpt`,
-`Anthropic → claude`를 대소문자 없이 비교해 생성됩니다. 분석 요청은 같은
+등록 서비스는 대소문자와 관계없이 `Gemini`, `GPT`, `Claude`만 허용합니다.
+모델 연결은 서비스별 모델명 접두사 `Gemini → gemini`, `GPT → gpt`,
+`Claude → claude`를 대소문자 없이 비교해 생성됩니다. 분석 요청은 같은
 부서의 `active_api_key → active_llm → llm_detail_model` 연결로 해당 모델의
 사용 가능 여부를 검증합니다.
 

@@ -33,7 +33,6 @@ import type { Response } from 'express';
 import {
   AnalysisStatusCheckDocs,
   ChatRoomListDocs,
-  ConversationSearchDocs,
   FileDownloadDocs,
   LlmResultCheckDocs,
   LlmSendDocs,
@@ -62,7 +61,7 @@ export class PromptController {
     @Body('file', ParseOptionalPromptFileFieldPipe) _emptyFileField: undefined,
     @Body('json', ParsePrePromptJsonPipe) dto: PromptReqDTO.PrePrompt,
     @CurrentUser() authentication: AuthenticatedUser,
-  ): Promise<GeneralResponse<PromptResDTO.Empty>> {
+  ): Promise<GeneralResponse<PromptResDTO.AnalyzeRequest>> {
     const result = await this.promptService.requestAnalyze(
       dto,
       file,
@@ -164,9 +163,9 @@ export class PromptController {
   async getPromptList(
     @Param('chatRoomId', new ParseUUIDPipe({ version: '4' }))
     chatRoomId: string,
-    @Query() dto: PromptReqDTO.PromptList,
+    @CurrentUser() authentication: AuthenticatedUser,
   ): Promise<GeneralResponse<PromptResDTO.PromptList>> {
-    const result = await this.promptService.getPromptList(chatRoomId, dto);
+    const result = await this.promptService.getPromptList(chatRoomId, authentication);
     return GeneralResponse.onSuccess(PromptSuccessStatus.PROMPT_LIST, result);
   }
 
@@ -183,12 +182,4 @@ export class PromptController {
     return GeneralResponse.onSuccess(PromptSuccessStatus.FILE_DOWNLOAD, result);
   }
 
-  @ConversationSearchDocs()
-  @Get('/api/v1/prompts/search')
-  async searchConversations(
-    @Query() dto: PromptReqDTO.Search,
-  ): Promise<GeneralResponse<PromptResDTO.Search>> {
-    const result = await this.promptService.searchPrompts(dto);
-    return GeneralResponse.onSuccess(PromptSuccessStatus.SEARCH_PROMPT, result);
-  }
 }

@@ -88,7 +88,7 @@ export class AdminController {
   @Get('/admin/v1/departments')
   async getDepartmentList(
     @Query() dto: AdminReqDTO.DepartmentList,
-  ): Promise<GeneralResponse<AdminResDTO.DepartmentList>> {
+  ): Promise<GeneralResponse<AdminResDTO.DepartmentList | null>> {
     const result = await this.adminService.getDepartments(dto);
     return GeneralResponse.onSuccess(
       AdminSuccessStatus.DEPARTMENT_LIST,
@@ -149,6 +149,7 @@ export class AdminController {
   }
 
   @SyncPoliciesDocs()
+  @Roles(UserRole.TOTAL_ADMIN)
   @Put('/admin/v1/departments/:departmentId/policies')
   async syncDepartmentPolicies(
     @Param('departmentId', ParseIntPipe) departmentId: number,
@@ -162,7 +163,7 @@ export class AdminController {
     );
     return GeneralResponse.onSuccess(
       AdminSuccessStatus.SYNC_POLICIES,
-      result as AdminResDTO.SyncPolicies,
+      result,
     );
   }
 

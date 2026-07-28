@@ -14,6 +14,7 @@ const PRE_PROMPT_FIELDS = [
   'recentTicket',
   'chatRoomId',
 ] as const;
+const REQUIRED_PRE_PROMPT_FIELDS = ['model', 'text', 'ticket'] as const;
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -50,12 +51,14 @@ export class ParsePrePromptJsonPipe
       Buffer.byteLength(text, 'utf8') > MAX_TEXT_BYTES ||
       typeof ticket !== 'string' ||
       !UUID_PATTERN.test(ticket.trim()) ||
-      (recentTicket !== null && (
+      (recentTicket !== undefined && recentTicket !== null && (
         typeof recentTicket !== 'string'
         || !UUID_PATTERN.test(recentTicket.trim())
       )) ||
-      typeof chatRoomId !== 'string' ||
-      !UUID_PATTERN.test(chatRoomId.trim())
+      (chatRoomId !== undefined && chatRoomId !== null && (
+        typeof chatRoomId !== 'string'
+        || !UUID_PATTERN.test(chatRoomId.trim())
+      ))
     ) {
       this.throwInvalidRequest();
     }
@@ -65,10 +68,12 @@ export class ParsePrePromptJsonPipe
       // 탐지 위치의 인덱스가 달라지지 않도록 원문은 변형하지 않습니다.
       text,
       ticket: ticket.trim().toLowerCase(),
-      recentTicket: recentTicket === null
+      recentTicket: recentTicket === undefined || recentTicket === null
         ? null
         : recentTicket.trim().toLowerCase(),
-      chatRoomId: chatRoomId.trim().toLowerCase(),
+      chatRoomId: chatRoomId === undefined || chatRoomId === null
+        ? null
+        : chatRoomId.trim().toLowerCase(),
     };
   }
 
@@ -80,8 +85,10 @@ export class ParsePrePromptJsonPipe
     const keys = Object.keys(value);
 
     return (
-      keys.length === PRE_PROMPT_FIELDS.length &&
-      PRE_PROMPT_FIELDS.every((field) => Object.hasOwn(value, field))
+      keys.every((field) => PRE_PROMPT_FIELDS.includes(
+        field as (typeof PRE_PROMPT_FIELDS)[number],
+      ))
+      && REQUIRED_PRE_PROMPT_FIELDS.every((field) => Object.hasOwn(value, field))
     );
   }
 

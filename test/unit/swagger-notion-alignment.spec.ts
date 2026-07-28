@@ -12,6 +12,7 @@ import { AuthController } from '../../src/domain/auth/controller/auth.controller
 import { AuthService } from '../../src/domain/auth/service/auth.service.js';
 import { NerCallbackController } from '../../src/domain/prompt/controller/ner-callback.controller.js';
 import { PromptController } from '../../src/domain/prompt/controller/prompt.controller.js';
+import { PromptReqDTO } from '../../src/domain/prompt/dto/prompt.request.dto.js';
 import { NerCallbackGuard } from '../../src/domain/prompt/guard/ner-callback.guard.js';
 import { PromptFileExceptionInterceptor } from '../../src/domain/prompt/interceptor/prompt-file-exception.interceptor.js';
 import { PromptStagedFileCleanupInterceptor } from '../../src/domain/prompt/interceptor/prompt-staged-file-cleanup.interceptor.js';
@@ -132,13 +133,6 @@ const EXPECTED_OPERATIONS: readonly ExpectedOperation[] = [
   },
   {
     method: 'get',
-    path: '/api/v1/prompts/search',
-    summary: '대화 검색',
-    operationId: 'PromptController_searchConversations',
-    tag: '프롬프트',
-  },
-  {
-    method: 'get',
     path: '/api/v1/policies',
     summary: '부서 정책 목록 조회',
     operationId: 'AdminController_getDepartmentPolicyList',
@@ -175,7 +169,7 @@ const EXPECTED_OPERATIONS: readonly ExpectedOperation[] = [
   {
     method: 'put',
     path: '/admin/v1/departments/{departmentId}/policies',
-    summary: '부서 정책 동기화',
+    summary: '부서 정책 전체 교체',
     operationId: 'AdminController_syncDepartmentPolicies',
     tag: '관리자',
   },
@@ -330,26 +324,11 @@ const EXPECTED_OPERATIONS: readonly ExpectedOperation[] = [
 
 const IN_PROGRESS_OPERATION_IDS: ReadonlySet<string> = new Set([
   'PromptController_requestMaskingElementDetection',
-  'PromptController_checkAnalysisStatus',
   'PromptController_sendToLlm',
   'PromptController_checkLlmResult',
-  'PromptController_getModelList',
-  'PromptController_getRecentMaskingElementDetection',
-  'PromptController_getPromptList',
-  'PromptController_downloadFile',
-  'PromptController_searchConversations',
-  'AdminController_getDepartmentPolicyList',
-  'UserController_getMessageHistory',
-  'UserController_getUserInfo',
-  'UserController_getMessageHistorySummary',
-  'AdminController_syncDepartmentPolicies',
-  'AdminController_getUserAccountList',
   'AdminController_getUserAccountDetail',
   'AdminController_deactivateUserAccount',
   'AdminController_restoreUserAccount',
-  'AdminController_getDepartmentList',
-  'AdminController_getDepartmentManagementSummary',
-  'AdminController_getDepartmentDetail',
   'AdminController_getDepartmentRoles',
   'AdminController_createDepartment',
   'AdminController_getAllChatLogSummary',
@@ -357,11 +336,7 @@ const IN_PROGRESS_OPERATION_IDS: ReadonlySet<string> = new Set([
   'AdminController_getUserPromptList',
   'AdminController_getPromptDetail',
   'AdminController_createUser',
-  'AdminController_getDepartmentRiskDistribution',
-  'AdminController_getPolicyDetectionCounts',
   'AdminController_getUserAccountSummary',
-  'AdminController_getRecentAdminActivities',
-  'AdminController_getOperationalStatus',
   'AdminController_getLlmUsageAndFilterDetectionTrends',
   'AdminController_updateUserInformation',
 ]);
@@ -440,28 +415,46 @@ describe('Swagger와 Notion API 명세 정합성', () => {
       EXPECTED_OPERATIONS.map(({ operationId }) => operationId),
     );
 
-    expect(IN_PROGRESS_OPERATION_IDS.size).toBe(35);
+    expect(IN_PROGRESS_OPERATION_IDS.size).toBe(16);
     for (const operationId of IN_PROGRESS_OPERATION_IDS) {
       expect(knownOperationIds.has(operationId)).toBe(true);
     }
   });
 
-  it('관리자 변경 계약의 파라미터와 DTO 필드를 노션과 동일하게 노출한다', () => {
+  it('Notion v2의 파라미터와 DTO wire field를 동일하게 노출한다', () => {
     const departmentList =
       document.paths['/admin/v1/departments']?.get;
     const departmentQueryNames = (departmentList?.parameters ?? [])
       .map((parameter) => '$ref' in parameter ? parameter.$ref : parameter.name)
       .sort();
     expect(departmentQueryNames).toEqual(['pageNumber', 'pageSize', 'query']);
+    const departmentNameQuery = (departmentList?.parameters ?? []).find(
+      (parameter) => !('$ref' in parameter) && parameter.name === 'query',
+    );
+    expect(departmentNameQuery).toMatchObject({
+      name: 'query',
+      in: 'query',
+      required: false,
+    });
 
     const apiKeyRequest = document.components?.schemas
       ?.AdminRegisterApiKeyRequest as {
         properties?: Record<string, { enum?: string[] }>;
       };
     expect(apiKeyRequest.properties?.service?.enum).toEqual([
-      'Anthropic',
-      'OpenAI',
-      'Google',
+      'Claude',
+      'GPT',
+      'Gemini',
+    ]);
+
+    const apiKeyResponse = document.components?.schemas
+      ?.AdminRegisterApiKeyResponse as {
+        properties?: Record<string, { enum?: string[] }>;
+      };
+    expect(apiKeyResponse.properties?.service?.enum).toEqual([
+      'Claude',
+      'GPT',
+      'Gemini',
     ]);
 
     const policyRequest = document.components?.schemas
@@ -497,7 +490,8 @@ describe('Swagger와 Notion API 명세 정합성', () => {
 
     const departmentItem = document.components?.schemas
       ?.DepartmentListItem as {
-        properties?: Record<string, unknown>;
+        properties?: Record<string, { type?: string; description?: string }>;
+        required?: string[];
       };
     expect(Object.keys(departmentItem.properties ?? {})).toEqual([
       'departmentId',
@@ -508,15 +502,255 @@ describe('Swagger와 Notion API 명세 정합성', () => {
       'policyCnt',
       'outbound',
       'departLimitPercent',
-      'departLimitToken',
-      'departUseToken',
+      'departLimitUsd',
+      'departUseUsd',
+    ]);
+    expect(departmentItem.required).toEqual([
+      'departmentId',
+      'departmentName',
+      'departmentUserCnt',
+      'canUseLLMModel',
+      'policyType',
+      'policyCnt',
+      'outbound',
+      'departLimitPercent',
+      'departLimitUsd',
+      'departUseUsd',
+    ]);
+    expect(departmentItem.properties?.policyType).toMatchObject({
+      enum: ['표준', '커스텀'],
+    });
+    expect(departmentItem.properties?.outbound).toMatchObject({
+      enum: ['허용', '불가'],
+    });
+    expect(departmentItem.properties?.canUseLLMModel).toMatchObject({
+      nullable: true,
+    });
+    expect(departmentItem.properties?.departLimitUsd).toMatchObject({
+      type: 'number',
+      description: expect.stringContaining('0이면 무제한'),
+    });
+    expect(departmentItem.properties?.departUseUsd).toMatchObject({
+      type: 'number',
+    });
+
+    const departmentDetail = document.components?.schemas
+      ?.DepartmentDetail as {
+        properties?: Record<string, { type?: string; nullable?: boolean }>;
+        required?: string[];
+      };
+    expect(Object.keys(departmentDetail.properties ?? {})).toEqual([
+      'departmentName',
+      'departmentAdminName',
+      'departmentAdminRole',
+      'departmentAdminAuthorize',
+      'email',
+      'userCnt',
+      'usePercent',
+      'useUsd',
+      'limitUsd',
+      'remainUsd',
+      'llmModel',
+      'mustFiltering',
+      'policies',
+    ]);
+    expect(departmentDetail.properties?.departmentAdminName).toMatchObject({
+      nullable: true,
+    });
+    expect(departmentDetail.properties?.departmentAdminRole).toMatchObject({
+      nullable: true,
+    });
+    expect(departmentDetail.properties?.departmentAdminAuthorize).toMatchObject({
+      nullable: true,
+    });
+    expect(departmentDetail.properties?.email).toMatchObject({
+      nullable: true,
+    });
+    expect(departmentDetail.properties?.usePercent).toMatchObject({
+      type: 'number',
+    });
+    expect(departmentDetail.properties?.useUsd).toMatchObject({
+      type: 'number',
+    });
+    expect(departmentDetail.properties?.limitUsd).toMatchObject({
+      type: 'number',
+    });
+    expect(departmentDetail.properties?.remainUsd).toMatchObject({
+      type: 'number',
+    });
+    expect(departmentDetail.required).toEqual([
+      'departmentName',
+      'departmentAdminName',
+      'departmentAdminRole',
+      'departmentAdminAuthorize',
+      'email',
+      'userCnt',
+      'usePercent',
+      'useUsd',
+      'limitUsd',
+      'remainUsd',
+      'llmModel',
+      'mustFiltering',
+      'policies',
+    ]);
+    expect(departmentDetail.properties).not.toHaveProperty('monthlyUsagePercent');
+    expect(departmentDetail.properties).not.toHaveProperty('monthlyUsageUsd');
+    expect(departmentDetail.properties).not.toHaveProperty('monthlyLimitUsd');
+    expect(departmentDetail.properties).not.toHaveProperty('monthlyRemainingUsd');
+    expect(departmentDetail.properties).not.toHaveProperty('useToken');
+    expect(departmentDetail.properties).not.toHaveProperty('limitToken');
+    expect(departmentDetail.properties).not.toHaveProperty('remainToken');
+
+    const syncPoliciesResponse = document.components?.schemas
+      ?.AdminSyncPoliciesResponse as {
+        properties?: Record<string, { type?: string; items?: { type?: string } }>;
+        required?: string[];
+      };
+    expect(Object.keys(syncPoliciesResponse.properties ?? {})).toEqual([
+      'targetDepartment',
+      'policies',
+    ]);
+    expect(syncPoliciesResponse.properties?.policies).toMatchObject({
+      type: 'array',
+      items: { type: 'string' },
+    });
+    expect(syncPoliciesResponse.required).toEqual([
+      'targetDepartment',
+      'policies',
     ]);
 
+    const departmentListResponse = document.components?.schemas
+      ?.AdminDepartmentListResponse as {
+        properties?: Record<string, unknown>;
+        required?: string[];
+      };
+    expect(Object.keys(departmentListResponse.properties ?? {})).toEqual([
+      'data',
+      'totalCnt',
+      'dataCnt',
+      'pageNumber',
+    ]);
+    expect(departmentListResponse.required).toEqual([
+      'data',
+      'totalCnt',
+      'dataCnt',
+      'pageNumber',
+    ]);
+
+    const departmentManagementSummary = document.components?.schemas
+      ?.DepartmentManagementSummary as {
+        properties?: Record<string, { type?: string; format?: string }>;
+        required?: string[];
+      };
+    expect(Object.keys(departmentManagementSummary.properties ?? {})).toEqual([
+      'updatedAt',
+      'totalDepartmentCnt',
+      'totalUserCnt',
+      'outboundDepartmentCnt',
+      'averageUsePercent',
+      'averageRate',
+    ]);
+    expect(departmentManagementSummary.required).toEqual([
+      'updatedAt',
+      'totalDepartmentCnt',
+      'totalUserCnt',
+      'outboundDepartmentCnt',
+      'averageUsePercent',
+      'averageRate',
+    ]);
+    expect(departmentManagementSummary.properties?.updatedAt).toMatchObject({
+      type: 'string',
+      format: 'date-time',
+    });
+
     const userItem = document.components?.schemas?.UserListItem as {
-      properties?: Record<string, unknown>;
+      properties?: Record<string, {
+        enum?: string[];
+        format?: string;
+        nullable?: boolean;
+      }>;
+      required?: string[];
     };
-    expect(userItem.properties).toHaveProperty('authorize');
-    expect(userItem.properties).not.toHaveProperty('role');
+    expect(Object.keys(userItem.properties ?? {})).toEqual([
+      'userId',
+      'name',
+      'email',
+      'department',
+      'authorize',
+      'lastLoginAt',
+      'status',
+    ]);
+    expect(userItem.required).toEqual([
+      'userId',
+      'name',
+      'email',
+      'department',
+      'authorize',
+      'lastLoginAt',
+      'status',
+    ]);
+    expect(userItem.properties?.authorize?.enum).toEqual([
+      '일반 사용자',
+      '부서 관리자',
+      '총괄 관리자',
+    ]);
+    expect(userItem.properties?.status?.enum).toEqual(['활성', '비활성']);
+    expect(userItem.properties?.department?.nullable).toBe(true);
+    expect(userItem.properties?.lastLoginAt?.format).toBe('date-time');
+
+    const userInfo = document.components?.schemas?.UserInfoResponse as {
+      properties?: Record<string, { type?: string }>;
+      required?: string[];
+    };
+    expect(Object.keys(userInfo.properties ?? {})).toEqual([
+      'email',
+      'name',
+      'department',
+      'role',
+      'filter',
+      'personalLimitRate',
+      'departmentLimitRate',
+    ]);
+    expect(userInfo.required).toEqual([
+      'email',
+      'name',
+      'department',
+      'role',
+      'filter',
+      'personalLimitRate',
+      'departmentLimitRate',
+    ]);
+
+    const messageSummary = document.components?.schemas?.UserMessageSummaryResponse as {
+      properties?: Record<string, { type?: string }>;
+      required?: string[];
+    };
+    expect(messageSummary.properties?.filterPercent).toMatchObject({
+      type: 'number',
+    });
+    expect(messageSummary.required).toEqual(expect.arrayContaining([
+      'filterPercent',
+    ]));
+  });
+
+  it('마스킹 요청 DTO는 Notion v2의 ticket 관계 필드를 필수로 노출한다', () => {
+    const metadataKey = 'swagger/apiModelProperties';
+    const recentTicket = Reflect.getMetadata(
+      metadataKey,
+      PromptReqDTO.PrePrompt.prototype,
+      'recentTicket',
+    ) as { required?: boolean; nullable?: boolean; type?: unknown };
+    const chatRoomId = Reflect.getMetadata(
+      metadataKey,
+      PromptReqDTO.PrePrompt.prototype,
+      'chatRoomId',
+    ) as { required?: boolean; nullable?: boolean; type?: unknown };
+
+    expect(recentTicket).toMatchObject({ type: String, nullable: true });
+    expect(recentTicket.required).not.toBe(false);
+    expect(chatRoomId).toMatchObject({ type: String });
+    expect(chatRoomId.nullable).toBeUndefined();
+    expect(chatRoomId.required).not.toBe(false);
   });
 
   it('노션에 없는 내부·레거시 API를 공개 Swagger에서 제외한다', () => {

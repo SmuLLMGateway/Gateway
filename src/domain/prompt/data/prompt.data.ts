@@ -1,6 +1,7 @@
 import type { MaskingClass } from '../../admin/dao/policy.dao.js';
 import type { MaskingContent } from '../type/masking-content.type.js';
 import type { MaskingReportStatus } from '../type/masking-report-status.enum.js';
+import type { PromptLogStatus } from '../type/prompt-log-status.enum.js';
 
 export namespace PromptData {
   export interface CreatePromptRoom {
@@ -12,9 +13,9 @@ export namespace PromptData {
   }
 
   export interface CreatePromptLog {
-    status: MaskingReportStatus | null;
-    communicatedAt: Date;
-    modelType: string;
+    status: PromptLogStatus | null;
+    communicatedAt: Date | null;
+    modelType: string | null;
     responseText: string | null;
     promptSummary: string;
     promptRoomId: string;
@@ -69,6 +70,7 @@ export namespace PromptData {
     originalText: string | null;
     startIdx: number | null;
     endIdx: number | null;
+    fileUrl: string | null;
     maskingContent: MaskingContent;
     maskingClass: MaskingClass;
   }

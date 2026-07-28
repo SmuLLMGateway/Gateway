@@ -7,7 +7,6 @@ import { OffsetPageData } from '../../../global/data/offset-page.data.js';
 import { ActiveApiKeyDAO } from '../dao/active-api-key.dao.js';
 import { AdminLogDAO } from '../dao/admin-log.dao.js';
 import { DepartmentDAO } from '../dao/department.dao.js';
-import { PolicyDAO } from '../dao/policy.dao.js';
 
 @Injectable()
 export class AdminMapper {
@@ -16,8 +15,6 @@ export class AdminMapper {
     private readonly departmentRepository: Repository<DepartmentDAO>,
     @InjectRepository(ActiveApiKeyDAO)
     private readonly activeApiKeyRepository: Repository<ActiveApiKeyDAO>,
-    @InjectRepository(PolicyDAO)
-    private readonly policyRepository: Repository<PolicyDAO>,
     @InjectRepository(AdminLogDAO)
     private readonly adminLogRepository: Repository<AdminLogDAO>,
   ) {}
@@ -25,6 +22,7 @@ export class AdminMapper {
   toDepartmentDAO(data: Readonly<AdminData.CreateDepartment>): DepartmentDAO {
     return this.departmentRepository.create({
       departmentName: data.departmentName,
+      mustFiltering: true,
     });
   }
 
@@ -34,17 +32,9 @@ export class AdminMapper {
     return this.activeApiKeyRepository.create({
       apiKey: data.apiKey,
       serviceType: data.serviceType,
-      departmentLimit: data.departmentLimit,
-      mustFiltering: data.mustFiltering,
+      limit: data.limit,
+      usage: data.usage,
       departmentId: data.departmentId,
-    });
-  }
-
-  toPolicyDAO(data: Readonly<AdminData.CreatePolicy>): PolicyDAO {
-    return this.policyRepository.create({
-      maskingContent: data.maskingContent,
-      maskingClass: data.maskingClass,
-      isActive: true,
     });
   }
 
@@ -81,6 +71,16 @@ export class AdminMapper {
     return {
       departmentId: data.departmentId,
       departmentName: data.departmentName,
+      departmentUserCnt: data.departmentUserCnt,
+      canUseLLMModel: data.canUseLLMModel === null
+        ? null
+        : [...data.canUseLLMModel],
+      policyType: data.policyType,
+      policyCnt: data.policyCnt,
+      outbound: data.outbound,
+      departLimitPercent: data.departLimitPercent,
+      departLimitUsd: data.departLimitUsd,
+      departUseUsd: data.departUseUsd,
     };
   }
 
@@ -94,6 +94,19 @@ export class AdminMapper {
       totalCnt: page.totalCnt,
       dataCnt: data.length,
       pageNumber: page.pageNumber,
+    };
+  }
+
+  static toDepartmentManagementSummary(
+    data: Readonly<AdminData.DepartmentManagementSummary>,
+  ): AdminResDTO.DepartmentManagementSummary {
+    return {
+      updatedAt: this.toDateTimeString(data.updatedAt),
+      totalDepartmentCnt: data.totalDepartmentCnt,
+      totalUserCnt: data.totalUserCnt,
+      outboundDepartmentCnt: data.outboundDepartmentCnt,
+      averageUsePercent: data.averageUsePercent,
+      averageRate: data.averageRate,
     };
   }
 
@@ -129,6 +142,16 @@ export class AdminMapper {
         maskingClass: policy.maskingClass,
       })),
       totalCnt: policies.length,
+    };
+  }
+
+  static toSyncPolicies(
+    targetDepartment: string,
+    policies: readonly Readonly<AdminData.PolicyListItem>[],
+  ): AdminResDTO.SyncPolicies {
+    return {
+      targetDepartment,
+      policies: policies.map((policy) => policy.maskingContent),
     };
   }
 
@@ -185,7 +208,7 @@ export class AdminMapper {
       name: data.name,
       email: data.email,
       department: data.department,
-      authorize: data.role,
+      authorize: data.authorize,
       lastLoginAt: this.toDateTimeString(data.lastLoginAt),
       status: data.status,
     };
@@ -207,6 +230,16 @@ export class AdminMapper {
 
   static toUserDetail(data: Readonly<AdminResDTO.UserDetail>): AdminResDTO.UserDetail {
     return { ...data };
+  }
+
+  static toDepartmentDetail(
+    data: Readonly<AdminResDTO.DepartmentDetail>,
+  ): AdminResDTO.DepartmentDetail {
+    return {
+      ...data,
+      llmModel: data.llmModel.map((model) => ({ ...model })),
+      policies: data.policies.map((policy) => ({ ...policy })),
+    };
   }
 
   static toDisableUser(name: string, disabledAt: string): AdminResDTO.DisableUser {

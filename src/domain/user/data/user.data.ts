@@ -22,6 +22,7 @@ export namespace UserData {
 
   export interface CreateMemberLimit {
     limit: string;
+    usage: string;
     memberId: string;
     activeApiKeyId: string;
   }

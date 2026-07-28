@@ -25,6 +25,21 @@ export class PromptRoomRepository {
     });
   }
 
+  async create(data: Readonly<PromptData.CreatePromptRoom>): Promise<void> {
+    const promptRoom = this.repository.create({ ...data });
+    await this.repository.insert(promptRoom);
+  }
+
+  async deleteByIdAndMemberId(
+    chatRoomId: string,
+    memberId: string,
+  ): Promise<void> {
+    await this.repository.delete({
+      promptRoomId: chatRoomId,
+      memberId,
+    });
+  }
+
   async findRecentByMemberId(
     memberId: string,
   ): Promise<readonly PromptData.RecentPrompt[]> {

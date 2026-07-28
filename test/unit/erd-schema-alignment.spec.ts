@@ -14,7 +14,8 @@ import { MaskingReportDAO } from '../../src/domain/prompt/dao/masking-report.dao
 import { PromptFileDAO } from '../../src/domain/prompt/dao/prompt-file.dao.js';
 import { PromptLogDAO } from '../../src/domain/prompt/dao/prompt-log.dao.js';
 import { PromptRoomDAO } from '../../src/domain/prompt/dao/prompt-room.dao.js';
-import { MASKING_CONTENT } from '../../src/domain/prompt/type/masking-content.type.js';
+import { PromptLogStatus } from '../../src/domain/prompt/type/prompt-log-status.enum.js';
+import { SECURITY_POLICY_CONTENTS } from '../../src/domain/admin/policy/security-policy.catalog.js';
 
 describe('ERD schema alignment', () => {
   const metadata = getMetadataArgsStorage();
@@ -102,15 +103,65 @@ describe('ERD schema alignment', () => {
     expect(activeApiKeyRelation).toBeUndefined();
   });
 
-  it('active_api_key에 부서별 무제한 한도값을 위한 department_limit 컬럼을 둔다', () => {
-    const departmentLimitColumn = metadata.columns.find(
+  it('active_api_key에 부서 한도·사용량·직전 사용률 컬럼을 둔다', () => {
+    const limitColumn = metadata.columns.find(
       (candidate) =>
         candidate.target === ActiveApiKeyDAO
+        && candidate.propertyName === 'limit',
+    );
+    const usageColumn = metadata.columns.find(
+      (candidate) =>
+        candidate.target === ActiveApiKeyDAO
+        && candidate.propertyName === 'usage',
+    );
+    const recentUsePercentColumn = metadata.columns.find(
+      (candidate) =>
+        candidate.target === ActiveApiKeyDAO
+        && candidate.propertyName === 'recentUsePercent',
+    );
+    const departmentLimitColumn = metadata.columns.find(
+      (candidate) =>
+        candidate.target === DepartmentDAO
         && candidate.propertyName === 'departmentLimit',
     );
 
-    expect(departmentLimitColumn?.options).toMatchObject({
-      name: 'department_limit',
+    expect(limitColumn?.options).toMatchObject({
+      name: 'limit',
+      type: 'bigint',
+      default: 0,
+    });
+    expect(usageColumn?.options).toMatchObject({
+      name: 'usage',
+      type: 'bigint',
+      default: 0,
+    });
+    expect(recentUsePercentColumn?.options).toMatchObject({
+      name: 'recent_use_percent',
+      type: 'bigint',
+      default: 0,
+    });
+    expect(recentUsePercentColumn?.options.nullable).not.toBe(true);
+    expect(departmentLimitColumn).toBeUndefined();
+  });
+
+  it('member_limit에 API 키별 한도와 사용량 컬럼을 둔다', () => {
+    const limitColumn = metadata.columns.find(
+      (candidate) =>
+        candidate.target === MemberLimitDAO
+        && candidate.propertyName === 'limit',
+    );
+    const usageColumn = metadata.columns.find(
+      (candidate) =>
+        candidate.target === MemberLimitDAO
+        && candidate.propertyName === 'usage',
+    );
+
+    expect(limitColumn?.options).toMatchObject({
+      name: 'limit',
+      type: 'bigint',
+    });
+    expect(usageColumn?.options).toMatchObject({
+      name: 'usage',
       type: 'bigint',
       default: 0,
     });
@@ -144,6 +195,38 @@ describe('ERD schema alignment', () => {
     expect(joinColumn?.name).toBe('masking_report_id');
   });
 
+  it('마스킹 요청용 prompt_log는 채팅 시각과 모델 종류를 null로 저장할 수 있다', () => {
+    const statusColumn = metadata.columns.find(
+      (candidate) => candidate.target === PromptLogDAO
+        && candidate.propertyName === 'status',
+    );
+    const communicatedAtColumn = metadata.columns.find(
+      (candidate) => candidate.target === PromptLogDAO
+        && candidate.propertyName === 'communicatedAt',
+    );
+    const modelTypeColumn = metadata.columns.find(
+      (candidate) => candidate.target === PromptLogDAO
+        && candidate.propertyName === 'modelType',
+    );
+
+    expect(statusColumn?.options).toMatchObject({
+      name: 'status',
+      type: 'varchar',
+      default: PromptLogStatus.MASKING,
+    });
+    expect(communicatedAtColumn?.options).toMatchObject({
+      name: 'communicated_at',
+      type: 'timestamp',
+      nullable: true,
+    });
+    expect(modelTypeColumn?.options).toMatchObject({
+      name: 'model_type',
+      type: 'varchar',
+      length: 50,
+      nullable: true,
+    });
+  });
+
   it('masking_detail에 nullable 파일 URL 컬럼을 등록한다', () => {
     const fileUrlColumn = metadata.columns.find(
       (candidate) =>
@@ -172,7 +255,7 @@ describe('ERD schema alignment', () => {
 
   it('ERD에서 추가된 컬럼과 UUID 채팅방 PK를 등록한다', () => {
     const cases = [
-      [ActiveApiKeyDAO, 'mustFiltering', {
+      [DepartmentDAO, 'mustFiltering', {
         name: 'must_filtering',
         type: 'boolean',
         default: true,
@@ -212,6 +295,13 @@ describe('ERD schema alignment', () => {
       );
       expect(column?.options).toMatchObject(expected);
     }
+
+    const activeApiKeyMustFiltering = metadata.columns.find(
+      (candidate) =>
+        candidate.target === ActiveApiKeyDAO
+        && candidate.propertyName === 'mustFiltering',
+    );
+    expect(activeApiKeyMustFiltering).toBeUndefined();
 
     const promptRoomId = metadata.columns.find(
       (candidate) =>
@@ -311,8 +401,27 @@ describe('ERD schema alignment', () => {
 
     expect(maskingContentColumn?.options.type).toBe('enum');
     expect(maskingContentColumn?.options.enum).toEqual(
-      Object.values(MASKING_CONTENT),
+      SECURITY_POLICY_CONTENTS,
     );
+  });
+
+  it('정책 활성 상태는 policy가 아닌 department_policy 연결에만 둔다', () => {
+    const policyIsActiveColumn = metadata.columns.find(
+      (candidate) =>
+        candidate.target === PolicyDAO
+        && candidate.propertyName === 'isActive',
+    );
+    const departmentPolicyIsActiveColumn = metadata.columns.find(
+      (candidate) =>
+        candidate.target === DepartmentPolicyDAO
+        && candidate.propertyName === 'isActive',
+    );
+
+    expect(policyIsActiveColumn).toBeUndefined();
+    expect(departmentPolicyIsActiveColumn?.options).toMatchObject({
+      name: 'is_active',
+      type: 'boolean',
+    });
   });
 
   it('부서와 정책의 N:N 관계를 department_policy 연결 엔티티로 등록한다', () => {

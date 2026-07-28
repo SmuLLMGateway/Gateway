@@ -45,7 +45,7 @@ export const UserControllerDocs = () =>
 export const MessageHistorySummaryDocs = () =>
   applyDecorators(
     ApiOperation({
-      summary: '대화 기록 요약 조회 (구현 중)',
+      summary: '대화 기록 요약 조회',
       description: '현재 사용자의 대화 기록 집계 요약을 조회합니다.',
     }),
     ApiSuccessResponse(
@@ -58,7 +58,7 @@ export const MessageHistorySummaryDocs = () =>
 export const UserInfoDocs = () =>
   applyDecorators(
     ApiOperation({
-      summary: '사용자 정보 조회 (구현 중)',
+      summary: '사용자 정보 조회',
       description: '현재 로그인한 사용자의 정보를 조회합니다.',
     }),
     ApiSuccessResponse(
@@ -71,8 +71,8 @@ export const UserInfoDocs = () =>
 export const MessageHistoryDocs = () =>
   applyDecorators(
     ApiOperation({
-      summary: '대화 기록 조회 (구현 중)',
-      description: '조회 기간, 정렬 기준 또는 검색어에 따라 대화 기록을 조회합니다.',
+      summary: '대화 기록 조회',
+      description: '조회 기간에 전송된 대화 기록을 프롬프트 단위로 조회합니다.',
     }),
     ApiQuery({
       name: 'recent',
@@ -124,7 +124,7 @@ export const DepartmentPolicyListDocs = () =>
       UserResDTO.DepartmentPolicyList,
     ),
     ApiOperation({
-      summary: '부서 정책 목록 조회 (구현 중)',
+      summary: '부서 정책 목록 조회',
       description: '현재 사용자가 소속된 부서의 정책 목록을 조회합니다.',
     }),
     ApiSuccessResponse(

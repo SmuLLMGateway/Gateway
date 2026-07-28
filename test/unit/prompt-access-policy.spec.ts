@@ -45,6 +45,8 @@ describe('PromptService 부서 접근 및 정책 조회', () => {
     cancelNer: jest.fn(),
   };
   const promptRoomRepository = {
+    create: jest.fn(),
+    deleteByIdAndMemberId: jest.fn(),
     existsByIdAndMemberId: jest.fn(),
   };
 
@@ -93,6 +95,8 @@ describe('PromptService 부서 접근 및 정책 조회', () => {
     });
     activeLlmRepository.find.mockResolvedValue([]);
     maskingReportRepository.validateRequestTickets.mockResolvedValue(undefined);
+    promptRoomRepository.create.mockResolvedValue(undefined);
+    promptRoomRepository.deleteByIdAndMemberId.mockResolvedValue(undefined);
     promptRoomRepository.existsByIdAndMemberId.mockResolvedValue(true);
     policyRepository.find.mockResolvedValue([]);
     maskingReportRepository.create.mockResolvedValue(undefined);
@@ -102,7 +106,9 @@ describe('PromptService 부서 접근 및 정책 조회', () => {
   });
 
   it('회원 부서에서 활성화된 모델, 요청 티켓, 소유 채팅방을 검증한 뒤 리포트를 생성한다', async () => {
-    await expect(requestAnalyze('Claude Sonnet 5')).resolves.toBeNull();
+    await expect(requestAnalyze('Claude Sonnet 5')).resolves.toEqual({
+      chatRoomId,
+    });
 
     expect(memberDepartmentRepository.findOne).toHaveBeenCalledWith({
       select: { departmentId: true },
@@ -111,7 +117,7 @@ describe('PromptService 부서 접근 및 정책 조회', () => {
     expect(activeLlmRepository.findOne).toHaveBeenCalledWith({
       select: { activeLlmId: true },
       where: {
-        activeApiKey: { departmentId: '10', serviceType: 'Anthropic' },
+        activeApiKey: { departmentId: '10', serviceType: 'Claude' },
         llmDetailModel: { llmName: 'Claude Sonnet 5' },
       },
     });
@@ -142,14 +148,56 @@ describe('PromptService 부서 접근 및 정책 조회', () => {
     expect(validationOrder).toEqual([...validationOrder].sort((a, b) => a! - b!));
   });
 
+  it('chatRoomId가 null인 최초 요청은 서버 UUID와 원문 요약으로 채팅방을 생성한다', async () => {
+    const text = '  첫 번째 요청입니다.\n 다음 문장도 제목에 포함됩니다.  ';
+
+    const result = await service.requestAnalyze(
+      {
+        model: 'GPT-5.4-nano',
+        text,
+        ticket,
+        recentTicket: null,
+        chatRoomId: null,
+      },
+      undefined,
+      authentication,
+    );
+
+    expect(promptRoomRepository.existsByIdAndMemberId).not.toHaveBeenCalled();
+    const createdRoom = promptRoomRepository.create.mock.calls[0]?.[0] as {
+      promptRoomId: string;
+      startedAt: Date;
+      lastCommunicatedAt: Date;
+      promptRoomTitle: string;
+      memberId: string;
+    };
+    expect(createdRoom).toEqual({
+      promptRoomId: expect.stringMatching(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+      ),
+      startedAt: expect.any(Date),
+      lastCommunicatedAt: expect.any(Date),
+      promptRoomTitle: '첫 번째 요청입니다. 다음 문장도 제목에 포함됩니다.',
+      memberId: String(authentication.userId),
+    });
+    expect(createdRoom.startedAt).toBe(createdRoom.lastCommunicatedAt);
+    expect(result).toEqual({ chatRoomId: createdRoom.promptRoomId });
+    expect(maskingReportRepository.create).toHaveBeenCalledWith(
+      ticket,
+      authentication.userId,
+      text,
+      null,
+    );
+  });
+
   it.each([
-    ['Claude Sonnet 5', 'Anthropic'],
-    ['GPT-4o', 'OpenAI'],
-    ['Gemini 2.5 Pro', 'Google'],
+    ['Claude Sonnet 5', 'Claude'],
+    ['GPT-4o', 'GPT'],
+    ['Gemini 2.5 Pro', 'Gemini'],
   ] as const)(
     '%s 모델과 %s provider가 모두 활성화되어 있는지 조회한다',
     async (model, provider) => {
-      await expect(requestAnalyze(model)).resolves.toBeNull();
+      await expect(requestAnalyze(model)).resolves.toEqual({ chatRoomId });
 
       expect(activeLlmRepository.findOne).toHaveBeenCalledWith({
         select: { activeLlmId: true },
@@ -205,7 +253,7 @@ describe('PromptService 부서 접근 및 정책 조회', () => {
     expect(activeLlmRepository.findOne).toHaveBeenCalledWith({
       select: { activeLlmId: true },
       where: {
-        activeApiKey: { departmentId: '10', serviceType: 'Anthropic' },
+        activeApiKey: { departmentId: '10', serviceType: 'Claude' },
         llmDetailModel: { llmName: 'Claude 미등록 모델' },
       },
     });
@@ -290,7 +338,6 @@ describe('PromptService 부서 접근 및 정책 조회', () => {
         maskingClass: true,
       },
       where: {
-        isActive: true,
         maskingClass: MaskingClass.PRIVATE,
         departmentPolicies: {
           departmentId: '10',
@@ -320,7 +367,7 @@ describe('PromptService 부서 접근 및 정책 조회', () => {
     model: string,
     text = '',
     requestRecentTicket: string | null = null,
-  ): Promise<null> {
+  ) {
     return service.requestAnalyze(
       {
         model,
@@ -344,6 +391,5 @@ function createPolicy(
     policyId,
     maskingContent,
     maskingClass,
-    isActive: true,
   } as PolicyDAO;
 }

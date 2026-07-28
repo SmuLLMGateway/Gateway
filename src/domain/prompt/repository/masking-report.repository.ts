@@ -4,6 +4,7 @@ import { PromptErrorStatus } from '../code/prompt.status.js';
 import { MaskingDetailDAO } from '../dao/masking-detail.dao.js';
 import { MaskingReportDAO } from '../dao/masking-report.dao.js';
 import { PromptLogDAO } from '../dao/prompt-log.dao.js';
+import { PromptRoomDAO } from '../dao/prompt-room.dao.js';
 import type { PromptData } from '../data/prompt.data.js';
 import { PromptException } from '../exception/prompt.exception.js';
 import { PromptMapper } from '../mapper/prompt.mapper.js';
@@ -11,6 +12,7 @@ import {
   normalizeMaskingContent,
 } from '../type/masking-content.type.js';
 import { MaskingReportStatus } from '../type/masking-report-status.enum.js';
+import { PromptLogStatus } from '../type/prompt-log-status.enum.js';
 
 @Injectable()
 export class MaskingReportRepository {
@@ -157,6 +159,7 @@ export class MaskingReportRepository {
           originalText: detail.originalText,
           startIdx: detail.startIdx,
           endIdx: detail.endIdx,
+          fileUrl: detail.fileUrl,
           maskingContent,
           maskingClass: detail.policy.maskingClass,
         };
@@ -170,17 +173,26 @@ export class MaskingReportRepository {
   ): Promise<PromptData.RecentAnalyzeReport | null> {
     const promptLog = await this.dataSource.getRepository(PromptLogDAO).findOne({
       select: { maskingReportId: true },
-      relations: { promptRoom: true },
       where: {
         promptRoomId: chatRoomId,
-        promptRoom: { memberId: String(memberId) },
+        status: PromptLogStatus.MASKING,
       },
       order: {
-        communicatedAt: 'DESC',
         promptLogId: 'DESC',
       },
     });
     if (promptLog === null) {
+      return null;
+    }
+
+    const promptRoom = await this.dataSource.getRepository(PromptRoomDAO).findOne({
+      select: { promptRoomId: true },
+      where: {
+        promptRoomId: chatRoomId,
+        memberId: String(memberId),
+      },
+    });
+    if (promptRoom === null) {
       return null;
     }
 

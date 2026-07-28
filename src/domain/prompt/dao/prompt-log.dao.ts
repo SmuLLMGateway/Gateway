@@ -9,7 +9,7 @@ import {
 import type { Relation } from "typeorm";
 import { MaskingReportDAO } from "./masking-report.dao.js";
 import { PromptRoomDAO } from "./prompt-room.dao.js";
-import { MaskingReportStatus } from "../type/masking-report-status.enum.js";
+import { PromptLogStatus } from '../type/prompt-log-status.enum.js';
 
 export const PROMPT_LOG_TABLE = 'prompt_log' as const;
 
@@ -23,15 +23,15 @@ export class PromptLogDAO {
         type: 'varchar',
         length: 10,
         nullable: true,
-        default: MaskingReportStatus.PENDING
+        default: PromptLogStatus.MASKING
     })
-    status!: MaskingReportStatus | null;
+    status!: PromptLogStatus | null;
 
-    @Column({ name: 'communicated_at', type: 'timestamp' })
-    communicatedAt!: Date;
+    @Column({ name: 'communicated_at', type: 'timestamp', nullable: true })
+    communicatedAt!: Date | null;
 
-    @Column({ name: 'model_type', type: 'varchar', length: 50 })
-    modelType!: string;
+    @Column({ name: 'model_type', type: 'varchar', length: 50, nullable: true })
+    modelType!: string | null;
 
     @Column({ name: 'response_text', type: 'text', nullable: true })
     responseText!: string | null;

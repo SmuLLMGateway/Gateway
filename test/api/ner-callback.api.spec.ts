@@ -178,7 +178,6 @@ describe('NER 분석 결과 콜백 HTTP API', () => {
         maskingClass: true,
       },
       where: {
-        isActive: true,
         departmentPolicies: {
           departmentId: '10',
           isActive: true,

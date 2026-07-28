@@ -138,14 +138,19 @@ export const DepartmentListDocs = () =>
   applyDecorators(
     adminTag(),
     ApiOperation({
-      summary: '부서 목록 조회 (구현 중)',
-      description: '부서 목록을 조회합니다.',
+      summary: '부서 목록 조회',
+      description: '부서명을 선택적으로 검색하여 이름순으로 페이지 조회합니다. 조회 결과가 없으면 result는 null입니다.',
     }),
     ApiSuccessResponse(
       AdminSuccessStatus.DEPARTMENT_LIST,
       SwaggerResultSchema.model(getSchemaPath(AdminResDTO.DepartmentList), true),
     ),
-    ...commonErrors(),
+    ...ApiErrorResponses([
+      AdminErrorStatus.INVALID_DEPARTMENT_LIST_QUERY,
+      AuthErrorStatus.TOKEN_EXPIRED,
+      AuthErrorStatus.FORBIDDEN,
+      ErrorStatus.INTERNAL_SERVER_ERROR,
+    ]),
   );
 
 export const RegisterApiKeyDocs = () =>
@@ -173,8 +178,8 @@ export const SyncPoliciesDocs = () =>
   applyDecorators(
     adminTag(),
     ApiOperation({
-      summary: '부서 정책 동기화 (구현 중)',
-      description: '부서 정책을 동기화합니다.',
+      summary: '부서 정책 전체 교체',
+      description: '총괄 관리자가 부서의 기존 정책 연결을 삭제하고 요청한 정책 목록으로 다시 생성합니다.',
     }),
     departmentIdParam(),
     ApiSuccessResponse(
@@ -183,6 +188,7 @@ export const SyncPoliciesDocs = () =>
     ),
     ...ApiErrorResponses([
       AdminErrorStatus.DUPLICATE_POLICY,
+      AdminErrorStatus.INVALID_POLICY,
       AdminErrorStatus.DEPARTMENT_NOT_FOUND,
       AuthErrorStatus.TOKEN_EXPIRED,
       AuthErrorStatus.FORBIDDEN,
@@ -194,7 +200,7 @@ export const DashboardDocs = () =>
   applyDecorators(
     adminTag(),
     ApiOperation({
-      summary: '운영 현황 조회 (구현 중)',
+      summary: '운영 현황 조회',
       description: '운영 현황을 조회합니다.',
     }),
     ApiSuccessResponse(
@@ -219,12 +225,12 @@ export const AdminLogsDocs = () =>
   applyDecorators(
     adminTag(),
     ApiOperation({
-      summary: '최근 관리자 활동 조회 (구현 중)',
+      summary: '최근 관리자 활동 조회',
       description: '최근 관리자 활동을 조회합니다.',
     }),
     ApiSuccessResponse(
       AdminSuccessStatus.ADMIN_LOGS,
-      SwaggerResultSchema.array(getSchemaPath(AdminResDTO.AdminLog)),
+      SwaggerResultSchema.array(getSchemaPath(AdminResDTO.AdminLog), true),
     ),
     ...commonErrors(),
   );
@@ -233,7 +239,7 @@ export const PolicyDetectDocs = () =>
   applyDecorators(
     adminTag(),
     ApiOperation({
-      summary: '정책별 감지 건수 조회 (구현 중)',
+      summary: '정책별 감지 건수 조회',
       description: '정책별 감지 건수를 조회합니다.',
     }),
     ApiSuccessResponse(
@@ -247,7 +253,7 @@ export const DepartmentRisksDocs = () =>
   applyDecorators(
     adminTag(),
     ApiOperation({
-      summary: '부서별 위험 분포 조회 (구현 중)',
+      summary: '부서별 위험 분포 조회',
       description: '부서별 위험 분포를 조회합니다.',
     }),
     ApiSuccessResponse(
@@ -275,7 +281,7 @@ export const UserListDocs = () =>
   applyDecorators(
     adminTag(),
     ApiOperation({
-      summary: '사용자 계정 목록 조회 (구현 중)',
+      summary: '사용자 계정 목록 조회',
       description: '사용자 계정 목록을 조회합니다.',
     }),
     ApiSuccessResponse(
@@ -417,8 +423,8 @@ export const DepartmentManagementSummaryDocs = () =>
   applyDecorators(
     adminTag(),
     ApiOperation({
-      summary: '부서 관리 요약 조회 (구현 중)',
-      description: '부서 수, 사용자 수 및 평균 사용률 요약을 조회합니다.',
+      summary: '부서 관리 요약 조회',
+      description: '부서 수, 사용자 수, 외부 전송 허용 부서 수 및 평균 사용률 요약을 조회합니다.',
     }),
     ApiSuccessResponse(
       AdminSuccessStatus.DEPARTMENT_SUMMARY,
@@ -433,7 +439,7 @@ export const DepartmentDetailDocs = () =>
   applyDecorators(
     adminTag(),
     ApiOperation({
-      summary: '부서 상세 조회 (구현 중)',
+      summary: '부서 상세 조회',
       description: '부서 관리자, 사용량, LLM 모델 및 정책 상세를 조회합니다.',
     }),
     departmentIdParam(),

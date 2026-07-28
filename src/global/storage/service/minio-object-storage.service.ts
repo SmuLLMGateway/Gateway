@@ -42,6 +42,11 @@ export interface CopiedObjectInfo {
   readonly versionId: string | null;
 }
 
+export interface PresignedGetResponseOptions {
+  readonly contentType: string;
+  readonly contentDisposition: string;
+}
+
 /**
  * 비공개 MinIO 버킷에 대한 저장소 I/O만 담당합니다.
  * 버킷 생성이나 public policy 설정 API는 의도적으로 제공하지 않습니다.
@@ -216,6 +221,7 @@ export class MinioObjectStorageService {
   async presignedGetObject(
     objectKey: string,
     expiresSeconds: number = this.config.presignedGetTtlSeconds,
+    responseOptions?: Readonly<PresignedGetResponseOptions>,
   ): Promise<string> {
     this.assertObjectKey(objectKey);
 
@@ -229,10 +235,27 @@ export class MinioObjectStorageService {
       );
     }
 
+    if (responseOptions === undefined) {
+      return this.presignClient.presignedGetObject(
+        this.config.bucket,
+        objectKey,
+        expiresSeconds,
+      );
+    }
+
+    this.assertHeaderValue('contentType', responseOptions.contentType);
+    this.assertHeaderValue(
+      'contentDisposition',
+      responseOptions.contentDisposition,
+    );
     return this.presignClient.presignedGetObject(
       this.config.bucket,
       objectKey,
       expiresSeconds,
+      {
+        'response-content-type': responseOptions.contentType,
+        'response-content-disposition': responseOptions.contentDisposition,
+      },
     );
   }
 

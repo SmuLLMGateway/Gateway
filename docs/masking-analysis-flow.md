@@ -69,13 +69,13 @@ NER 서버 요청은 아직 실행하지 않습니다. 비활성화 기간에는
 
 `POST /admin/v1/departments/{departmentId}/apis`는 `TOTAL_ADMIN`이 부서에
 외부 LLM API 키를 등록하는 경로입니다. 서비스 값은 대소문자를 구분하지 않고
-`Google`, `OpenAI`, `Anthropic`만 허용합니다. 검증을 통과한 키는 AES로
-암호화해 `active_api_key`에 저장하며, 필터링 강제 전송은 `true`, 부서 한도는
-무제한을 뜻하는 `0`으로 저장합니다.
+`Gemini`, `GPT`, `Claude`만 허용합니다. 검증을 통과한 키는 AES로
+암호화해 `active_api_key`에 저장합니다. 필터링 강제 전송(`true`)과 부서 한도
+(`0`은 무제한)는 키별 설정이 아니라 `department`의 공통 설정으로 저장합니다.
 
 등록 시 서비스별 모델명 접두사와 일치하는 `llm_detail_model`을 찾아
-`active_llm`으로 연결합니다. 매핑은 `Google → gemini`, `OpenAI → gpt`,
-`Anthropic → claude`이며 접두사 비교도 대소문자를 구분하지 않습니다. 분석과
+`active_llm`으로 연결합니다. 매핑은 `Gemini → gemini`, `GPT → gpt`,
+`Claude → claude`이며 접두사 비교도 대소문자를 구분하지 않습니다. 분석과
 모델 목록 조회는 이 `active_api_key → active_llm → llm_detail_model` 경로로
 부서의 사용 가능 모델을 판별합니다.
 

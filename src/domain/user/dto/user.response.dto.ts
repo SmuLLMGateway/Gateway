@@ -12,19 +12,17 @@ export namespace UserResDTO {
         @ApiProperty({ type: String, example: '기획 1팀' })
         department!: string;
 
-        @ApiProperty({ type: String, example: '일반 사용자' })
+        @ApiProperty({ type: String, enum: ['일반 사용자', '부서 관리자', '총 관리자'], example: '일반 사용자' })
         role!: string;
 
-        // 마이페이지 비즈니스 구현 전까지 내부 반환 타입만 선택적으로 둡니다.
-        // Swagger 계약에서는 ApiProperty에 의해 필수 응답 필드로 노출됩니다.
-        @ApiProperty({ type: Number, example: 17, description: '필터 감지 수' })
-        filter?: number;
+        @ApiProperty({ type: Number, example: 17, description: '이번 달 외부·내부 LLM 전송 프롬프트 중 보안 정책 탐지 수' })
+        filter!: number;
 
-        @ApiProperty({ type: Number, example: 45.5, description: '개인 한도 사용률' })
-        personalLimitRate?: number;
+        @ApiProperty({ type: Number, example: 45.5, description: '이번 달 개인 사용량(member_limit.usage 합계)' })
+        personalLimitRate!: number;
 
-        @ApiProperty({ type: Number, example: 61.2, description: '부서 한도 사용률' })
-        departmentLimitRate?: number;
+        @ApiProperty({ type: Number, example: 61.2, description: '이번 달 부서 사용량(active_api_key.usage 합계)' })
+        departmentLimitRate!: number;
     }
 
     @ApiSchema({ name: 'UserMessageSummaryResponse' })
@@ -42,9 +40,8 @@ export namespace UserResDTO {
         @ApiProperty({ example: 17, description: '필터 감지 수' })
         filter!: number;
 
-        // 마이페이지 비즈니스 구현 전까지 내부 반환 타입만 선택적으로 둡니다.
         @ApiProperty({ example: 40.5, description: '필터 감지율' })
-        filterPercent?: number;
+        filterPercent!: number;
 
         @ApiProperty({ example: 31, description: '마스킹 후 전송 수' })
         masking!: number;

@@ -27,11 +27,6 @@ export const PromptSuccessStatus = {
         code: 'PROM200_5',
         message: '성공적으로 채팅 과거 기록을 조회했습니다.'
     },
-    SEARCH_PROMPT: {
-        httpStatus: HttpStatus.OK,
-        code: 'PROM200_6',
-        message: '성공적으로 채팅 내역을 검색했습니다.'
-    },
     FILE_DOWNLOAD: {
         httpStatus: HttpStatus.OK,
         code: 'PROM200_7',

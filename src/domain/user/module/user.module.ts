@@ -7,11 +7,17 @@ import { MemberDepartmentDAO } from '../dao/member-department.dao.js';
 import { MemberLimitDAO } from '../dao/member-limit.dao.js';
 import { UserMapper } from '../mapper/user.mapper.js';
 import { DepartmentDAO } from '../../admin/dao/department.dao.js';
+import { ActiveApiKeyDAO } from '../../admin/dao/active-api-key.dao.js';
+import { PromptLogDAO } from '../../prompt/dao/prompt-log.dao.js';
+import { MaskingDetailDAO } from '../../prompt/dao/masking-detail.dao.js';
 
 @Module({
   imports: [
     TypeOrmModule.forFeature([
       DepartmentDAO,
+      ActiveApiKeyDAO,
+      PromptLogDAO,
+      MaskingDetailDAO,
       MemberDAO,
       MemberDepartmentDAO,
       MemberLimitDAO,

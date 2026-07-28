@@ -5,8 +5,8 @@ import {
     PrimaryGeneratedColumn
 } from "typeorm";
 import type { Relation } from "typeorm";
-import { MASKING_CONTENT } from "../../prompt/type/masking-content.type.js";
 import { DepartmentPolicyDAO } from "./department-policy.dao.js";
+import { SECURITY_POLICY_CONTENTS } from "../policy/security-policy.catalog.js";
 
 export const POLICY_TABLE = 'policy' as const;
 
@@ -23,15 +23,12 @@ export class PolicyDAO {
     @Column({
         name: 'masking_content',
         type: 'enum',
-        enum: Object.values(MASKING_CONTENT)
+        enum: SECURITY_POLICY_CONTENTS
     })
     maskingContent!: string;
 
     @Column({ name: 'masking_class', type: 'enum', enum: MaskingClass })
     maskingClass!: MaskingClass;
-
-    @Column({ name: 'is_active', type: 'boolean', default: true })
-    isActive!: boolean;
 
     @OneToMany(
         () => DepartmentPolicyDAO,

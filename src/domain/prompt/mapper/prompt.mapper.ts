@@ -79,7 +79,7 @@ export class PromptMapper {
   static toMaskingFile(
     fileOriginalName: string,
     fileUrl: string,
-    maskingCategory: string,
+    maskingCategory: string | null,
     detectCnt: number,
   ): PromptResDTO.MaskingFile {
     return { fileOriginalName, fileUrl, maskingCategory, detectCnt };
@@ -95,17 +95,19 @@ export class PromptMapper {
     return {
       targetText,
       startIdx,
-      endIdx,
+      // DB와 내부 탐지 범위는 [startIdx, endIdx)로 유지한다. API는 사용자가
+      // 바로 문자 범위를 해석할 수 있도록 종료 문자의 인덱스를 반환한다.
+      endIdx: endIdx - 1,
       maskingCategory,
       detailCategory,
     };
   }
 
   static toMasking(
-    file: PromptResDTO.MaskingFile | null,
+    file: PromptResDTO.MaskingFile[] | null,
     text: PromptResDTO.MaskingText[],
   ): PromptResDTO.Masking {
-    return { file, text: [...text] };
+    return { file, text: text.length === 0 ? null : [...text] };
   }
 
   static toAnalyze(
@@ -117,10 +119,10 @@ export class PromptMapper {
 
   static toAnalyzeResult(
     report: Readonly<PromptData.AnalyzeReport>,
-    promptFile?: Readonly<{ fileOriginalName: string; fileUrl: string }>,
+    promptFiles: readonly Readonly<{ fileOriginalName: string; fileUrl: string }>[] = [],
   ): PromptResDTO.Analyze | null {
-    const masking = this.toAnalyzeMasking(report, promptFile);
-    if (masking.text.length === 0 && masking.file === null) {
+    const masking = this.toAnalyzeMasking(report, promptFiles);
+    if (masking.text === null && masking.file === null) {
       return null;
     }
 
@@ -129,19 +131,19 @@ export class PromptMapper {
 
   static toRecentAnalyze(
     report: Readonly<PromptData.RecentAnalyzeReport>,
-    promptFile?: Readonly<{ fileOriginalName: string; fileUrl: string }>,
+    promptFiles: readonly Readonly<{ fileOriginalName: string; fileUrl: string }>[] = [],
   ): PromptResDTO.RecentAnalyze {
     return {
       ticket: report.ticket,
       recentTicket: report.recentTicket,
       originText: report.originalText,
-      masking: this.toAnalyzeMasking(report, promptFile),
+      masking: this.toAnalyzeMasking(report, promptFiles),
     };
   }
 
   private static toAnalyzeMasking(
     report: Readonly<PromptData.AnalyzeReport>,
-    promptFile?: Readonly<{ fileOriginalName: string; fileUrl: string }>,
+    promptFiles: readonly Readonly<{ fileOriginalName: string; fileUrl: string }>[],
   ): PromptResDTO.Masking {
     const text: PromptResDTO.MaskingText[] = [];
     const fileDetections: PromptData.AnalyzeDetail[] = [];
@@ -173,7 +175,7 @@ export class PromptMapper {
     }
 
     return this.toMasking(
-      this.toAnalyzeFile(promptFile, fileDetections),
+      this.toAnalyzeFiles(promptFiles, fileDetections),
       text,
     );
   }
@@ -212,52 +214,61 @@ export class PromptMapper {
     return url;
   }
 
-  static toSearch<T>(result: T): T {
-    return result;
-  }
-
-  private static toAnalyzeFile(
-    promptFile:
-      | Readonly<{ fileOriginalName: string; fileUrl: string }>
-      | undefined,
+  private static toAnalyzeFiles(
+    promptFiles: readonly Readonly<{ fileOriginalName: string; fileUrl: string }>[],
     detections: readonly PromptData.AnalyzeDetail[],
-  ): PromptResDTO.MaskingFile | null {
-    if (detections.length === 0) {
+  ): PromptResDTO.MaskingFile[] | null {
+    if (promptFiles.length === 0) {
+      if (detections.length > 0) {
+        throw new Error('파일 탐지 결과에 연결된 프롬프트 파일이 없습니다.');
+      }
       return null;
     }
 
-    if (promptFile === undefined) {
-      throw new Error('파일 탐지 결과에 연결된 프롬프트 파일이 없습니다.');
+    const detectionsByFileUrl = new Map<string, PromptData.AnalyzeDetail[]>();
+    for (const detection of detections) {
+      if (detection.fileUrl === null) {
+        throw new Error('파일 탐지 결과의 파일 URL이 올바르지 않습니다.');
+      }
+      const grouped = detectionsByFileUrl.get(detection.fileUrl) ?? [];
+      grouped.push(detection);
+      detectionsByFileUrl.set(detection.fileUrl, grouped);
     }
 
-    const { fileOriginalName, fileUrl } = promptFile;
-    if (
-      fileUrl.length === 0
-      || fileUrl.length > 1_024
-      || fileUrl.trim() !== fileUrl
-    ) {
+    return promptFiles.flatMap((promptFile) => {
+      const { fileOriginalName, fileUrl } = promptFile;
+      this.validateAnalyzeFileReference(fileOriginalName, fileUrl);
+      const fileDetections = detectionsByFileUrl.get(fileUrl) ?? [];
+      if (fileDetections.length === 0) {
+        return [this.toMaskingFile(fileOriginalName, fileUrl, null, 0)];
+      }
+      return [MaskingClass.SENSITIVE, MaskingClass.PRIVATE]
+        .flatMap((maskingClass) => {
+          const count = fileDetections.filter(
+            (detection) => detection.maskingClass === maskingClass,
+          ).length;
+          return count === 0
+            ? []
+            : [this.toMaskingFile(
+              fileOriginalName,
+              fileUrl,
+              this.toMaskingCategory(maskingClass),
+              count,
+            )];
+        });
+    });
+  }
+
+  private static validateAnalyzeFileReference(
+    fileOriginalName: string,
+    fileUrl: string,
+  ): void {
+    if (fileUrl.length === 0 || fileUrl.length > 1_024 || fileUrl.trim() !== fileUrl) {
       throw new Error('프롬프트 파일 URL이 올바르지 않습니다.');
     }
-    if (
-      fileOriginalName.length === 0
-      || fileOriginalName.length > 1_024
-      || fileOriginalName.trim() !== fileOriginalName
-    ) {
+    if (fileOriginalName.length === 0 || fileOriginalName.length > 1_024 || fileOriginalName.trim() !== fileOriginalName) {
       throw new Error('프롬프트 파일 원본 이름이 올바르지 않습니다.');
     }
-
-    const maskingCategory = detections.some(
-      (detection) => detection.maskingClass === MaskingClass.SENSITIVE,
-    )
-      ? this.toMaskingCategory(MaskingClass.SENSITIVE)
-      : this.toMaskingCategory(MaskingClass.PRIVATE);
-
-    return this.toMaskingFile(
-      fileOriginalName,
-      fileUrl,
-      maskingCategory,
-      detections.length,
-    );
   }
 
   private static toMaskingCategory(maskingClass: MaskingClass): string {

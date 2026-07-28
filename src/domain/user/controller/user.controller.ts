@@ -29,10 +29,12 @@ export class UserController {
 
   @MessageHistorySummaryDocs()
   @Get('/api/v1/message-summary')
-  async getMessageHistorySummary(): Promise<
+  async getMessageHistorySummary(
+    @CurrentUser() authentication: AuthenticatedUser,
+  ): Promise<
     GeneralResponse<UserResDTO.MessageSummary>
   > {
-    const result = await this.userService.getMessageSummary();
+    const result = await this.userService.getMessageSummary(authentication);
     return GeneralResponse.onSuccess(UserSuccessStatus.MESSAGE_SUMMARY, result);
   }
 
@@ -40,8 +42,9 @@ export class UserController {
   @Get('/api/v1/messages')
   async getMessageHistory(
     @Query() dto: UserReqDTO.MessageList,
+    @CurrentUser() authentication: AuthenticatedUser,
   ): Promise<GeneralResponse<UserResDTO.MessageList>> {
-    const result = await this.userService.getMessages(dto);
+    const result = await this.userService.getMessages(dto, authentication);
     return GeneralResponse.onSuccess(UserSuccessStatus.MESSAGE_LIST, result);
   }
 }

@@ -1,24 +1,6 @@
 import { ApiProperty, ApiPropertyOptional, ApiSchema } from "@nestjs/swagger";
 import { UserRole } from "../../../global/security/type/user-role.enum.js";
-
-const ADMIN_POLICY_CODES = [
-    'SECURITY_INFRA',
-    'OPERATION',
-    'STATE_SECRET',
-    'CONTRACT',
-    'PERSONAL',
-    'CITIZEN',
-    'AUDIT',
-    'INFO_SYSTEM_ACCESS_LOG',
-    'R&D',
-    'RESIDENT',
-    'PHONE',
-    'EMAIL',
-    'ACCOUNT',
-    'CARD',
-    'ADDRESS',
-    'API_KEY'
-] as const;
+import { SECURITY_POLICY_CONTENTS } from '../policy/security-policy.catalog.js';
 
 export namespace AdminReqDTO {
     @ApiSchema({ name: 'AdminCreateUserRequest' })
@@ -69,7 +51,7 @@ export namespace AdminReqDTO {
         @ApiProperty({ example: 1, description: '현재 페이지 번호' })
         pageNumber!: number;
 
-        @ApiProperty({ example: '감사', description: '부서명 검색 키워드' })
+        @ApiPropertyOptional({ example: '감사', description: '부서명 검색 키워드' })
         query?: string;
     }
 
@@ -79,27 +61,22 @@ export namespace AdminReqDTO {
         apiKey!: string;
 
         @ApiProperty({
-            example: 'OpenAI',
-            enum: ['Anthropic', 'OpenAI', 'Google'],
-            description: 'LLM 서비스: Anthropic, OpenAI, Google'
+            example: 'GPT',
+            enum: ['Claude', 'GPT', 'Gemini'],
+            description: 'LLM 서비스: Claude, GPT, Gemini'
         })
         service!: string;
-    }
-
-    export interface PolicyInput {
-        maskingContent: string;
-        maskingClass: string;
     }
 
     @ApiSchema({ name: 'AdminSyncPoliciesRequest' })
     export class SyncPolicies {
         @ApiProperty({
             type: [String],
-            enum: ADMIN_POLICY_CODES,
+            enum: SECURITY_POLICY_CONTENTS,
             example: ['PHONE', 'API_KEY'],
-            description: '최종 적용할 부서 정책 코드 목록'
+            description: '최종 적용할 부서 정책 코드 목록입니다. 빈 배열은 해당 부서의 정책을 모두 해제합니다.'
         })
-        policies!: string[] | PolicyInput[];
+        policies!: string[];
     }
 
     @ApiSchema({ name: 'AdminTrendsQuery' })

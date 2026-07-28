@@ -1,11 +1,13 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
+import { randomUUID } from 'node:crypto';
 import { Repository } from 'typeorm';
 import { MaskingClass, PolicyDAO } from '../../admin/dao/policy.dao.js';
 import { ActiveLlmDAO } from '../../admin/dao/active-llm.dao.js';
 import { MemberDepartmentDAO } from '../../user/dao/member-department.dao.js';
 import { GatewayException } from '../../../global/apiPayload/exception/gateway.exception.js';
 import type { AuthenticatedUser } from '../../../global/security/type/jwt-payload.type.js';
+import { UserRole } from '../../../global/security/type/user-role.enum.js';
 import { MinioObjectStorageService } from '../../../global/storage/service/minio-object-storage.service.js';
 import { PromptErrorStatus } from '../code/prompt.status.js';
 import type { NerCallbackRequestDTO } from '../dto/ner-callback.request.dto.js';
@@ -15,6 +17,7 @@ import { PromptException } from '../exception/prompt.exception.js';
 import { PromptMapper } from '../mapper/prompt.mapper.js';
 import { MaskingReportRepository } from '../repository/masking-report.repository.js';
 import { PromptFileRepository } from '../repository/prompt-file.repository.js';
+import { PromptLogRepository } from '../repository/prompt-log.repository.js';
 import { PromptRoomRepository } from '../repository/prompt-room.repository.js';
 import {
   MASKING_CONTENT,
@@ -24,11 +27,15 @@ import {
 } from '../type/masking-content.type.js';
 import { MaskingReportStatus } from '../type/masking-report-status.enum.js';
 import type { StoredPromptFile } from '../type/stored-prompt-file.type.js';
-import { LlmService } from '../../../global/llm/enum/llm-service.enum.js';
-import { resolveLlmServiceFromModelName } from '../../../global/llm/llm-service.mapping.js';
+import { LlmProvider } from '../../../global/llm/enum/llm-provider.enum.js';
+import {
+  getLlmServiceDescriptor,
+  resolveLlmServiceFromModelName,
+} from '../../../global/llm/llm-service.mapping.js';
 
 const MASKING_OBJECT_PREFIX = 'masking';
 const MAX_STORED_DETECTION_LENGTH = 255;
+const MAX_PROMPT_ROOM_TITLE_LENGTH = 255;
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -87,6 +94,7 @@ export class PromptService {
     private readonly activeLlmRepository: Repository<ActiveLlmDAO>,
     private readonly maskingReportRepository: MaskingReportRepository,
     private readonly promptFileRepository: PromptFileRepository,
+    private readonly promptLogRepository: PromptLogRepository,
     private readonly promptRoomRepository: PromptRoomRepository,
     private readonly objectStorage: MinioObjectStorageService,
   ) {}
@@ -96,37 +104,56 @@ export class PromptService {
     dto: Readonly<PromptReqDTO.PrePrompt>,
     file: StoredPromptFile | undefined,
     authentication: Readonly<AuthenticatedUser>,
-  ): Promise<PromptResDTO.Empty> {
+  ): Promise<PromptResDTO.AnalyzeRequest> {
     let reportCreated = false;
     let regexCompleted = false;
     let finalObjectKey: string | undefined;
     let finalObjectVersionId: string | undefined;
     let promptFileId: string | undefined;
+    let promptLogCreated = false;
+    let createdChatRoomId: string | undefined;
+    const recentTicket = dto.recentTicket ?? null;
+    const requestedChatRoomId = dto.chatRoomId ?? null;
 
     try {
       const departmentId = await this.resolveDepartmentId(authentication.userId);
       await this.assertModelAccessible(departmentId, dto.model);
       await this.maskingReportRepository.validateRequestTickets(
         dto.ticket,
-        dto.recentTicket,
+        recentTicket,
         authentication.userId,
       );
-      await this.assertChatRoomAccessible(
-        dto.chatRoomId,
-        authentication.userId,
-      );
+      if (requestedChatRoomId !== null) {
+        await this.assertChatRoomAccessible(
+          requestedChatRoomId,
+          authentication.userId,
+        );
+      }
       const policies = await this.findSupportedPolicies(
         departmentId,
         MaskingClass.PRIVATE,
       );
 
+      const chatRoomId = requestedChatRoomId ?? await this.createInitialChatRoom(
+        authentication.userId,
+        dto.text,
+      );
+      if (requestedChatRoomId === null) {
+        createdChatRoomId = chatRoomId;
+      }
       await this.maskingReportRepository.create(
         dto.ticket,
         authentication.userId,
         dto.text,
-        dto.recentTicket,
+        recentTicket,
       );
       reportCreated = true;
+      await this.promptLogRepository.replaceMasking(
+        chatRoomId,
+        dto.ticket,
+        this.toPromptSummary(dto.text),
+      );
+      promptLogCreated = true;
 
       if (file !== undefined) {
         finalObjectKey = this.createFinalObjectKey(file);
@@ -170,8 +197,11 @@ export class PromptService {
 
       // NER 서버가 완성되면 json.text 전송과 ner_status 전이를 이 지점에 추가합니다.
 
-      return null;
+      return { chatRoomId };
     } catch (error: unknown) {
+      if (promptLogCreated) {
+        await this.safeDeleteMaskingPromptLog(dto.ticket);
+      }
       if (reportCreated) {
         if (!regexCompleted) {
           await this.safeCancelRegex(dto.ticket);
@@ -186,6 +216,13 @@ export class PromptService {
           await this.safeDeletePromptFile(promptFileId);
         }
         await this.safeRemoveObject(finalObjectKey, finalObjectVersionId);
+      }
+
+      if (createdChatRoomId !== undefined) {
+        await this.safeDeletePromptRoom(
+          createdChatRoomId,
+          authentication.userId,
+        );
       }
 
       throw this.normalizeRequestError(error);
@@ -266,14 +303,14 @@ export class PromptService {
           PromptErrorStatus.ANALYZE_SERVICE_UNAVAILABLE,
         );
       case MaskingReportStatus.DONE: {
-        const [promptFile] = await this.promptFileRepository.findByReportId(
+        const promptFiles = await this.promptFileRepository.findByReportId(
           dto.ticket,
         );
         return {
           pending: false,
           result: PromptMapper.toAnalyzeResult(
             report,
-            promptFile,
+            promptFiles,
           ),
         };
       }
@@ -323,7 +360,7 @@ export class PromptService {
     return [...new Set(activeLlms.flatMap((activeLlm) => {
       const llmName = activeLlm.llmDetailModel.llmName;
       return llmName === null ? [] : [llmName];
-    }))];
+    }))].sort((left, right) => left.localeCompare(right));
   }
 
   async getRecentAnalyze(
@@ -338,19 +375,39 @@ export class PromptService {
       throw new PromptException(PromptErrorStatus.NOT_FOUND_RECENT_ANALYZE);
     }
 
-    const [promptFile] = await this.promptFileRepository.findByReportId(
+    const promptFiles = await this.promptFileRepository.findByReportId(
       report.ticket,
     );
-    return PromptMapper.toRecentAnalyze(report, promptFile);
+    return PromptMapper.toRecentAnalyze(report, promptFiles);
   }
 
   async getPromptList(
     chatRoomId: string,
-    dto: Readonly<PromptReqDTO.PromptList>,
+    authentication: Readonly<AuthenticatedUser>,
   ): Promise<PromptResDTO.PromptList> {
-    void chatRoomId;
-    void dto;
-    return null;
+    await this.assertChatRoomAccessible(chatRoomId, authentication.userId);
+    const promptLogs = await this.promptLogRepository.findHistoryByPromptRoomId(
+      chatRoomId,
+    );
+    if (promptLogs.length === 0) {
+      return null;
+    }
+
+    return Promise.all(promptLogs.map(async (promptLog) => {
+      const files = await this.promptFileRepository.findByReportId(
+        promptLog.maskingReportId,
+      );
+      return {
+        request: promptLog.request,
+        response: promptLog.response,
+        file: files.length === 0
+          ? null
+          : files.map(({ fileUrl, fileOriginalName }) => ({
+            fileUrl,
+            fileOriginalName,
+          })),
+      };
+    }));
   }
 
   async downloadFile(
@@ -372,7 +429,9 @@ export class PromptService {
       throw new PromptException(PromptErrorStatus.NOT_FOUND_FILE);
     }
 
-    if (promptFile.memberId !== String(authentication.userId)) {
+    const isAdministrator = authentication.role === UserRole.TOTAL_ADMIN
+      || authentication.role === UserRole.DEPART_ADMIN;
+    if (!isAdministrator && promptFile.memberId !== String(authentication.userId)) {
       throw new PromptException(PromptErrorStatus.FORBIDDEN_FILE_DOWNLOAD);
     }
 
@@ -391,18 +450,20 @@ export class PromptService {
     }
 
     try {
-      const url = await this.objectStorage.presignedGetObject(storedObjectKey);
+      const url = await this.objectStorage.presignedGetObject(
+        storedObjectKey,
+        undefined,
+        this.toDownloadResponseOptions(
+          promptFile.fileOriginalName,
+          storedObjectKey,
+        ),
+      );
       return PromptMapper.toFileDownload(url);
     } catch {
       throw new PromptException(
         PromptErrorStatus.FILE_DOWNLOAD_SERVICE_UNAVAILABLE,
       );
     }
-  }
-
-  async searchPrompts(dto: PromptReqDTO.Search): Promise<PromptResDTO.Search> {
-    void dto;
-    return PromptMapper.toSearch(null);
   }
 
   private async resolveDepartmentId(memberId: number): Promise<string> {
@@ -426,11 +487,11 @@ export class PromptService {
     departmentId: string,
     model: string,
   ): Promise<void> {
-    const service = this.resolveModelService(model);
+    const provider = this.resolveModelProvider(model);
     const activeLlm = await this.activeLlmRepository.findOne({
       select: { activeLlmId: true },
       where: {
-        activeApiKey: { departmentId, serviceType: service },
+        activeApiKey: { departmentId, serviceType: provider },
         llmDetailModel: { llmName: model },
       },
     });
@@ -440,14 +501,14 @@ export class PromptService {
     }
   }
 
-  private resolveModelService(model: string): LlmService {
+  private resolveModelProvider(model: string): LlmProvider {
     const service = resolveLlmServiceFromModelName(model);
 
     if (service === null) {
       this.throwForbiddenModel();
     }
 
-    return service;
+    return getLlmServiceDescriptor(service).provider;
   }
 
   private async assertChatRoomAccessible(
@@ -463,20 +524,42 @@ export class PromptService {
     }
   }
 
+  private async createInitialChatRoom(
+    memberId: number,
+    text: string,
+  ): Promise<string> {
+    const promptRoomId = randomUUID();
+    const now = new Date();
+    await this.promptRoomRepository.create({
+      promptRoomId,
+      startedAt: now,
+      lastCommunicatedAt: now,
+      promptRoomTitle: this.createPromptRoomTitle(text),
+      memberId: String(memberId),
+    });
+
+    return promptRoomId;
+  }
+
+  private createPromptRoomTitle(text: string): string {
+    const normalizedText = text.trim().replace(/\s+/gu, ' ');
+    return Array.from(normalizedText)
+      .slice(0, MAX_PROMPT_ROOM_TITLE_LENGTH)
+      .join('');
+  }
+
   private async findSupportedPolicies(
     departmentId: string,
     maskingClass?: MaskingClass,
   ): Promise<DepartmentMaskingPolicy[]> {
     const where = maskingClass === undefined
       ? {
-        isActive: true,
         departmentPolicies: {
           departmentId,
           isActive: true,
         },
       }
       : {
-        isActive: true,
         maskingClass,
         departmentPolicies: {
           departmentId,
@@ -770,6 +853,29 @@ export class PromptService {
     return `${MASKING_OBJECT_PREFIX}/${id.toLowerCase()}${file.extension}`;
   }
 
+  private toPromptSummary(text: string): string {
+    return text.slice(0, 50);
+  }
+
+  private toDownloadResponseOptions(fileOriginalName: string, objectKey: string): {
+    contentType: string;
+    contentDisposition: string;
+  } {
+    const extension = objectKey.slice(objectKey.lastIndexOf('.') + 1).toLowerCase();
+    const contentType = extension === 'png'
+      ? 'image/png'
+      : extension === 'jpg' || extension === 'jpeg'
+        ? 'image/jpeg'
+        : 'application/pdf';
+    const disposition = contentType.startsWith('image/') ? 'inline' : 'attachment';
+
+    return {
+      contentType,
+      contentDisposition:
+        `${disposition}; filename*=UTF-8''${encodeURIComponent(fileOriginalName)}`,
+    };
+  }
+
   private isFinalMaskingObjectKey(objectKey: string): boolean {
     const prefix = `${MASKING_OBJECT_PREFIX}/`;
     if (!objectKey.startsWith(prefix)) {
@@ -817,6 +923,28 @@ export class PromptService {
   private async safeDeletePromptFile(promptFileId: string): Promise<void> {
     try {
       await this.promptFileRepository.deleteById(promptFileId);
+    } catch {
+      // 최초 요청 오류를 유지합니다.
+    }
+  }
+
+  private async safeDeleteMaskingPromptLog(ticket: string): Promise<void> {
+    try {
+      await this.promptLogRepository.deleteByMaskingReportId(ticket);
+    } catch {
+      // 최초 요청 오류를 유지합니다.
+    }
+  }
+
+  private async safeDeletePromptRoom(
+    chatRoomId: string,
+    memberId: number,
+  ): Promise<void> {
+    try {
+      await this.promptRoomRepository.deleteByIdAndMemberId(
+        chatRoomId,
+        String(memberId),
+      );
     } catch {
       // 최초 요청 오류를 유지합니다.
     }

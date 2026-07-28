@@ -15,12 +15,29 @@ export namespace AdminData {
   export interface DepartmentListItem {
     departmentId: number;
     departmentName: string;
+    departmentUserCnt: number;
+    canUseLLMModel: string[] | null;
+    policyType: '표준' | '커스텀';
+    policyCnt: number;
+    outbound: '허용' | '불가';
+    departLimitPercent: number;
+    departLimitUsd: number;
+    departUseUsd: number;
   }
 
   export interface DepartmentList {
     data: readonly DepartmentListItem[];
     totalCnt: number;
     pageNumber: number;
+  }
+
+  export interface DepartmentManagementSummary {
+    updatedAt: Date | string;
+    totalDepartmentCnt: number;
+    totalUserCnt: number;
+    outboundDepartmentCnt: number;
+    averageUsePercent: number;
+    averageRate: number;
   }
 
   export interface RegisterApiKeyResult {
@@ -50,14 +67,9 @@ export namespace AdminData {
   export interface CreateActiveApiKey {
     apiKey: string;
     serviceType: string;
-    departmentLimit: string;
-    mustFiltering: boolean;
+    limit: string;
+    usage: string;
     departmentId: string;
-  }
-
-  export interface CreatePolicy {
-    maskingContent: string;
-    maskingClass: MaskingClass;
   }
 
   export interface CreateAdminLog {
@@ -71,8 +83,8 @@ export namespace AdminData {
     userId: number;
     name: string;
     email: string;
-    department: string;
-    role: string;
+    department: string | null;
+    authorize: string;
     lastLoginAt: Date | string;
     status: string;
   }

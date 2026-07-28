@@ -186,6 +186,35 @@ describe('MinioObjectStorageService', () => {
     expect(internalClient.presignedGetObject).not.toHaveBeenCalled();
   });
 
+  it('presigned URL에 콘텐츠 타입과 disposition 응답 메타데이터를 서명한다', async () => {
+    const presignClient = {
+      presignedGetObject: jest.fn(async () => 'https://minio.example/image'),
+    } as unknown as Client;
+    const service = new MinioObjectStorageService(
+      {} as Client,
+      presignClient,
+      {
+        bucket: 'llm-gateway-private',
+        presignedGetTtlSeconds: 600,
+      } as MinioConfig,
+    );
+
+    await service.presignedGetObject('masking/ticket/image.png', 600, {
+      contentType: 'image/png',
+      contentDisposition: "inline; filename*=UTF-8''image.png",
+    });
+
+    expect(presignClient.presignedGetObject).toHaveBeenCalledWith(
+      'llm-gateway-private',
+      'masking/ticket/image.png',
+      600,
+      {
+        'response-content-type': 'image/png',
+        'response-content-disposition': "inline; filename*=UTF-8''image.png",
+      },
+    );
+  });
+
   it('객체 키의 각 경로 구간을 인코딩한 만료 없는 S3 URL을 만든다', () => {
     const config = {
       bucket: 'gateway-test',

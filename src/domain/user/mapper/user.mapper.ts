@@ -38,6 +38,7 @@ export class UserMapper {
   ): MemberLimitDAO {
     return this.memberLimitRepository.create({
       limit: data.limit,
+      usage: data.usage,
       memberId: data.memberId,
       activeApiKeyId: data.activeApiKeyId,
     });
@@ -57,6 +58,7 @@ export class UserMapper {
     updatedAt: string,
     totalChatCnt: number,
     filter: number,
+    filterPercent: number,
     masking: number,
     local: number,
     localPercent: number,
@@ -65,6 +67,7 @@ export class UserMapper {
       updatedAt,
       totalChatCnt,
       filter,
+      filterPercent,
       masking,
       local,
       localPercent,
