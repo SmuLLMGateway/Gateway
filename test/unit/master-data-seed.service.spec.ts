@@ -7,6 +7,7 @@ import { DEFAULT_POLICIES } from '../../src/domain/admin/policy/security-policy.
 import { MasterDataSeedModule } from '../../src/global/database/module/master-data-seed.module.js';
 import { DEFAULT_LLM_DETAIL_MODELS } from '../../src/global/database/seed/master-data.seed.js';
 import { MasterDataSeedService } from '../../src/global/database/service/master-data-seed.service.js';
+import { NerClient } from '../../src/global/ner/client/ner.client.js';
 
 type StoredLlmDetailModel = {
   llmName: string | null;
@@ -68,6 +69,10 @@ describe('MasterDataSeedService', () => {
   const policyRepository = {
     find: jest.fn(),
     insert: jest.fn(),
+    update: jest.fn(),
+  };
+  const nerClient = {
+    getLlmDeployments: jest.fn(),
   };
 
   let llmDetailModels: StoredLlmDetailModel[];
@@ -77,6 +82,7 @@ describe('MasterDataSeedService', () => {
   beforeEach(() => {
     llmDetailModels = [];
     policies = [];
+    nerClient.getLlmDeployments.mockResolvedValue([]);
 
     dataSource.transaction.mockImplementation(async (
       work: (manager: EntityManager) => Promise<unknown>,
@@ -119,8 +125,22 @@ describe('MasterDataSeedService', () => {
       })));
       return {};
     });
+    policyRepository.update.mockImplementation(async (
+      where: { maskingContent: string },
+      values: { maskingClass: MaskingClass },
+    ) => {
+      for (const policy of policies) {
+        if (policy.maskingContent === where.maskingContent) {
+          policy.maskingClass = values.maskingClass;
+        }
+      }
+      return {};
+    });
 
-    service = new MasterDataSeedService(dataSource as unknown as DataSource);
+    service = new MasterDataSeedService(
+      dataSource as unknown as DataSource,
+      nerClient as unknown as NerClient,
+    );
   });
 
   it('요청된 LLM 모델 10개와 보안 정책 16개를 정확히 카탈로그로 정의한다', () => {
@@ -140,14 +160,14 @@ describe('MasterDataSeedService', () => {
     expect(policies).toEqual(EXPECTED_POLICIES);
   });
 
-  it('재시작해도 이미 생성된 이름·정책 쌍을 다시 삽입하거나 기존 데이터를 덮어쓰지 않는다', async () => {
+  it('재시작해도 이미 생성된 이름·정책을 다시 삽입하지 않고 API_KEY 분류만 보정한다', async () => {
     const existingModel: StoredLlmDetailModel = {
       llmName: 'gpt-5.4-nano',
       marker: 'preserve-model',
     };
     const existingApiKeyPolicy: StoredPolicy = {
       maskingContent: 'API_KEY',
-      maskingClass: MaskingClass.PRIVATE,
+      maskingClass: MaskingClass.SENSITIVE,
       marker: 'preserve-policy',
     };
     llmDetailModels.push(existingModel);
@@ -161,18 +181,21 @@ describe('MasterDataSeedService', () => {
     )).toEqual([existingModel]);
     expect(policies.filter((policy) => (
       policy.maskingContent === existingApiKeyPolicy.maskingContent
-      && policy.maskingClass === existingApiKeyPolicy.maskingClass
-    ))).toEqual([existingApiKeyPolicy]);
+      && policy.maskingClass === MaskingClass.PRIVATE
+    ))).toEqual([{
+      ...existingApiKeyPolicy,
+      maskingClass: MaskingClass.PRIVATE,
+    }]);
     expect(llmDetailModelRepository.insert).toHaveBeenCalledTimes(1);
     expect(policyRepository.insert).toHaveBeenCalledTimes(1);
     expect(llmDetailModels).toHaveLength(EXPECTED_LLM_DETAIL_MODELS.length);
     expect(policies).toHaveLength(EXPECTED_POLICIES.length);
   });
 
-  it('같은 콘텐츠라도 다른 등급의 기존 정책은 보존하고 요청된 정책 쌍을 별도로 추가한다', async () => {
+  it('기존 PRIVATE API_KEY 정책은 중복 생성하지 않는다', async () => {
     const legacyApiKeyPolicy: StoredPolicy = {
       maskingContent: 'API_KEY',
-      maskingClass: MaskingClass.SENSITIVE,
+      maskingClass: MaskingClass.PRIVATE,
       marker: 'legacy-policy',
     };
     policies.push(legacyApiKeyPolicy);
@@ -180,10 +203,49 @@ describe('MasterDataSeedService', () => {
     await service.onApplicationBootstrap();
 
     expect(policies).toContainEqual(legacyApiKeyPolicy);
-    expect(policies).toContainEqual({
-      maskingContent: 'API_KEY',
-      maskingClass: MaskingClass.PRIVATE,
-    });
+    expect(policies.filter((policy) => policy.maskingContent === 'API_KEY'))
+      .toEqual([legacyApiKeyPolicy]);
+  });
+
+  it('NER 서버의 로컬 LLM 모델을 중복 없이 함께 시드한다', async () => {
+    nerClient.getLlmDeployments.mockResolvedValue([
+      {
+        deploymentId: 'local-qwen',
+        displayName: 'Qwen 배포',
+        modelId: 'Qwen2.5-7B-Instruct',
+        enabled: true,
+      },
+      {
+        deploymentId: 'local-qwen-copy',
+        displayName: 'Qwen 복제 배포',
+        modelId: 'Qwen2.5-7B-Instruct',
+        enabled: false,
+      },
+      {
+        deploymentId: 'local-custom',
+        displayName: 'Custom Local Model',
+        modelId: null,
+        enabled: true,
+      },
+    ]);
+
+    await service.onApplicationBootstrap();
+    await service.onApplicationBootstrap();
+
+    expect(llmDetailModels.filter((model) => model.llmName === 'local-Qwen2.5-7B-Instruct'))
+      .toHaveLength(1);
+    expect(llmDetailModels.filter((model) => model.llmName === 'local-Custom Local Model'))
+      .toHaveLength(1);
+  });
+
+  it('NER 조회에 실패해도 기존 마스터 데이터 시드는 계속한다', async () => {
+    nerClient.getLlmDeployments.mockRejectedValue(new Error('connection refused'));
+
+    await expect(service.onApplicationBootstrap()).resolves.toBeUndefined();
+
+    expect(llmDetailModels).toEqual(
+      EXPECTED_LLM_DETAIL_MODELS.map((llmName) => ({ llmName })),
+    );
   });
 });
 

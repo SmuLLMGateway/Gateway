@@ -29,18 +29,6 @@ export class ActiveApiKeyDAO {
     @Column({ name: 'service_type', type: 'varchar', length: 255 })
     serviceType!: string;
 
-    /** 이 API 키를 통한 부서 한도입니다. 0은 무제한을 의미합니다. */
-    @Column({ name: 'limit', type: 'bigint', default: 0 })
-    limit!: string;
-
-    /** 이 API 키를 통한 부서의 현재 사용량입니다. */
-    @Column({ name: 'usage', type: 'bigint', default: 0 })
-    usage!: string;
-
-    /** 직전 집계 기간의 API 키 사용률(%)입니다. */
-    @Column({ name: 'recent_use_percent', type: 'bigint', default: 0 })
-    recentUsePercent!: string;
-
     @Column({
         name: 'department_id',
         type: 'bigint'

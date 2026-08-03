@@ -3,14 +3,11 @@ import { ApiProperty, ApiSchema } from "@nestjs/swagger";
 export namespace AdminResDTO {
     @ApiSchema({ name: 'AdminCreateUserResponse' })
     export class CreateUser {
+        @ApiProperty({ example: 42, description: '생성된 member.member_id' })
+        id!: number;
+
         @ApiProperty({ example: '김서윤' })
         name!: string;
-
-        @ApiProperty({ example: '일반 사용자' })
-        role!: string;
-
-        @ApiProperty({ example: '2026-07-20T15:11:39Z', format: 'date-time' })
-        createdAt!: string;
     }
 
     @ApiSchema({ name: 'AdminCreateDepartmentResponse' })
@@ -34,11 +31,10 @@ export namespace AdminResDTO {
 
         @ApiProperty({
             type: [String],
-            example: ['Gemini', 'GPT'],
-            nullable: true,
-            description: '등록된 active_api_key.service_type 목록. 등록된 키가 없으면 null'
+            example: ['Local LLM', 'Gemini', 'GPT'],
+            description: '항상 사용 가능한 Local LLM과 등록된 외부 LLM 서비스 목록'
         })
-        canUseLLMModel!: string[] | null;
+        canUseLLMModel!: string[];
 
         @ApiProperty({
             example: '표준',
@@ -66,14 +62,14 @@ export namespace AdminResDTO {
         @ApiProperty({
             type: Number,
             example: 200000,
-            description: '부서 활성 서비스 한도 합계(USD). 하나라도 0이면 무제한으로 0 반환'
+            description: '부서 공통 한도(USD). 무제한이면 0 반환'
         })
         departLimitUsd!: number;
 
         @ApiProperty({
             type: Number,
             example: 118000,
-            description: '부서 활성 서비스 사용량 합계(USD)'
+            description: '부서 공통 사용량(USD)'
         })
         departUseUsd!: number;
     }
@@ -109,6 +105,94 @@ export namespace AdminResDTO {
         createdAt!: string;
     }
 
+    @ApiSchema({ name: 'AdminDepartmentApiKeyResponse' })
+    export class DepartmentApiKey {
+        @ApiProperty({
+            example: 'GPT',
+            enum: ['Claude', 'GPT', 'Gemini'],
+            description: '조회된 LLM 서비스'
+        })
+        service!: string;
+
+        @ApiProperty({
+            example: 'sk-...',
+            description: '해당 부서가 등록한 복호화된 API 키'
+        })
+        apiKey!: string;
+    }
+
+    export class LinkedDepartmentUser {
+        @ApiProperty({ example: 23, description: '새로 연동된 사용자 ID' })
+        userId!: number;
+
+        @ApiProperty({ example: '박안녕', description: '새로 연동된 사용자 이름' })
+        userName!: string;
+    }
+
+    @ApiSchema({ name: 'AdminLinkDepartmentUsersResponse' })
+    export class LinkDepartmentUsers {
+        @ApiProperty({ example: 4, description: '대상 부서 ID' })
+        departmentId!: number;
+
+        @ApiProperty({ example: '정책기획팀', description: '대상 부서명' })
+        departmentName!: string;
+
+        @ApiProperty({ type: () => [LinkedDepartmentUser] })
+        users!: LinkedDepartmentUser[];
+    }
+
+    @ApiSchema({ name: 'AdminSystemHealthResponse' })
+    export class SystemHealth {
+        @ApiProperty({ example: '정상', enum: ['정상', '지연', '오류', '점검'], description: '전체 시스템 상태' })
+        totalSystemHealth!: '정상' | '지연' | '오류' | '점검';
+
+        @ApiProperty({ example: '정상', enum: ['정상', '지연', '오류', '점검'], description: '외부 LLM 상태' })
+        outboundLLM!: '정상' | '지연' | '오류' | '점검';
+
+        @ApiProperty({ example: '정상', enum: ['정상', '지연', '오류', '점검'], description: '내부 LLM 상태' })
+        inboundLLM!: '정상' | '지연' | '오류' | '점검';
+
+        @ApiProperty({ example: '정상', enum: ['정상', '지연', '오류', '점검'], description: '보안 필터링 상태' })
+        securityFiltering!: '정상' | '지연' | '오류' | '점검';
+
+        @ApiProperty({ example: '정상', enum: ['정상', '지연', '오류', '점검'], description: '데이터베이스 상태' })
+        database!: '정상' | '지연' | '오류' | '점검';
+
+        @ApiProperty({ example: '정상', enum: ['정상', '지연', '오류', '점검'], description: '저장소 상태' })
+        storage!: '정상' | '지연' | '오류' | '점검';
+
+        @ApiProperty({ example: '정상', enum: ['정상', '지연', '오류', '점검'], description: '모니터링 상태' })
+        monitoring!: '정상' | '지연' | '오류' | '점검';
+    }
+
+    @ApiSchema({ name: 'AdminLlmHealthResponse' })
+    export class LlmHealth {
+        @ApiProperty({ example: 'GPT', description: 'LLM 서비스명' })
+        service!: string;
+
+        @ApiProperty({
+            example: 'OK',
+            enum: ['OK', 'DELAY', 'ERROR', 'CHECK'],
+            description: '최신 모델 상태. P95 지연시간이 1,000ms 이상이면 DELAY로 표시'
+        })
+        currentStatus!: 'OK' | 'DELAY' | 'ERROR' | 'CHECK';
+
+        @ApiProperty({ example: 96, minimum: 0, maximum: 100, description: '최근 25개 상태 이력 중 정상(OK) 비율(%)' })
+        availability!: number;
+
+        @ApiProperty({ example: 842, minimum: 0, description: '최근 25개 상태 이력의 P95 지연시간(ms)' })
+        averageResponse!: number;
+
+        @ApiProperty({
+            type: [Number],
+            example: [0, 0, 1, 0, 2],
+            minItems: 25,
+            maxItems: 25,
+            description: '오래된 순서의 최근 25개 상태 이력(0: 정상, 1: 지연, 2: 오류, 3: 점검)'
+        })
+        history!: number[];
+    }
+
     export class Policy {
         @ApiProperty({ example: 7 })
         policyId!: number;
@@ -116,10 +200,10 @@ export namespace AdminResDTO {
         @ApiProperty({ example: '정책기획팀' })
         targetDepartment!: string;
 
-        @ApiProperty({ example: 'PHONE' })
+        @ApiProperty({ example: '전화번호', description: '정책 한글 표시명' })
         maskingContent!: string;
 
-        @ApiProperty({ example: 'PRIVATE' })
+        @ApiProperty({ example: '개인 정보', description: '정책 등급 한글 표시명' })
         maskingClass!: string;
 
         @ApiProperty({ example: '2026-07-22T16:30:00Z', format: 'date-time' })
@@ -130,10 +214,10 @@ export namespace AdminResDTO {
         @ApiProperty({ example: 7 })
         policyId!: number;
 
-        @ApiProperty({ example: 'PHONE' })
+        @ApiProperty({ example: '전화번호', description: '정책 한글 표시명' })
         maskingContent!: string;
 
-        @ApiProperty({ example: 'PRIVATE' })
+        @ApiProperty({ example: '개인 정보', description: '정책 등급 한글 표시명' })
         maskingClass!: string;
     }
 
@@ -148,6 +232,19 @@ export namespace AdminResDTO {
         totalCnt!: number;
     }
 
+    @ApiSchema({ name: 'AdminPolicyPresetResponse' })
+    export class PolicyPreset {
+        @ApiProperty({ example: '기본 보안 정책', description: '보안 정책 프리셋 이름' })
+        presetName!: string;
+
+        @ApiProperty({
+            type: [String],
+            example: ['보안 인프라 정보', '행정 운영 정보'],
+            description: '프리셋에 포함된 보안 정책 한글 표시명 목록',
+        })
+        policies!: string[];
+    }
+
     @ApiSchema({ name: 'AdminSyncPoliciesResponse' })
     export class SyncPolicies {
         @ApiProperty({ example: '정책기획팀' })
@@ -155,8 +252,8 @@ export namespace AdminResDTO {
 
         @ApiProperty({
             type: [String],
-            example: ['PHONE', 'API_KEY'],
-            description: '최종 적용된 부서 정책 코드 목록'
+            example: ['전화번호', 'API 키'],
+            description: '최종 적용된 부서 정책 한글 표시명 목록'
         })
         policies!: string[];
     }
@@ -231,7 +328,7 @@ export namespace AdminResDTO {
     }
 
     export class DepartmentRisk {
-        @ApiProperty({ example: '감사 담당관' })
+        @ApiProperty({ example: '감사팀', description: '부서명' })
         departmentName!: string;
 
         @ApiProperty({ example: 263, description: '선택 기간 내 내·외부 LLM 요청 수' })
@@ -245,19 +342,19 @@ export namespace AdminResDTO {
     }
 
     export class UserSummary {
-        @ApiProperty({ example: '2026-07-19T21:31:50Z', format: 'date-time' })
+        @ApiProperty({ example: '2026-07-19T21:31:50Z', format: 'date-time', description: '조회 시점의 현재 시각' })
         updatedAt!: string;
 
-        @ApiProperty({ example: 132 })
+        @ApiProperty({ example: 132, description: '총 사용자 수' })
         totalUserCnt!: number;
 
-        @ApiProperty({ example: 128 })
+        @ApiProperty({ example: 128, description: '활성 상태(disabled_at이 null) 사용자 수' })
         activateUserCnt!: number;
 
-        @ApiProperty({ example: 4 })
+        @ApiProperty({ example: 4, description: '비활성 상태(disabled_at이 null이 아님) 사용자 수' })
         disabledUserCnt!: number;
 
-        @ApiProperty({ example: 6 })
+        @ApiProperty({ example: 6, description: '이번 달 1일 00:00 UTC 이후 생성된 사용자 수' })
         newUserCnt!: number;
     }
 
@@ -276,17 +373,10 @@ export namespace AdminResDTO {
 
         @ApiProperty({
             example: '일반 사용자',
-            enum: ['일반 사용자', '부서 관리자', '총괄 관리자'],
+            enum: ['일반 사용자', '부서 관리자', '총 관리자'],
             description: 'member.authorize를 한글 권한명으로 변환'
         })
         authorize!: string;
-
-        @ApiProperty({
-            example: '2026-07-19T21:49:17Z',
-            description: 'member.login_at',
-            format: 'date-time'
-        })
-        lastLoginAt!: string;
 
         @ApiProperty({
             example: '활성',
@@ -315,37 +405,40 @@ export namespace AdminResDTO {
     }
 
     export class UserDetail {
-        @ApiProperty({ example: '김서윤' })
+        @ApiProperty({ example: '김서윤', description: '사용자명' })
         name!: string;
 
-        @ApiProperty({ example: 'seoyun.kim@organization.go.kr' })
+        @ApiProperty({ example: 'seoyun.kim@organization.go.kr', description: '사용자 이메일' })
         email!: string;
 
-        @ApiProperty({ example: '정책기획팀' })
-        department!: string;
+        @ApiProperty({ example: '정책기획팀', nullable: true, description: '사용자 부서명. 소속 부서가 없으면 null' })
+        department!: string | null;
 
-        @ApiProperty({ example: '일반 사용자' })
+        @ApiProperty({ example: '일반 사용자', enum: ['일반 사용자', '부서 관리자', '총 관리자'], description: '사용자 권한의 한글 표시명' })
         role!: string;
 
-        @ApiProperty({ example: '2026-07-19' })
+        @ApiProperty({ example: '2026-07-19T12:34:56Z', format: 'date-time', description: '생성 시각' })
         createdAt!: string;
 
-        @ApiProperty({ example: '신정보' })
+        @ApiProperty({ example: '신정보', description: '생성자' })
         createdBy!: string;
 
-        @ApiProperty({ example: '2026-07-19T22:00:50Z', format: 'date-time' })
-        lastLoginAt!: string;
+        @ApiProperty({ example: 120000, description: '사용자 개인 한도량. 0은 무제한' })
+        limit!: number;
 
-        @ApiProperty({ example: 42 })
+        @ApiProperty({ example: 42000, description: '사용자 개인 사용량' })
+        usage!: number;
+
+        @ApiProperty({ example: 42, description: '사전 마스킹 요소 탐지를 제외한 프롬프트 입력 횟수' })
         chatCnt!: number;
 
-        @ApiProperty({ example: 17 })
+        @ApiProperty({ example: 17, description: '보안 정책이 감지된 프롬프트 수. 복수 정책 감지는 한 건으로 집계' })
         filterDetectCnt!: number;
 
-        @ApiProperty({ example: 31 })
+        @ApiProperty({ example: 31, description: '외부 LLM 전송 전 프롬프트를 마스킹한 횟수' })
         masking!: number;
 
-        @ApiProperty({ example: 6 })
+        @ApiProperty({ example: 6, description: '로컬 LLM 전송 횟수' })
         local!: number;
     }
 
@@ -380,6 +473,9 @@ export namespace AdminResDTO {
 
         @ApiProperty({ example: 104 })
         local!: number;
+
+        @ApiProperty({ example: 14.5, description: '보안 정책 감지 프롬프트 대비 로컬 LLM 전송 비율(%)' })
+        localRate!: number;
     }
 
     export class UserPromptOverviewItem {
@@ -392,20 +488,11 @@ export namespace AdminResDTO {
         @ApiProperty({ example: '정책기획팀' })
         department!: string;
 
-        @ApiProperty({ example: '사원' })
-        role!: string;
+        @ApiProperty({ example: 12.4, description: '사용자 현재 사용량' })
+        usage!: number;
 
-        @ApiProperty({
-            type: [String],
-            example: [
-                'cbc9dacd-1788-4f7a-81c8-1df5d0d30cbf',
-                'abf1bff0-6b7e-40f4-a1d3-c49e80dc4ab5'
-            ]
-        })
-        promptTicket!: string[];
-
-        @ApiProperty({ example: 8 })
-        promptCnt!: number;
+        @ApiProperty({ example: 200, description: '사용자 할당 한도. 0은 무제한' })
+        limit!: number;
     }
 
     @ApiSchema({ name: 'AdminUserPromptOverviewResponse' })
@@ -434,19 +521,16 @@ export namespace AdminResDTO {
         promptSummary!: string;
 
         @ApiProperty({
-            example: '2026-07-25T13:18:17Z',
+            example: '2026-08-01T13:00:59Z',
             format: 'date-time'
         })
-        startedAt!: string;
+        promptedAt!: string;
 
-        @ApiProperty({
-            example: '2026-07-25T13:22:42Z',
-            format: 'date-time'
-        })
-        endedAt!: string;
-
-        @ApiProperty({ example: 'Local LLM' })
+        @ApiProperty({ example: 'GPT', description: '외부 LLM은 active_api_key.service_type, 로컬 LLM은 Local LLM' })
         model!: string;
+
+        @ApiProperty({ example: 4800, description: '해당 프롬프트로 소모된 외부 LLM 사용량. 내부 LLM은 0' })
+        usage!: number;
     }
 
     @ApiSchema({ name: 'AdminUserPromptListResponse' })
@@ -491,14 +575,23 @@ export namespace AdminResDTO {
     }
 
     export class PromptDetail {
-        @ApiProperty({ example: '계약 검토 내용 요약' })
-        promptSummary!: string;
+        @ApiProperty({ example: '김서윤', description: '프롬프트 요청자 이름' })
+        name!: string;
 
-        @ApiProperty({ example: '김서윤/정책기획팀' })
-        nameDepartment!: string;
+        @ApiProperty({ example: '정책기획팀', description: '프롬프트 요청자의 소속 부서명' })
+        department!: string;
 
         @ApiProperty({ example: 'seoyun.kim@organization.go.kr' })
         email!: string;
+
+        @ApiProperty({ example: 200000, description: '사용자 한도' })
+        limit!: number;
+
+        @ApiProperty({ example: 12400, description: '사용자 사용량' })
+        usage!: number;
+
+        @ApiProperty({ example: 6.2, description: '사용자 한도 사용률(%)' })
+        usagePercent!: number;
 
         @ApiProperty({
             example: '2026-07-25T15:09:05Z',
@@ -544,7 +637,7 @@ export namespace AdminResDTO {
 
         @ApiProperty({
             example: 42.5,
-            description: '부서별 활성 API 키 한도·사용량으로 계산한 월 사용률의 평균(%)'
+            description: '부서 공통 한도·사용량으로 계산한 월 사용률의 평균(%)'
         })
         averageUsePercent!: number;
 
@@ -584,9 +677,6 @@ export namespace AdminResDTO {
         @ApiProperty({ example: '장우진', nullable: true, description: '해당 부서 DEPART_ADMIN 이름' })
         departmentAdminName!: string | null;
 
-        @ApiProperty({ example: '감사담당관', nullable: true, description: 'member_department.role' })
-        departmentAdminRole!: string | null;
-
         @ApiProperty({ example: '부서 관리자', nullable: true, description: 'DEPART_ADMIN의 권한명' })
         departmentAdminAuthorize!: string | null;
 
@@ -596,27 +686,27 @@ export namespace AdminResDTO {
         @ApiProperty({ example: 9 })
         userCnt!: number;
 
-        @ApiProperty({ example: 16, description: '서비스별 사용률 평균(%). 한도 0은 100으로 계산' })
+        @ApiProperty({ example: 16, description: '부서 공통 한도 사용률(%). 한도 0은 100으로 계산' })
         usePercent!: number;
 
         @ApiProperty({
             type: Number,
             example: 12400,
-            description: '서비스별 사용량 평균(USD)'
+            description: '부서 공통 사용량(USD)'
         })
         useUsd!: number;
 
         @ApiProperty({
             type: Number,
             example: 80000,
-            description: '서비스별 한도 평균(USD). 한도 0은 무제한'
+            description: '부서 공통 한도(USD). 한도 0은 무제한'
         })
         limitUsd!: number;
 
         @ApiProperty({
             type: Number,
             example: 67600,
-            description: '서비스별 잔여 한도 평균(USD). 무제한 서비스는 0'
+            description: '부서 공통 잔여 한도(USD). 무제한이면 0'
         })
         remainUsd!: number;
 
@@ -626,66 +716,16 @@ export namespace AdminResDTO {
         @ApiProperty({ example: false })
         mustFiltering!: boolean;
 
-        @ApiProperty({ type: () => [DepartmentPolicy] })
-        policies!: DepartmentPolicy[];
+        @ApiProperty({
+            type: () => [DepartmentPolicy],
+            nullable: true,
+            description: '부서 정책. 등록된 정책이 없으면 null'
+        })
+        policies!: DepartmentPolicy[] | null;
     }
 
-    export class Detecting {
-        @ApiProperty({ example: 2 })
-        sensitiveCnt!: number;
-
-        @ApiProperty({ example: 2 })
-        privateCnt!: number;
-    }
-
-    export class LogListItem {
-        @ApiProperty({ example: 1 })
-        logId!: number;
-
-        @ApiProperty({ example: '계약 검토 내용 요약' })
-        title!: string;
-
-        @ApiProperty({ example: '김서윤/정책기획팀' })
-        userDepartment!: string;
-
-        @ApiProperty({ example: '2026-07-19T22:46:12', format: 'date-time' })
-        chatStartedAt!: string;
-
-        @ApiProperty({ example: '2026-07-19T22:48:12', format: 'date-time' })
-        chatEndedAt!: string;
-
-        @ApiProperty({ example: 'GPT' })
-        model!: string;
-
-        @ApiProperty({ type: () => Detecting, nullable: true })
-        detecting!: Detecting | null;
-
-        @ApiProperty({ example: '마스킹 전송' })
-        process!: string;
-    }
-
-    @ApiSchema({ name: 'AdminLegacyLogListResponse' })
-    export class LogList {
-        @ApiProperty({ type: () => [LogListItem] })
-        data!: LogListItem[];
-
-        @ApiProperty({ example: 1204 })
-        totalCnt!: number;
-
-        @ApiProperty({ example: 7 })
-        dataCnt!: number;
-
-        @ApiProperty({ example: 1204, nullable: true })
-        filteringCnt!: number | null;
-
-        @ApiProperty({ example: 1 })
-        pageNumber!: number;
-    }
-
-    export type Trends = unknown;
     export type AdminLogs = AdminLog[] | null;
     export type PolicyDetectList = PolicyDetect[];
     export type DepartmentRiskList = DepartmentRisk[];
     export type UpdateUser = unknown;
-    export type LogDetail = unknown;
 }

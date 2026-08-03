@@ -26,13 +26,16 @@ export class MaskingReportRepository {
     memberId: number,
     originalText: string,
     recentTicket: string | null,
+    requestNer = false,
   ): Promise<void> {
     const report = this.promptMapper.toMaskingReportDAO({
       maskingReportId: ticket,
       status: MaskingReportStatus.PENDING,
       regexStatus: MaskingReportStatus.PENDING,
-      // NER 요청이 비활성화된 동안에는 미처리 상태로 남기지 않습니다.
-      nerStatus: MaskingReportStatus.DONE,
+      // NER 배포 ID가 모두 설정된 요청만 응답 대기 상태로 생성합니다.
+      nerStatus: requestNer
+        ? MaskingReportStatus.PENDING
+        : MaskingReportStatus.DONE,
       memberId: String(memberId),
       originalText,
       recentMaskingReportId: recentTicket,
@@ -89,11 +92,10 @@ export class MaskingReportRepository {
       detections.map((detection) => ({
         originalText: detection.originalText,
         startIdx: detection.startIdx,
-        endIdx: detection.endIdx,
         fileUrl: null,
         maskingText: detection.maskingText,
         maskingReportId: ticket,
-        policyId: detection.policyId,
+        departmentPolicyId: detection.departmentPolicyId,
       })),
     );
   }
@@ -139,7 +141,7 @@ export class MaskingReportRepository {
     }
 
     const details = await this.dataSource.getRepository(MaskingDetailDAO).find({
-      relations: { policy: true },
+      relations: { departmentPolicy: { policy: true } },
       where: { maskingReportId: ticket },
       order: { maskingDetailId: 'ASC' },
     });
@@ -149,7 +151,7 @@ export class MaskingReportRepository {
       originalText: report.originalText,
       details: details.map((detail) => {
         const maskingContent = normalizeMaskingContent(
-          detail.policy.maskingContent,
+          detail.departmentPolicy.policy.maskingContent,
         );
         if (maskingContent === null) {
           throw new Error('지원하지 않는 마스킹 정책이 분석 결과에 포함되어 있습니다.');
@@ -158,10 +160,10 @@ export class MaskingReportRepository {
         return {
           originalText: detail.originalText,
           startIdx: detail.startIdx,
-          endIdx: detail.endIdx,
+          endIdx: this.toDerivedEndIdx(detail.originalText, detail.startIdx),
           fileUrl: detail.fileUrl,
           maskingContent,
-          maskingClass: detail.policy.maskingClass,
+          maskingClass: detail.departmentPolicy.policy.maskingClass,
         };
       }),
     };
@@ -235,17 +237,82 @@ export class MaskingReportRepository {
       detections.map((detection) => ({
         originalText: null,
         startIdx: null,
-        endIdx: null,
         fileUrl,
         maskingText: null,
         maskingReportId: ticket,
-        policyId: detection.policyId,
+        departmentPolicyId: detection.departmentPolicyId,
+      })),
+    );
+  }
+
+  async saveNerTextDetections(
+    ticket: string,
+    detections: readonly Readonly<PromptData.NerTextDetection>[],
+  ): Promise<boolean> {
+    return this.completeBranch(
+      ticket,
+      'nerStatus',
+      detections.map((detection) => ({
+        originalText: detection.originalText,
+        startIdx: detection.startIdx,
+        fileUrl: null,
+        maskingText: detection.maskingText,
+        maskingReportId: ticket,
+        departmentPolicyId: detection.departmentPolicyId,
       })),
     );
   }
 
   async cancelNer(ticket: string): Promise<boolean> {
     return this.cancelBranch(ticket, 'nerStatus');
+  }
+
+  async cancelForMember(ticket: string, memberId: number): Promise<boolean> {
+    return this.dataSource.transaction(async (manager) => {
+      const report = await manager.getRepository(MaskingReportDAO).findOne({
+        where: {
+          maskingReportId: ticket,
+          memberId: String(memberId),
+        },
+        lock: { mode: 'pessimistic_write' },
+      });
+
+      if (report === null) {
+        return false;
+      }
+
+      const promptLogRepository = manager.getRepository(PromptLogDAO);
+      const maskingLogs = await promptLogRepository.find({
+        select: { promptLogId: true },
+        where: {
+          maskingReportId: ticket,
+          status: PromptLogStatus.MASKING,
+          promptRoom: { memberId: String(memberId) },
+        },
+      });
+      if (maskingLogs.length > 0) {
+        await promptLogRepository.delete(
+          maskingLogs.map(({ promptLogId }) => promptLogId),
+        );
+      }
+
+      // 취소 이후 비동기 콜백이 리포트를 다시 완료로 전환하지 않도록 모든
+      // 분석 분기와 최종 상태를 함께 CANCEL로 고정합니다.
+      report.regexStatus = MaskingReportStatus.CANCEL;
+      report.nerStatus = MaskingReportStatus.CANCEL;
+      report.status = MaskingReportStatus.CANCEL;
+
+      await manager.getRepository(MaskingReportDAO).update(
+        { maskingReportId: ticket },
+        {
+          regexStatus: report.regexStatus,
+          nerStatus: report.nerStatus,
+          status: report.status,
+        },
+      );
+
+      return true;
+    });
   }
 
   private async completeBranch(
@@ -360,5 +427,20 @@ export class MaskingReportRepository {
     };
 
     return driverError.code === 'ER_DUP_ENTRY' || driverError.errno === 1062;
+  }
+
+  /**
+   * v3 스키마는 end_idx를 저장하지 않습니다. 기존 API의 반열림 범위 표현을
+   * 유지하기 위해 텍스트 탐지 원문 길이로 끝 위치를 복원합니다.
+   */
+  private toDerivedEndIdx(
+    originalText: string | null,
+    startIdx: number | null,
+  ): number | null {
+    if (originalText === null || startIdx === null) {
+      return null;
+    }
+
+    return startIdx + originalText.length;
   }
 }

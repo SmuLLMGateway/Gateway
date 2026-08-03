@@ -15,7 +15,6 @@ export namespace UserData {
   }
 
   export interface CreateMemberDepartment {
-    role: string;
     memberId: string;
     departmentId: string;
   }

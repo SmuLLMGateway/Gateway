@@ -37,6 +37,10 @@ describe('MaskingReportRepository', () => {
   const transactionDetailRepository = {
     insert: jest.fn(),
   };
+  const transactionPromptLogRepository = {
+    find: jest.fn(),
+    delete: jest.fn(),
+  };
   const manager = {
     getRepository: jest.fn((entity: unknown) => {
       if (entity === MaskingReportDAO) {
@@ -45,6 +49,10 @@ describe('MaskingReportRepository', () => {
 
       if (entity === MaskingDetailDAO) {
         return transactionDetailRepository;
+      }
+
+      if (entity === PromptLogDAO) {
+        return transactionPromptLogRepository;
       }
 
       throw new Error('예상하지 못한 트랜잭션 Repository입니다.');
@@ -98,6 +106,8 @@ describe('MaskingReportRepository', () => {
     promptRoomRepository.findOne.mockResolvedValue(null);
     transactionReportRepository.update.mockResolvedValue(undefined);
     transactionDetailRepository.insert.mockResolvedValue(undefined);
+    transactionPromptLogRepository.find.mockResolvedValue([]);
+    transactionPromptLogRepository.delete.mockResolvedValue(undefined);
   });
 
   it('원본 텍스트를 original_text TEXT NOT NULL 컬럼으로 매핑한다', () => {
@@ -225,15 +235,19 @@ describe('MaskingReportRepository', () => {
         maskingDetailId: '7',
         originalText: '010-1234-5678',
         startIdx: 6,
-        endIdx: 19,
+        fileUrl: null,
+        maskingText: '[ 전화번호 ]',
         maskingReportId: ticket,
-        policyId: '101',
-        policy: {
-          policyId: '101',
-          maskingContent: 'PHONE',
-          maskingClass: MaskingClass.PRIVATE,
+        departmentPolicyId: '501',
+        departmentPolicy: {
+          departmentPolicyId: '501',
+          policy: {
+            policyId: '101',
+            maskingContent: 'PHONE',
+            maskingClass: MaskingClass.PRIVATE,
+          },
         },
-      } as MaskingDetailDAO,
+      } as unknown as MaskingDetailDAO,
     ]);
 
     await expect(repository.findAnalyzeResult(ticket, 42)).resolves.toEqual({
@@ -244,6 +258,7 @@ describe('MaskingReportRepository', () => {
           originalText: '010-1234-5678',
           startIdx: 6,
           endIdx: 19,
+          fileUrl: null,
           maskingContent: 'PHONE',
           maskingClass: MaskingClass.PRIVATE,
         },
@@ -261,7 +276,7 @@ describe('MaskingReportRepository', () => {
       },
     });
     expect(detailRepository.find).toHaveBeenCalledWith({
-      relations: { policy: true },
+      relations: { departmentPolicy: { policy: true } },
       where: { maskingReportId: ticket },
       order: { maskingDetailId: 'ASC' },
     });
@@ -320,14 +335,14 @@ describe('MaskingReportRepository', () => {
         startIdx: 3,
         endIdx: 16,
         maskingText: '[ 전화번호 ]',
-        policyId: '101',
+        departmentPolicyId: '501',
       },
       {
         originalText: 'member@example.com',
         startIdx: 20,
         endIdx: 38,
         maskingText: '[ 이메일 ]',
-        policyId: '104',
+        departmentPolicyId: '504',
       },
     ];
 
@@ -339,20 +354,18 @@ describe('MaskingReportRepository', () => {
       {
         originalText: '010-1234-5678',
         startIdx: 3,
-        endIdx: 16,
         fileUrl: null,
         maskingText: '[ 전화번호 ]',
         maskingReportId: ticket,
-        policyId: '101',
+        departmentPolicyId: '501',
       },
       {
         originalText: 'member@example.com',
         startIdx: 20,
-        endIdx: 38,
         fileUrl: null,
         maskingText: '[ 이메일 ]',
         maskingReportId: ticket,
-        policyId: '104',
+        departmentPolicyId: '504',
       },
     ];
     expect(promptMapper.toMaskingDetailDAO.mock.calls.map(([detail]) => detail))
@@ -392,28 +405,26 @@ describe('MaskingReportRepository', () => {
     }));
 
     await expect(repository.saveNerDetections(ticket, fileUrl, [
-      { policyId: '101' },
-      { policyId: '105' },
+      { departmentPolicyId: '501' },
+      { departmentPolicyId: '505' },
     ])).resolves.toBe(true);
 
     const expectedDetails: PromptData.CreateMaskingDetail[] = [
       {
         originalText: null,
         startIdx: null,
-        endIdx: null,
         fileUrl,
         maskingText: null,
         maskingReportId: ticket,
-        policyId: '101',
+        departmentPolicyId: '501',
       },
       {
         originalText: null,
         startIdx: null,
-        endIdx: null,
         fileUrl,
         maskingText: null,
         maskingReportId: ticket,
-        policyId: '105',
+        departmentPolicyId: '505',
       },
     ];
     expect(promptMapper.toMaskingDetailDAO.mock.calls.map(([detail]) => detail))
@@ -441,10 +452,51 @@ describe('MaskingReportRepository', () => {
     );
 
     await expect(repository.saveNerDetections(ticket, fileUrl, [
-      { policyId: '101' },
+      { departmentPolicyId: '501' },
     ])).rejects.toThrow('masking_detail insert failed');
 
     expect(transactionDetailRepository.insert).toHaveBeenCalledTimes(1);
+    expect(transactionReportRepository.update).not.toHaveBeenCalled();
+  });
+
+  it('본인 분석을 취소하면 MASKING 로그를 제거하고 모든 상태를 CANCEL로 변경한다', async () => {
+    transactionReportRepository.findOne.mockResolvedValueOnce(createReport({
+      regexStatus: MaskingReportStatus.DONE,
+      nerStatus: MaskingReportStatus.PENDING,
+      status: MaskingReportStatus.PENDING,
+    }));
+    transactionPromptLogRepository.find.mockResolvedValueOnce([
+      { promptLogId: '31' },
+    ]);
+
+    await expect(repository.cancelForMember(ticket, 42)).resolves.toBe(true);
+
+    expect(transactionPromptLogRepository.find).toHaveBeenCalledWith({
+      select: { promptLogId: true },
+      where: {
+        maskingReportId: ticket,
+        status: PromptLogStatus.MASKING,
+        promptRoom: { memberId: '42' },
+      },
+    });
+    expect(transactionPromptLogRepository.delete).toHaveBeenCalledWith(['31']);
+    expect(transactionReportRepository.update).toHaveBeenCalledWith(
+      { maskingReportId: ticket },
+      {
+        regexStatus: MaskingReportStatus.CANCEL,
+        nerStatus: MaskingReportStatus.CANCEL,
+        status: MaskingReportStatus.CANCEL,
+      },
+    );
+  });
+
+  it('본인 리포트가 아니면 MASKING 로그와 상태를 변경하지 않는다', async () => {
+    transactionReportRepository.findOne.mockResolvedValueOnce(null);
+
+    await expect(repository.cancelForMember(ticket, 42)).resolves.toBe(false);
+
+    expect(transactionPromptLogRepository.find).not.toHaveBeenCalled();
+    expect(transactionPromptLogRepository.delete).not.toHaveBeenCalled();
     expect(transactionReportRepository.update).not.toHaveBeenCalled();
   });
 
@@ -487,7 +539,7 @@ describe('MaskingReportRepository', () => {
       startIdx: 0,
       endIdx: 13,
       maskingText: '[ 전화번호 ]',
-      policyId: '101',
+      departmentPolicyId: '501',
     }])).resolves.toBe(false);
 
     expect(promptMapper.toMaskingDetailDAO).not.toHaveBeenCalled();

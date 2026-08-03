@@ -26,6 +26,11 @@ export const UserSuccessStatus = {
 } as const satisfies Record<string, BaseStatus>;
 
 export const UserErrorStatus = {
+    INVALID_MESSAGE_LIST: {
+        httpStatus: HttpStatus.BAD_REQUEST,
+        code: 'USER400_1',
+        message: '대화 기록 조회 요청 형식이 올바르지 않습니다.'
+    },
     TOKEN_EXPIRED: SecurityErrorStatus.TOKEN_EXPIRED,
     FORBIDDEN: SecurityErrorStatus.FORBIDDEN,
 } as const satisfies Record<string, BaseStatus>;

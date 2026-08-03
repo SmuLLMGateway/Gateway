@@ -94,7 +94,10 @@ const analyzeSuccessResponse = () =>
               ],
             },
             result: {
-              allOf: [{ $ref: getSchemaPath(PromptResDTO.Analyze) }],
+              oneOf: [
+                { $ref: getSchemaPath(PromptResDTO.Analyze) },
+                { $ref: getSchemaPath(PromptResDTO.AnalyzeWithoutDetection) },
+              ],
               nullable: true,
             },
           },
@@ -117,13 +120,14 @@ const analyzeSuccessResponse = () =>
               message: PromptSuccessStatus.ANALYZE.message,
               result: {
                 originText: '다음 주 A사와 체결 예정인...',
+                recentDetectCnt: 3,
                 masking: {
-                  file: [{
+                  file: {
                     fileOriginalName: '[A사] 협력 파트너십 계약서.pdf',
                     fileUrl: 'http://local-llm...',
                     maskingCategory: '민감정보',
                     detectCnt: 2,
-                  }],
+                  },
                   text: [
                     {
                       targetText: 'A사와 체결 예정인...',
@@ -143,7 +147,9 @@ const analyzeSuccessResponse = () =>
               isSuccess: true,
               code: PromptSuccessStatus.ANALYZE.code,
               message: PromptSuccessStatus.ANALYZE.message,
-              result: null,
+              result: {
+                recentDetectCnt: 0,
+              },
             },
           },
         },
@@ -237,11 +243,13 @@ export const PromptControllerDocs = () =>
     ApiExtraModels(
       PromptResDTO.AnalyzeRequest,
       PromptResDTO.Analyze,
+      PromptResDTO.AnalyzeWithoutDetection,
       PromptResDTO.Masking,
       PromptResDTO.MaskingFile,
       PromptResDTO.MaskingText,
       PromptResDTO.PromptListFile,
       PromptResDTO.PromptListItem,
+      PromptResDTO.PromptListPage,
       PromptResDTO.RecentPrompt,
       PromptResDTO.RecentAnalyze,
     ),
@@ -274,7 +282,8 @@ export const AnalysisStatusCheckDocs = () =>
       description:
         '마스킹 요소 탐지 요청 티켓으로 처리 상태와 결과를 조회합니다. '
         + 'startIdx는 탐지 시작 위치이고 endIdx는 탐지 문자열의 마지막 문자 '
-        + '위치입니다. 처리 중에는 HTTP 200과 PROM200_2_1을 반환합니다.',
+        + '위치입니다. recentDetectCnt는 이번 분석에서 탐지된 전체 요소 수입니다. '
+        + '처리 중에는 HTTP 200과 PROM200_2_1을 반환합니다.',
     }),
     ApiQuery({
       name: 'ticket',
@@ -292,14 +301,40 @@ export const AnalysisStatusCheckDocs = () =>
     ]),
   );
 
+export const CancelAnalyzeDocs = () =>
+  applyDecorators(
+    ApiOperation({
+      summary: '분석 취소',
+      description:
+        '현재 사용자가 요청한 마스킹 요소 탐지 요청을 ticket으로 취소합니다. '
+        + '해당 사용자의 MASKING 프롬프트 로그를 제거하고 리포트 상태를 CANCEL로 변경합니다.',
+    }),
+    ApiQuery({
+      name: 'ticket',
+      required: true,
+      type: String,
+      format: 'uuid',
+      description: '취소할 마스킹 요소 탐지 요청 티켓',
+      example: 'a81cc17e-e10a-46ae-8113-dceffb932d6c',
+    }),
+    ApiSuccessResponse(
+      PromptSuccessStatus.CANCEL_ANALYZE,
+      SwaggerResultSchema.null(),
+    ),
+    ...ApiErrorResponses([
+      PromptErrorStatus.NOT_FOUND_ANAL_REQ,
+      tokenExpiredStatus,
+      ErrorStatus.INTERNAL_SERVER_ERROR,
+    ]),
+  );
+
 export const LlmSendDocs = () =>
   applyDecorators(
     ApiOperation({
-      summary: 'LLM 전송 (구현 중)',
+      summary: 'LLM 전송',
       description:
-        '마스킹 요소 탐지 요청과 분석 여부 확인을 마친 뒤 같은 ticket으로 '
-        + 'LLM 전송을 요청합니다. 프롬프트를 수정했다면 마스킹 요소 탐지 요청부터 '
-        + '다시 수행해야 합니다. 현재 실제 LLM 전송 비즈니스 로직은 구현되지 않았습니다.',
+        '마스킹 요소 탐지 요청을 생성한 사용자만 분석 완료 ticket으로 LLM 전송을 요청할 수 있습니다. '
+        + '저장된 텍스트 마스킹 결과를 원문에 치환한 뒤 Provider로 전송하며, 요청은 즉시 반환되고 Provider 호출은 백그라운드에서 처리됩니다.',
     }),
     ApiBody({
       required: true,
@@ -326,11 +361,9 @@ export const LlmSendDocs = () =>
 export const LlmResultCheckDocs = () =>
   applyDecorators(
     ApiOperation({
-      summary: 'LLM 결과 확인 (구현 중)',
+      summary: 'LLM 결과 확인',
       description:
-        '마스킹 요소 탐지 요청에 사용한 ticket으로 LLM 결과 생성 상태와 결과를 '
-        + '조회합니다. 현재 결과 조회 비즈니스 로직은 구현되지 않아 생성 중 응답을 '
-        + '반환합니다.',
+        '마스킹 요소 탐지 요청을 생성한 사용자만 ticket으로 생성 상태와 결과를 조회할 수 있습니다.',
     }),
     ApiQuery({
       name: 'ticket',
@@ -371,7 +404,9 @@ export const ModelListDocs = () =>
   applyDecorators(
     ApiOperation({
       summary: '모델 목록 조회',
-      description: '사용자의 부서에서 사용할 수 있는 LLM 모델 목록을 조회합니다.',
+      description: '사용자의 부서에서 사용할 수 있는 외부 LLM 모델과, '
+        + 'NER 서버에서 동기화된 local-* 로컬 LLM 모델 목록을 조회합니다. '
+        + '로컬 모델은 API 키 등록 없이 사용할 수 있습니다.',
     }),
     ApiSuccessResponse(
       PromptSuccessStatus.MODEL_LIST,
@@ -379,7 +414,7 @@ export const ModelListDocs = () =>
         type: 'array',
         items: {
           type: 'string',
-          example: 'Claude Sonnet 5',
+          example: 'local-Qwen2.5-7B-Instruct',
         },
       },
     ),
@@ -422,7 +457,8 @@ export const PromptListDocs = () =>
     ApiOperation({
       summary: '프롬프트 조회',
       description:
-        '채팅방의 모든 프롬프트 로그를 오래된 순으로 조회합니다. '
+        '채팅방의 완료된 프롬프트 로그를 최신순으로 조회합니다. '
+        + 'cursor에는 직전 응답의 nextCursor(UNIX timestamp ms)를 전달합니다. '
         + '프롬프트가 없으면 result는 null입니다.',
     }),
     ApiParam({
@@ -433,11 +469,26 @@ export const PromptListDocs = () =>
       description: '조회할 채팅방 ID',
       example: '840c66ce-0b5d-4663-bc63-b4c4666cd0f5',
     }),
+    ApiQuery({
+      name: 'cursor',
+      required: false,
+      type: String,
+      description: '최신순 페이지네이션 커서(UNIX timestamp ms). 생략하거나 null이면 첫 페이지를 조회합니다.',
+      example: '1784957118000',
+    }),
+    ApiQuery({
+      name: 'pageSize',
+      required: true,
+      type: Number,
+      description: '불러올 데이터 수(1~100)',
+      example: 10,
+    }),
     ApiSuccessResponse(
       PromptSuccessStatus.PROMPT_LIST,
-      SwaggerResultSchema.array(getSchemaPath(PromptResDTO.PromptListItem), true),
+      SwaggerResultSchema.model(getSchemaPath(PromptResDTO.PromptListPage), true),
     ),
     ...ApiErrorResponses([
+      PromptErrorStatus.INVALID_PROMPT_LIST_REQUEST,
       PromptErrorStatus.NOT_FOUND_CHAT_ROOM,
       tokenExpiredStatus,
       ErrorStatus.INTERNAL_SERVER_ERROR,

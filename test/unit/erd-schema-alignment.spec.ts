@@ -6,6 +6,12 @@ import { ActiveApiKeyDAO } from '../../src/domain/admin/dao/active-api-key.dao.j
 import { PolicyDAO } from '../../src/domain/admin/dao/policy.dao.js';
 import { DepartmentDAO } from '../../src/domain/admin/dao/department.dao.js';
 import { DepartmentPolicyDAO } from '../../src/domain/admin/dao/department-policy.dao.js';
+import { PresetDAO } from '../../src/domain/admin/dao/preset.dao.js';
+import { PresetPolicyDAO } from '../../src/domain/admin/dao/preset-policy.dao.js';
+import {
+  HealthHistoryDAO,
+  HealthStatus,
+} from '../../src/domain/admin/dao/health-history.dao.js';
 import { MemberLimitDAO } from '../../src/domain/user/dao/member-limit.dao.js';
 import { MemberDepartmentDAO } from '../../src/domain/user/dao/member-department.dao.js';
 import { MemberDAO } from '../../src/domain/user/dao/member.dao.js';
@@ -103,45 +109,37 @@ describe('ERD schema alignment', () => {
     expect(activeApiKeyRelation).toBeUndefined();
   });
 
-  it('active_api_key에 부서 한도·사용량·직전 사용률 컬럼을 둔다', () => {
-    const limitColumn = metadata.columns.find(
-      (candidate) =>
-        candidate.target === ActiveApiKeyDAO
-        && candidate.propertyName === 'limit',
-    );
-    const usageColumn = metadata.columns.find(
-      (candidate) =>
-        candidate.target === ActiveApiKeyDAO
-        && candidate.propertyName === 'usage',
-    );
-    const recentUsePercentColumn = metadata.columns.find(
-      (candidate) =>
-        candidate.target === ActiveApiKeyDAO
-        && candidate.propertyName === 'recentUsePercent',
-    );
-    const departmentLimitColumn = metadata.columns.find(
-      (candidate) =>
-        candidate.target === DepartmentDAO
-        && candidate.propertyName === 'departmentLimit',
-    );
+  it('부서가 공통 한도·사용량을 소유하고 active_api_key는 연결 정보만 둔다', () => {
+    const expectedDepartmentColumns = [
+      ['departmentCode', {
+        name: 'department_code',
+        type: 'varchar',
+        length: 10,
+      }],
+      ['limit', { name: 'limit', type: 'bigint', default: 0 }],
+      ['usage', { name: 'usage', type: 'decimal', precision: 20, scale: 6, default: 0 }],
+      ['recentUsePercent', {
+        name: 'recent_use_percent',
+        type: 'bigint',
+        default: 0,
+      }],
+    ] as const;
+    for (const [propertyName, expected] of expectedDepartmentColumns) {
+      const column = metadata.columns.find(
+        (candidate) => candidate.target === DepartmentDAO
+          && candidate.propertyName === propertyName,
+      );
+      expect(column?.options).toMatchObject(expected);
+      expect(column?.options.nullable).not.toBe(true);
+    }
 
-    expect(limitColumn?.options).toMatchObject({
-      name: 'limit',
-      type: 'bigint',
-      default: 0,
-    });
-    expect(usageColumn?.options).toMatchObject({
-      name: 'usage',
-      type: 'bigint',
-      default: 0,
-    });
-    expect(recentUsePercentColumn?.options).toMatchObject({
-      name: 'recent_use_percent',
-      type: 'bigint',
-      default: 0,
-    });
-    expect(recentUsePercentColumn?.options.nullable).not.toBe(true);
-    expect(departmentLimitColumn).toBeUndefined();
+    for (const propertyName of ['limit', 'usage', 'recentUsePercent'] as const) {
+      const column = metadata.columns.find(
+        (candidate) => candidate.target === ActiveApiKeyDAO
+          && candidate.propertyName === propertyName,
+      );
+      expect(column).toBeUndefined();
+    }
   });
 
   it('member_limit에 API 키별 한도와 사용량 컬럼을 둔다', () => {
@@ -162,7 +160,9 @@ describe('ERD schema alignment', () => {
     });
     expect(usageColumn?.options).toMatchObject({
       name: 'usage',
-      type: 'bigint',
+      type: 'decimal',
+      precision: 20,
+      scale: 6,
       default: 0,
     });
   });
@@ -208,12 +208,17 @@ describe('ERD schema alignment', () => {
       (candidate) => candidate.target === PromptLogDAO
         && candidate.propertyName === 'modelType',
     );
+    const usageColumn = metadata.columns.find(
+      (candidate) => candidate.target === PromptLogDAO
+        && candidate.propertyName === 'usage',
+    );
 
     expect(statusColumn?.options).toMatchObject({
       name: 'status',
       type: 'varchar',
-      default: PromptLogStatus.MASKING,
+      default: PromptLogStatus.PENDING,
     });
+    expect(statusColumn?.options.nullable).not.toBe(true);
     expect(communicatedAtColumn?.options).toMatchObject({
       name: 'communicated_at',
       type: 'timestamp',
@@ -223,6 +228,13 @@ describe('ERD schema alignment', () => {
       name: 'model_type',
       type: 'varchar',
       length: 50,
+      nullable: true,
+    });
+    expect(usageColumn?.options).toMatchObject({
+      name: 'usage',
+      type: 'decimal',
+      precision: 20,
+      scale: 6,
       nullable: true,
     });
   });
@@ -251,6 +263,38 @@ describe('ERD schema alignment', () => {
       length: 255,
       nullable: true,
     });
+
+    const departmentPolicyIdColumn = metadata.columns.find(
+      (candidate) => candidate.target === MaskingDetailDAO
+        && candidate.propertyName === 'departmentPolicyId',
+    );
+    const legacyPolicyIdColumn = metadata.columns.find(
+      (candidate) => candidate.target === MaskingDetailDAO
+        && candidate.propertyName === 'policyId',
+    );
+    const legacyEndIdxColumn = metadata.columns.find(
+      (candidate) => candidate.target === MaskingDetailDAO
+        && candidate.propertyName === 'endIdx',
+    );
+    const departmentPolicyRelation = metadata.relations.find(
+      (candidate) => candidate.target === MaskingDetailDAO
+        && candidate.propertyName === 'departmentPolicy',
+    );
+    const departmentPolicyJoin = metadata.joinColumns.find(
+      (candidate) => candidate.target === MaskingDetailDAO
+        && candidate.propertyName === 'departmentPolicy',
+    );
+
+    expect(departmentPolicyIdColumn?.options).toMatchObject({
+      name: 'department_policy_id',
+      type: 'bigint',
+    });
+    expect(departmentPolicyIdColumn?.options.nullable).not.toBe(true);
+    expect(legacyPolicyIdColumn).toBeUndefined();
+    expect(legacyEndIdxColumn).toBeUndefined();
+    expect(departmentPolicyRelation?.relationType).toBe('many-to-one');
+    expect(departmentPolicyRelation?.options.nullable).toBe(false);
+    expect(departmentPolicyJoin?.name).toBe('department_policy_id');
   });
 
   it('ERD에서 추가된 컬럼과 UUID 채팅방 PK를 등록한다', () => {
@@ -259,11 +303,6 @@ describe('ERD schema alignment', () => {
         name: 'must_filtering',
         type: 'boolean',
         default: true,
-      }],
-      [MemberDepartmentDAO, 'role', {
-        name: 'role',
-        type: 'varchar',
-        length: 10,
       }],
       [MaskingReportDAO, 'createdAt', {
         name: 'created_at',
@@ -302,6 +341,13 @@ describe('ERD schema alignment', () => {
         && candidate.propertyName === 'mustFiltering',
     );
     expect(activeApiKeyMustFiltering).toBeUndefined();
+
+    const memberDepartmentRole = metadata.columns.find(
+      (candidate) =>
+        candidate.target === MemberDepartmentDAO
+        && candidate.propertyName === 'role',
+    );
+    expect(memberDepartmentRole).toBeUndefined();
 
     const promptRoomId = metadata.columns.find(
       (candidate) =>
@@ -405,7 +451,7 @@ describe('ERD schema alignment', () => {
     );
   });
 
-  it('정책 활성 상태는 policy가 아닌 department_policy 연결에만 둔다', () => {
+  it('정책 활성 상태는 프리셋에만 두고 부서별 연결에는 활성 상태 기본값을 둔다', () => {
     const policyIsActiveColumn = metadata.columns.find(
       (candidate) =>
         candidate.target === PolicyDAO
@@ -421,6 +467,7 @@ describe('ERD schema alignment', () => {
     expect(departmentPolicyIsActiveColumn?.options).toMatchObject({
       name: 'is_active',
       type: 'boolean',
+      default: true,
     });
   });
 
@@ -436,6 +483,7 @@ describe('ERD schema alignment', () => {
       ['isActive', {
         name: 'is_active',
         type: 'boolean',
+        default: true,
       }],
       ['departmentId', {
         name: 'department_id',
@@ -501,5 +549,91 @@ describe('ERD schema alignment', () => {
 
     expect(departmentIdColumn).toBeUndefined();
     expect(departmentRelation).toBeUndefined();
+  });
+
+  it('보안 정책 프리셋과 프리셋별 정책 연결을 등록한다', () => {
+    const presetTable = metadata.tables.find(
+      (candidate) => candidate.target === PresetDAO,
+    );
+    const presetPolicyTable = metadata.tables.find(
+      (candidate) => candidate.target === PresetPolicyDAO,
+    );
+    const expectedPresetColumns = [
+      ['policyPresetId', { name: 'policy_preset_id', type: 'bigint' }],
+      ['name', { name: 'name', type: 'varchar', length: 255, nullable: true }],
+      ['isActive', { name: 'is_active', type: 'boolean', default: true }],
+    ] as const;
+    const expectedPresetPolicyColumns = [
+      ['presetPolicyId', { name: 'preset_policy_id', type: 'bigint' }],
+      ['policyPresetId', { name: 'policy_preset_id', type: 'bigint' }],
+      ['policyId', { name: 'policy_id', type: 'bigint' }],
+    ] as const;
+
+    expect(presetTable?.name).toBe('preset');
+    expect(presetPolicyTable?.name).toBe('preset_policy');
+    for (const [propertyName, expected] of expectedPresetColumns) {
+      const column = metadata.columns.find(
+        (candidate) => candidate.target === PresetDAO
+          && candidate.propertyName === propertyName,
+      );
+      expect(column?.options).toMatchObject(expected);
+    }
+    for (const [propertyName, expected] of expectedPresetPolicyColumns) {
+      const column = metadata.columns.find(
+        (candidate) => candidate.target === PresetPolicyDAO
+          && candidate.propertyName === propertyName,
+      );
+      expect(column?.options).toMatchObject(expected);
+    }
+
+    const relations = [
+      ['preset', 'policy_preset_id'],
+      ['policy', 'policy_id'],
+    ] as const;
+    for (const [propertyName, columnName] of relations) {
+      const relation = metadata.relations.find(
+        (candidate) => candidate.target === PresetPolicyDAO
+          && candidate.propertyName === propertyName,
+      );
+      const joinColumn = metadata.joinColumns.find(
+        (candidate) => candidate.target === PresetPolicyDAO
+          && candidate.propertyName === propertyName,
+      );
+      expect(relation?.relationType).toBe('many-to-one');
+      expect(relation?.options.nullable).toBe(false);
+      expect(joinColumn?.name).toBe(columnName);
+    }
+  });
+
+  it('서비스 헬스 체크 이력을 health_history에 저장한다', () => {
+    const table = metadata.tables.find(
+      (candidate) => candidate.target === HealthHistoryDAO,
+    );
+    const expectedColumns = [
+      ['healthHistoryId', { name: 'health_history_id', type: 'bigint' }],
+      ['serviceName', { name: 'service_name', type: 'varchar', length: 50 }],
+      ['status', {
+        name: 'status',
+        type: 'varchar',
+        length: 10,
+        default: HealthStatus.OK,
+      }],
+      ['latency', { name: 'latency', type: 'int' }],
+      ['createdAt', {
+        name: 'created_at',
+        type: 'timestamp',
+        precision: 0,
+      }],
+    ] as const;
+
+    expect(table?.name).toBe('health_history');
+    for (const [propertyName, expected] of expectedColumns) {
+      const column = metadata.columns.find(
+        (candidate) => candidate.target === HealthHistoryDAO
+          && candidate.propertyName === propertyName,
+      );
+      expect(column?.options).toMatchObject(expected);
+      expect(column?.options.nullable).not.toBe(true);
+    }
   });
 });

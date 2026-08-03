@@ -14,7 +14,7 @@ export type MaskingContent =
 
 /** 부서 정책 중 게이트웨이가 실제로 탐지할 수 있는 정책입니다. */
 export interface DepartmentMaskingPolicy {
-  readonly policyId: string;
+  readonly departmentPolicyId: string;
   readonly maskingContent: MaskingContent;
   readonly maskingClass: MaskingClass;
 }

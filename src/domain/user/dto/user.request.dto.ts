@@ -9,9 +9,9 @@ export namespace UserReqDTO {
     export class MessageList {
         @ApiProperty({
             type: String,
-            example: '7일전',
-            enum: ['7일전', '30일전', '90일전', '전체'],
-            description: '조회 기간: 7일전, 30일전, 90일전, 전체'
+            example: '7d',
+            enum: ['7d', '30d', '90d', 'all'],
+            description: '조회 기간: 7d, 30d, 90d, all'
         })
         recent!: string;
 

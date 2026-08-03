@@ -1,0 +1,117 @@
+name: ${COMPOSE_PROJECT_NAME:-llm-gateway}
+
+# EC2에서 호스트 MySQL을 사용하고 Gateway와 MinIO만 실행하는 구성입니다.
+services:
+  minio:
+    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?MINIO_ROOT_USER is required}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD is required}
+      MINIO_SITE_REGION: ${MINIO_REGION:-ap-northeast-2}
+    command: server /data --console-address ":9001"
+    ports:
+      - "${MINIO_API_BIND_ADDRESS:-127.0.0.1}:${MINIO_API_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_BIND_ADDRESS:-127.0.0.1}:${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    networks:
+      - gateway-network
+
+  minio-init:
+    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
+    restart: "no"
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?MINIO_ROOT_USER is required}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD is required}
+      MINIO_BUCKET: ${MINIO_BUCKET:-llm-gateway-private}
+      MINIO_REGION: ${MINIO_REGION:-ap-northeast-2}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -eu
+        mc alias set local http://minio:9000 "$${MINIO_ROOT_USER}" "$${MINIO_ROOT_PASSWORD}"
+        mc mb --ignore-existing --region "$${MINIO_REGION}" "local/$${MINIO_BUCKET}"
+        mc anonymous set none "local/$${MINIO_BUCKET}"
+    networks:
+      - gateway-network
+
+  gateway:
+    image: rlawngjs0313/ll-gateway:latest
+    pull_policy: always
+    restart: unless-stopped
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 10s
+    environment:
+      APP_NAME: ${APP_NAME:-llm-gateway}
+      NODE_ENV: production
+      PORT: 3000
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
+      API_KEY_ENCRYPTION_KEY: ${API_KEY_ENCRYPTION_KEY:?API_KEY_ENCRYPTION_KEY is required}
+      JWT_ACCESS_EXPIRES_IN_SECONDS: ${JWT_ACCESS_EXPIRES_IN_SECONDS:-900}
+      JWT_REFRESH_EXPIRES_IN_SECONDS: ${JWT_REFRESH_EXPIRES_IN_SECONDS:-604800}
+      DB_HOST: ${DB_HOST:-host.docker.internal}
+      DB_PORT: ${DB_PORT:-3306}
+      DB_USERNAME: ${DB_USERNAME:-gateway}
+      DB_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is required}
+      DB_NAME: ${DB_NAME:-llm_gateway}
+      MINIO_ENDPOINT: minio
+      MINIO_PORT: 9000
+      MINIO_USE_SSL: "false"
+      MINIO_PUBLIC_ENDPOINT: ${MINIO_PUBLIC_ENDPOINT:?MINIO_PUBLIC_ENDPOINT is required}
+      MINIO_PUBLIC_PORT: ${MINIO_PUBLIC_PORT:-9000}
+      MINIO_PUBLIC_USE_SSL: ${MINIO_PUBLIC_USE_SSL:-false}
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:?MINIO_ROOT_USER is required}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD is required}
+      MINIO_BUCKET: ${MINIO_BUCKET:-llm-gateway-private}
+      MINIO_REGION: ${MINIO_REGION:-ap-northeast-2}
+      MINIO_PRESIGNED_GET_TTL_SECONDS: ${MINIO_PRESIGNED_GET_TTL_SECONDS:-600}
+      NER_SERVER_IP: ${NER_SERVER_IP:?NER_SERVER_IP is required}
+      NER_SERVER_PORT: ${NER_SERVER_PORT:?NER_SERVER_PORT is required}
+      PROVIDER_SERVER_IP: ${PROVIDER_SERVER_IP:?PROVIDER_SERVER_IP is required}
+      PROVIDER_SERVER_PORT: ${PROVIDER_SERVER_PORT:?PROVIDER_SERVER_PORT is required}
+      NER_CALLBACK_SECRET: ${NER_CALLBACK_SECRET:?NER_CALLBACK_SECRET is required}
+    # 컨테이너에서 EC2 호스트의 MySQL과 NER에 접속하기 위한 Linux Docker 매핑입니다.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "${GATEWAY_BIND_ADDRESS:-0.0.0.0}:${GATEWAY_PORT:-3000}:3000"
+    depends_on:
+      minio-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3000/api-docs-json').then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))"
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks:
+      - gateway-network
+
+networks:
+  gateway-network:
+    name: ${GATEWAY_NETWORK_NAME:-llm-gateway-network}
+
+volumes:
+  minio-data:
+    name: ${MINIO_VOLUME_NAME:-minio-data}

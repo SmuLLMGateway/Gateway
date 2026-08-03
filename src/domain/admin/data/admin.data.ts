@@ -2,9 +2,8 @@ import type { MaskingClass } from '../dao/policy.dao.js';
 
 export namespace AdminData {
   export interface CreateUserResult {
+    id: string;
     name: string;
-    role: string;
-    createdAt: Date | string;
   }
 
   export interface CreateDepartmentResult {
@@ -16,7 +15,7 @@ export namespace AdminData {
     departmentId: number;
     departmentName: string;
     departmentUserCnt: number;
-    canUseLLMModel: string[] | null;
+    canUseLLMModel: string[];
     policyType: '표준' | '커스텀';
     policyCnt: number;
     outbound: '허용' | '불가';
@@ -62,13 +61,14 @@ export namespace AdminData {
 
   export interface CreateDepartment {
     departmentName: string;
+    departmentCode: string;
+    mustFiltering: boolean;
+    limit: string;
   }
 
   export interface CreateActiveApiKey {
     apiKey: string;
     serviceType: string;
-    limit: string;
-    usage: string;
     departmentId: string;
   }
 
@@ -85,24 +85,7 @@ export namespace AdminData {
     email: string;
     department: string | null;
     authorize: string;
-    lastLoginAt: Date | string;
     status: string;
   }
 
-  export interface Detecting {
-    sensitiveCnt: number;
-    privateCnt: number;
-  }
-
-  /** 이용 기록 목록 조회 결과의 원본 데이터 */
-  export interface LogListItem {
-    logId: number;
-    title: string;
-    userDepartment: string;
-    chatStartedAt: Date | string;
-    chatEndedAt: Date | string;
-    model: string;
-    detecting: Detecting | null;
-    process: string;
-  }
 }

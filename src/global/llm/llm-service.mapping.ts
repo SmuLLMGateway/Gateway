@@ -1,6 +1,10 @@
 import { LlmProvider } from './enum/llm-provider.enum.js';
 import { LlmService } from './enum/llm-service.enum.js';
 
+/** 외부 API 키 등록 여부와 관계없이 모든 부서에서 사용할 수 있는 기본 모델입니다. */
+export const LOCAL_LLM_MODEL = 'Local LLM' as const;
+export const LOCAL_LLM_MODEL_PREFIX = 'local-' as const;
+
 export interface LlmServiceDescriptor {
   /** API 키 검증과 암호화 AAD에 사용하는 내부 provider 식별자입니다. */
   readonly provider: LlmProvider;
@@ -71,6 +75,29 @@ export function resolveLlmServiceFromModelName(
   }
 
   return null;
+}
+
+/** DB에 저장된 모델명이 로컬 LLM 모델인지 판별합니다. */
+export function isLocalLlmModelName(modelName: unknown): boolean {
+  return typeof modelName === 'string'
+    && modelName.trim().toLowerCase().startsWith(LOCAL_LLM_MODEL_PREFIX)
+    && modelName.trim().length > LOCAL_LLM_MODEL_PREFIX.length;
+}
+
+/** NER 서버의 모델 식별자를 DB에서 사용하는 local-* 모델명으로 정규화합니다. */
+export function toLocalLlmModelName(modelName: string): string | null {
+  const normalizedModelName = modelName.trim();
+  if (normalizedModelName === '') {
+    return null;
+  }
+
+  const nameWithoutPrefix = normalizedModelName.toLowerCase()
+    .startsWith(LOCAL_LLM_MODEL_PREFIX)
+    ? normalizedModelName.slice(LOCAL_LLM_MODEL_PREFIX.length).trim()
+    : normalizedModelName;
+  return nameWithoutPrefix === ''
+    ? null
+    : `${LOCAL_LLM_MODEL_PREFIX}${nameWithoutPrefix}`;
 }
 
 function hasLlmNamePrefix(modelName: string, prefix: string): boolean {

@@ -47,10 +47,10 @@ export const PromptSuccessStatus = {
         code: 'PROM200_10',
         message: '성공적으로 직전 마스킹 요소 탐지 요청을 조회했습니다.'
     },
-    NER_CALLBACK: {
+    CANCEL_ANALYZE: {
         httpStatus: HttpStatus.OK,
         code: 'PROM200_11',
-        message: '성공적으로 파일 분석 결과를 반영했습니다.'
+        message: '성공적으로 해당 마스킹 요소 탐지 요청을 취소했습니다.'
     },
 
     BEFORE_ANALYZE: {
@@ -82,15 +82,15 @@ export const PromptErrorStatus = {
         code: 'PROM400_3',
         message: '마스킹 요소 분석 요청 형식이 올바르지 않습니다.'
     },
-    INVALID_NER_CALLBACK: {
-        httpStatus: HttpStatus.BAD_REQUEST,
-        code: 'PROM400_4',
-        message: '파일 분석 결과 형식이 올바르지 않습니다.'
-    },
     INVALID_FILE_DOWNLOAD_REQUEST: {
         httpStatus: HttpStatus.BAD_REQUEST,
         code: 'PROM400_5',
         message: '파일 다운로드 URL 생성 요청 형식이 올바르지 않습니다.'
+    },
+    INVALID_PROMPT_LIST_REQUEST: {
+        httpStatus: HttpStatus.BAD_REQUEST,
+        code: 'PROM400_6',
+        message: '프롬프트 목록 조회 요청 형식이 올바르지 않습니다.'
     },
     FORBIDDEN_LLM_MODEL: {
         httpStatus: HttpStatus.FORBIDDEN,
@@ -147,5 +147,10 @@ export const PromptErrorStatus = {
         httpStatus: HttpStatus.SERVICE_UNAVAILABLE,
         code: 'PROM503_2',
         message: '파일 다운로드 URL을 생성할 수 없습니다.'
+    },
+    LLM_REQUEST_FAILED: {
+        httpStatus: HttpStatus.SERVICE_UNAVAILABLE,
+        code: 'PROM503_3',
+        message: 'LLM 전송에 실패했습니다. 다시 시도해주세요.'
     },
 } as const satisfies Record<string, BaseStatus>;

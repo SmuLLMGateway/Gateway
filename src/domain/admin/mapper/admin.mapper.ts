@@ -7,6 +7,11 @@ import { OffsetPageData } from '../../../global/data/offset-page.data.js';
 import { ActiveApiKeyDAO } from '../dao/active-api-key.dao.js';
 import { AdminLogDAO } from '../dao/admin-log.dao.js';
 import { DepartmentDAO } from '../dao/department.dao.js';
+import {
+  getMaskingCategoryDisplayName,
+  getSecurityPolicyClassDisplayName,
+  getSecurityPolicyDisplayName,
+} from '../policy/security-policy.catalog.js';
 
 @Injectable()
 export class AdminMapper {
@@ -22,7 +27,11 @@ export class AdminMapper {
   toDepartmentDAO(data: Readonly<AdminData.CreateDepartment>): DepartmentDAO {
     return this.departmentRepository.create({
       departmentName: data.departmentName,
-      mustFiltering: true,
+      departmentCode: data.departmentCode,
+      mustFiltering: data.mustFiltering,
+      limit: data.limit,
+      usage: '0',
+      recentUsePercent: '0',
     });
   }
 
@@ -32,8 +41,6 @@ export class AdminMapper {
     return this.activeApiKeyRepository.create({
       apiKey: data.apiKey,
       serviceType: data.serviceType,
-      limit: data.limit,
-      usage: data.usage,
       departmentId: data.departmentId,
     });
   }
@@ -50,9 +57,8 @@ export class AdminMapper {
     data: Readonly<AdminData.CreateUserResult>,
   ): AdminResDTO.CreateUser {
     return {
+      id: Number(data.id),
       name: data.name,
-      role: data.role,
-      createdAt: this.toDateTimeString(data.createdAt),
     };
   }
 
@@ -72,9 +78,7 @@ export class AdminMapper {
       departmentId: data.departmentId,
       departmentName: data.departmentName,
       departmentUserCnt: data.departmentUserCnt,
-      canUseLLMModel: data.canUseLLMModel === null
-        ? null
-        : [...data.canUseLLMModel],
+      canUseLLMModel: [...data.canUseLLMModel],
       policyType: data.policyType,
       policyCnt: data.policyCnt,
       outbound: data.outbound,
@@ -124,8 +128,8 @@ export class AdminMapper {
     return {
       policyId: Number(data.policyId),
       targetDepartment: data.targetDepartment,
-      maskingContent: data.maskingContent,
-      maskingClass: data.maskingClass,
+      maskingContent: getSecurityPolicyDisplayName(data.maskingContent),
+      maskingClass: getSecurityPolicyClassDisplayName(data.maskingClass),
       changedAt: this.toDateTimeString(data.changedAt),
     };
   }
@@ -138,11 +142,26 @@ export class AdminMapper {
       targetDepartment,
       policies: policies.map((policy) => ({
         policyId: Number(policy.policyId),
-        maskingContent: policy.maskingContent,
-        maskingClass: policy.maskingClass,
+        maskingContent: getSecurityPolicyDisplayName(policy.maskingContent),
+        maskingClass: getSecurityPolicyClassDisplayName(policy.maskingClass),
       })),
       totalCnt: policies.length,
     };
+  }
+
+  static toPolicyPresetList(
+    presets: readonly Readonly<{
+      name: string | null;
+      presetPolicies?: readonly Readonly<{
+        policy: Readonly<{ maskingContent: string }>;
+      }>[];
+    }>[],
+  ): AdminResDTO.PolicyPreset[] {
+    return presets.map((preset) => ({
+      presetName: preset.name ?? '',
+      policies: (preset.presetPolicies ?? []).map(({ policy }) =>
+        getSecurityPolicyDisplayName(policy.maskingContent)),
+    }));
   }
 
   static toSyncPolicies(
@@ -151,7 +170,8 @@ export class AdminMapper {
   ): AdminResDTO.SyncPolicies {
     return {
       targetDepartment,
-      policies: policies.map((policy) => policy.maskingContent),
+      policies: policies.map((policy) =>
+        getSecurityPolicyDisplayName(policy.maskingContent)),
     };
   }
 
@@ -172,7 +192,11 @@ export class AdminMapper {
     detailCategory: string,
     count: number,
   ): AdminResDTO.PolicyDetect {
-    return { category, detailCategory, count };
+    return {
+      category: getMaskingCategoryDisplayName(category),
+      detailCategory: getSecurityPolicyDisplayName(detailCategory),
+      count,
+    };
   }
 
   static toDepartmentRisk(
@@ -209,7 +233,6 @@ export class AdminMapper {
       email: data.email,
       department: data.department,
       authorize: data.authorize,
-      lastLoginAt: this.toDateTimeString(data.lastLoginAt),
       status: data.status,
     };
   }
@@ -238,7 +261,9 @@ export class AdminMapper {
     return {
       ...data,
       llmModel: data.llmModel.map((model) => ({ ...model })),
-      policies: data.policies.map((policy) => ({ ...policy })),
+      policies: data.policies === null
+        ? null
+        : data.policies.map((policy) => ({ ...policy })),
     };
   }
 
@@ -256,43 +281,15 @@ export class AdminMapper {
     filterDetectCnt: number,
     masking: number,
     local: number,
+    localRate: number,
   ): AdminResDTO.LogsSummary {
-    return { updatedAt, totalChatCnt, filterDetectCnt, masking, local };
-  }
-
-  static toDetecting(data: Readonly<AdminData.Detecting>): AdminResDTO.Detecting {
     return {
-      sensitiveCnt: data.sensitiveCnt,
-      privateCnt: data.privateCnt,
-    };
-  }
-
-  static toLogListItem(
-    data: Readonly<AdminData.LogListItem>,
-  ): AdminResDTO.LogListItem {
-    return {
-      logId: data.logId,
-      title: data.title,
-      userDepartment: data.userDepartment,
-      chatStartedAt: this.toDateTimeString(data.chatStartedAt),
-      chatEndedAt: this.toDateTimeString(data.chatEndedAt),
-      model: data.model,
-      detecting: data.detecting ? this.toDetecting(data.detecting) : null,
-      process: data.process,
-    };
-  }
-
-  static toLogList(
-    page: Readonly<OffsetPageData<AdminData.LogListItem>>,
-  ): AdminResDTO.LogList {
-    const data = page.data.map((item) => this.toLogListItem(item));
-
-    return {
-      data,
-      totalCnt: page.totalCnt,
-      dataCnt: data.length,
-      filteringCnt: page.filteringCnt,
-      pageNumber: page.pageNumber,
+      updatedAt,
+      totalChatCnt,
+      filterDetectCnt,
+      masking,
+      local,
+      localRate,
     };
   }
 

@@ -59,11 +59,11 @@ export namespace PromptResDTO {
 
     export class Masking {
         @ApiProperty({
-            type: () => [MaskingFile],
+            type: () => MaskingFile,
             nullable: true,
-            description: '파일이 없으면 null'
+            description: '업로드 파일의 탐지 결과. 파일이 없으면 null'
         })
-        file!: MaskingFile[] | null;
+        file!: MaskingFile | null;
 
         @ApiProperty({
             type: () => [MaskingText],
@@ -81,12 +81,27 @@ export namespace PromptResDTO {
         })
         originText!: string;
 
+        @ApiProperty({
+            example: 2,
+            description: '이번 분석에서 탐지된 마스킹 요소 수'
+        })
+        recentDetectCnt!: number;
+
         @ApiProperty({ type: () => Masking })
         masking!: Masking;
     }
 
+    @ApiSchema({ name: 'PromptAnalyzeNoDetectionResponse' })
+    export class AnalyzeWithoutDetection {
+        @ApiProperty({
+            example: 0,
+            description: '이번 분석에서 탐지된 마스킹 요소 수. 탐지 항목이 없으면 0'
+        })
+        recentDetectCnt!: 0;
+    }
+
     @ApiSchema({ name: 'PromptRecentAnalyzeResponse' })
-    export class RecentAnalyze extends Analyze {
+    export class RecentAnalyze {
         @ApiProperty({
             example: '8e88c068-722e-4c04-93c5-906cea400be2',
             description: '분석 요청 티켓',
@@ -101,6 +116,15 @@ export namespace PromptResDTO {
             format: 'uuid'
         })
         recentTicket!: string | null;
+
+        @ApiProperty({
+            example: '다음 주 A사와 체결 예정인...',
+            description: '분석 대상 원본 텍스트'
+        })
+        originText!: string;
+
+        @ApiProperty({ type: () => Masking })
+        masking!: Masking;
     }
 
     export class RecentPrompt {
@@ -161,10 +185,31 @@ export namespace PromptResDTO {
         file!: PromptListFile[] | null;
     }
 
+    export class PromptListPage {
+        @ApiProperty({
+            type: () => [PromptListItem],
+            description: '최신순 프롬프트 목록. 같은 communicatedAt 경계는 UNIX ms 커서에서 누락되지 않도록 pageSize보다 많이 반환될 수 있음'
+        })
+        data!: PromptListItem[];
+
+        @ApiProperty({
+            example: true,
+            description: '다음 페이지 존재 여부'
+        })
+        hasNext!: boolean;
+
+        @ApiProperty({
+            example: '1784957118000',
+            description: '현재 페이지 마지막 프롬프트의 communicatedAt(UNIX timestamp ms)'
+        })
+        nextCursor!: string;
+    }
+
     export type Empty = null;
+    export type AnalyzeResult = Analyze | AnalyzeWithoutDetection;
     export type LlmResponse = string | null;
     export type RecentPromptList = RecentPrompt[] | null;
-    export type PromptList = PromptListItem[] | null;
+    export type PromptList = PromptListPage | null;
     export type FileDownload = string;
     export type ModelList = string[];
 }

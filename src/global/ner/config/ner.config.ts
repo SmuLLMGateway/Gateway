@@ -1,64 +1,25 @@
 import { Injectable } from '@nestjs/common';
+import { readHttpServerBaseUrl } from '../../config/http-server-endpoint.config.js';
 
-const DEFAULT_NER_CALLBACK_SECRET = 'local-ner-callback-secret';
 const DEFAULT_NER_REQUEST_TIMEOUT_MS = 5_000;
-// NER API 경로가 확정되면 이 상수만 실제 분석 경로로 변경합니다.
-const NER_ANALYZE_PATH = '/';
+const NER_ANALYZE_PATH = '/detect';
+
+function readOptionalNonEmptyEnvironment(name: string): string | null {
+  const value = process.env[name]?.trim();
+  return value === undefined || value.length === 0 ? null : value;
+}
 
 @Injectable()
 export class NerConfig {
-  readonly analyzeUrl = this.readAnalyzeUrl();
+  readonly baseUrl = readHttpServerBaseUrl('NER');
+  readonly analyzeUrl = new URL(NER_ANALYZE_PATH, this.baseUrl).toString();
+  readonly healthUrl = new URL('/health', this.baseUrl).toString();
+  readonly llmDeploymentsUrl = new URL('/deployments/llm', this.baseUrl).toString();
   readonly requestTimeoutMs = DEFAULT_NER_REQUEST_TIMEOUT_MS;
-  readonly callbackSecret = this.readCallbackSecret();
-
-  private readAnalyzeUrl(): string {
-    const serverIp = process.env.NER_SERVER_IP?.trim();
-
-    if (serverIp === undefined || serverIp.length === 0) {
-      throw new Error('NER_SERVER_IP 환경 변수가 필요합니다.');
-    }
-
-    const serverUrl = /^[a-z][a-z\d+.-]*:\/\//i.test(serverIp)
-      ? serverIp
-      : `http://${serverIp}`;
-
-    let parsedUrl: URL;
-    try {
-      parsedUrl = new URL(serverUrl);
-    } catch {
-      throw new Error('NER_SERVER_IP 형식이 올바르지 않습니다.');
-    }
-
-    if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
-      throw new Error('NER_SERVER_IP는 HTTP 또는 HTTPS 주소여야 합니다.');
-    }
-
-    if (
-      parsedUrl.username.length > 0
-      || parsedUrl.password.length > 0
-      || parsedUrl.search.length > 0
-      || parsedUrl.hash.length > 0
-      || parsedUrl.pathname !== '/'
-    ) {
-      throw new Error(
-        'NER_SERVER_IP에는 인증 정보, 경로, 쿼리 또는 fragment를 입력할 수 없습니다.',
-      );
-    }
-
-    return new URL(NER_ANALYZE_PATH, parsedUrl).toString();
-  }
-
-  private readCallbackSecret(): string {
-    const secret = process.env.NER_CALLBACK_SECRET?.trim();
-
-    if (secret !== undefined && secret.length > 0) {
-      return secret;
-    }
-
-    if (process.env.NODE_ENV === 'production') {
-      throw new Error('production 환경에서는 NER_CALLBACK_SECRET이 필요합니다.');
-    }
-
-    return DEFAULT_NER_CALLBACK_SECRET;
-  }
+  /**
+   * 임시 서버 설정입니다. 향후 클라이언트가 선택한 NER·LLM 배포 ID로
+   * 요청별 대체할 수 있도록 NerClient 경계에서만 사용합니다.
+   */
+  readonly nerDeploymentId = readOptionalNonEmptyEnvironment('NER_DEPLOYMENT_ID');
+  readonly llmDeploymentId = readOptionalNonEmptyEnvironment('NER_LLM_DEPLOYMENT_ID');
 }

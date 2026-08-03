@@ -23,9 +23,6 @@ export class MemberDepartmentDAO {
     @PrimaryGeneratedColumn({ name: 'member_department_id', type: 'bigint' })
     memberDepartmentId!: string;
 
-    @Column({ name: 'role', type: 'varchar', length: 10 })
-    role!: string;
-
     @Column({
         name: 'member_id',
         type: 'bigint'

@@ -9,11 +9,11 @@ export namespace UserResDTO {
         @ApiProperty({ type: String, example: '김보안' })
         name!: string;
 
-        @ApiProperty({ type: String, example: '기획 1팀' })
-        department!: string;
+        @ApiProperty({ type: String, nullable: true, example: '기획 1팀', description: '소속 부서명. 부서 미소속 총 관리자는 null' })
+        department!: string | null;
 
         @ApiProperty({ type: String, enum: ['일반 사용자', '부서 관리자', '총 관리자'], example: '일반 사용자' })
-        role!: string;
+        authorize!: string;
 
         @ApiProperty({ type: Number, example: 17, description: '이번 달 외부·내부 LLM 전송 프롬프트 중 보안 정책 탐지 수' })
         filter!: number;
@@ -21,7 +21,7 @@ export namespace UserResDTO {
         @ApiProperty({ type: Number, example: 45.5, description: '이번 달 개인 사용량(member_limit.usage 합계)' })
         personalLimitRate!: number;
 
-        @ApiProperty({ type: Number, example: 61.2, description: '이번 달 부서 사용량(active_api_key.usage 합계)' })
+        @ApiProperty({ type: Number, example: 61.2, description: '이번 달 부서 사용량(department.usage)' })
         departmentLimitRate!: number;
     }
 
@@ -58,7 +58,8 @@ export namespace UserResDTO {
         @ApiProperty({
             type: String,
             example: 'cbc9dacd-1788-4f7a-81c8-1df5d0d30cbf',
-            format: 'uuid'
+            format: 'uuid',
+            description: '마스킹 탐지 요청 티켓(prompt_log.masking_report_id)'
         })
         promptId!: string;
 
@@ -72,8 +73,13 @@ export namespace UserResDTO {
         })
         promptedAt!: string;
 
-        @ApiProperty({ type: String, example: 'Local LLM' })
-        llmModel!: string;
+        @ApiProperty({
+            type: String,
+            nullable: true,
+            example: 'GPT',
+            description: '프롬프트 생성 시 저장한 LLM 분류. 외부 LLM은 active_api_key.service_type, 로컬은 Local LLM'
+        })
+        llmModel!: string | null;
 
         @ApiProperty({ type: Number, example: 3 })
         detectCnt!: number;

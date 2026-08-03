@@ -27,7 +27,7 @@ export class MemberLimitDAO {
   limit!: string;
 
   /** 회원별 API 키의 현재 사용량입니다. */
-  @Column({ name: 'usage', type: 'bigint', default: 0 })
+  @Column({ name: 'usage', type: 'decimal', precision: 20, scale: 6, default: 0 })
   usage!: string;
 
   @Column({ name: 'member_id', type: 'bigint' })

@@ -13,10 +13,11 @@ export namespace PromptData {
   }
 
   export interface CreatePromptLog {
-    status: PromptLogStatus | null;
+    status: PromptLogStatus;
     communicatedAt: Date | null;
     modelType: string | null;
     responseText: string | null;
+    usage: string | null;
     promptSummary: string;
     promptRoomId: string;
     maskingReportId: string;
@@ -34,21 +35,19 @@ export namespace PromptData {
 
   interface MaskingDetailReference {
     maskingReportId: string;
-    policyId: string;
+    departmentPolicyId: string;
   }
 
   export type CreateMaskingDetail = MaskingDetailReference & (
     | {
       originalText: string;
       startIdx: number;
-      endIdx: number;
       fileUrl: null;
       maskingText: string;
     }
     | {
       originalText: null;
       startIdx: null;
-      endIdx: null;
       fileUrl: string;
       maskingText: null;
     }
@@ -59,11 +58,18 @@ export namespace PromptData {
     startIdx: number;
     endIdx: number;
     maskingText: string;
-    policyId: string;
+    departmentPolicyId: string;
   }
 
   export interface NerDetection {
-    policyId: string;
+    departmentPolicyId: string;
+  }
+
+  export interface NerTextDetection {
+    originalText: string;
+    startIdx: number;
+    maskingText: string;
+    departmentPolicyId: string;
   }
 
   export interface AnalyzeDetail {

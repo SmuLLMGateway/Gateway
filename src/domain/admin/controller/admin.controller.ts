@@ -13,7 +13,8 @@ import {
   Query,
 } from '@nestjs/common';
 import { GeneralResponse } from '../../../global/apiPayload/general.response.js';
-import { AdminSuccessStatus } from '../code/admin.status.js';
+import { AdminErrorStatus, AdminSuccessStatus } from '../code/admin.status.js';
+import { AdminException } from '../exception/admin.exception.js';
 import { AdminReqDTO } from '../dto/admin.request.dto.js';
 import { AdminResDTO } from '../dto/admin.response.dto.js';
 import { AdminService } from '../service/admin.service.js';
@@ -21,23 +22,26 @@ import {
   AdminControllerDocs,
   AdminLogsDocs,
   CreateDepartmentDocs,
+  CreateUsersBatchDocs,
   CreateUserDocs,
   DashboardDocs,
+  DepartmentApiKeyDocs,
   DepartmentDetailDocs,
   DepartmentListDocs,
   DepartmentManagementSummaryDocs,
-  DepartmentRolesDocs,
   DepartmentRisksDocs,
   DisableUserDocs,
-  LogDetailDocs,
-  LogListDocs,
   LogsSummaryDocs,
+  LinkDepartmentUsersDocs,
+  LlmHealthDocs,
+  PolicyCatalogDocs,
   PolicyDetectDocs,
   PromptDetailDocs,
   RegisterApiKeyDocs,
   SyncPoliciesDocs,
+  SyncGlobalPoliciesDocs,
+  SystemHealthDocs,
   RestoreUserDocs,
-  TrendsDocs,
   UpdateUserDocs,
   UserDetailDocs,
   UserListDocs,
@@ -70,6 +74,12 @@ export class AdminController {
     return GeneralResponse.onSuccess(AdminSuccessStatus.CREATE_USER, result);
   }
 
+  @CreateUsersBatchDocs()
+  @Post('/admin/v1/users/batch')
+  async createUsersBatch(): Promise<never> {
+    throw new AdminException(AdminErrorStatus.NOT_IMPLEMENTED);
+  }
+
   @CreateDepartmentDocs()
   @Roles(UserRole.TOTAL_ADMIN)
   @Post('/admin/v1/departments')
@@ -80,6 +90,26 @@ export class AdminController {
     const result = await this.adminService.createDepartment(dto);
     return GeneralResponse.onSuccess(
       AdminSuccessStatus.CREATE_DEPARTMENT,
+      result,
+    );
+  }
+
+  @LinkDepartmentUsersDocs()
+  @Roles(UserRole.TOTAL_ADMIN)
+  @Post('/admin/v1/departments/:departmentId/users')
+  @HttpCode(HttpStatus.CREATED)
+  async linkDepartmentUsers(
+    @Param('departmentId', ParseIntPipe) departmentId: number,
+    @Body() dto: AdminReqDTO.LinkDepartmentUsers,
+    @CurrentUser() authentication: AuthenticatedUser,
+  ): Promise<GeneralResponse<AdminResDTO.LinkDepartmentUsers>> {
+    const result = await this.adminService.linkDepartmentUsers(
+      departmentId,
+      dto,
+      authentication,
+    );
+    return GeneralResponse.onSuccess(
+      AdminSuccessStatus.LINK_DEPARTMENT_USERS,
       result,
     );
   }
@@ -106,14 +136,6 @@ export class AdminController {
       AdminSuccessStatus.DEPARTMENT_SUMMARY,
       result,
     );
-  }
-
-  @DepartmentRolesDocs()
-  @Get('/admin/v1/departments/:departmentId/roles')
-  async getDepartmentRoles(
-    @Param('departmentId', ParseIntPipe) departmentId: number,
-  ): Promise<unknown> {
-    return this.adminService.getDepartmentRoles(departmentId);
   }
 
   @DepartmentDetailDocs()
@@ -146,6 +168,54 @@ export class AdminController {
       AdminSuccessStatus.REGISTER_API_KEY,
       result,
     );
+  }
+
+  @DepartmentApiKeyDocs()
+  @Get('/admin/v1/departments/me/api-key')
+  async getDepartmentApiKey(
+    @Query() dto: AdminReqDTO.DepartmentApiKey,
+    @CurrentUser() authentication: AuthenticatedUser,
+  ): Promise<GeneralResponse<AdminResDTO.DepartmentApiKey>> {
+    const result = await this.adminService.getDepartmentApiKey(dto, authentication);
+    return GeneralResponse.onSuccess(
+      AdminSuccessStatus.DEPARTMENT_API_KEY,
+      result,
+    );
+  }
+
+  @PolicyCatalogDocs()
+  @Get('/admin/v1/policies')
+  async getPolicyCatalog(): Promise<GeneralResponse<AdminResDTO.PolicyPreset[] | null>> {
+    const result = await this.adminService.getPolicyCatalog();
+    return GeneralResponse.onSuccess(AdminSuccessStatus.POLICY_CATALOG, result);
+  }
+
+  @SyncGlobalPoliciesDocs()
+  @Roles(UserRole.TOTAL_ADMIN)
+  @Put('/admin/v1/policies')
+  async syncGlobalPolicies(
+    @Body() dto: AdminReqDTO.SyncGlobalPolicies,
+    @CurrentUser() authentication: AuthenticatedUser,
+  ): Promise<GeneralResponse<string[]>> {
+    const result = await this.adminService.syncGlobalPolicies(dto, authentication);
+    return GeneralResponse.onSuccess(
+      AdminSuccessStatus.SYNC_GLOBAL_POLICIES,
+      result,
+    );
+  }
+
+  @SystemHealthDocs()
+  @Get('/admin/v1/health')
+  async getSystemHealth(): Promise<GeneralResponse<AdminResDTO.SystemHealth>> {
+    const result = await this.adminService.getSystemHealth();
+    return GeneralResponse.onSuccess(AdminSuccessStatus.SYSTEM_HEALTH, result);
+  }
+
+  @LlmHealthDocs()
+  @Get('/admin/v1/llms/health')
+  async getLlmHealth(): Promise<GeneralResponse<AdminResDTO.LlmHealth[]>> {
+    const result = await this.adminService.getLlmHealth();
+    return GeneralResponse.onSuccess(AdminSuccessStatus.LLM_HEALTH, result);
   }
 
   @SyncPoliciesDocs()
@@ -184,15 +254,6 @@ export class AdminController {
   > {
     const result = await this.adminService.getDashboard();
     return GeneralResponse.onSuccess(AdminSuccessStatus.DASHBOARD, result);
-  }
-
-  @TrendsDocs()
-  @Get('/admin/v1/trends')
-  async getLlmUsageAndFilterDetectionTrends(
-    @Query() dto: AdminReqDTO.Trends,
-  ): Promise<GeneralResponse<AdminResDTO.Trends>> {
-    const result = await this.adminService.getTrends(dto);
-    return GeneralResponse.onSuccess(AdminSuccessStatus.TRENDS, result);
   }
 
   @AdminLogsDocs()
@@ -237,9 +298,12 @@ export class AdminController {
   async getUserAccountList(
     @Query() dto: AdminReqDTO.UserList,
     @CurrentUser() authentication: AuthenticatedUser,
-  ): Promise<GeneralResponse<AdminResDTO.UserList>> {
+  ): Promise<GeneralResponse<AdminResDTO.UserList | null>> {
     const result = await this.adminService.getUsers(dto, authentication);
-    return GeneralResponse.onSuccess(AdminSuccessStatus.USER_LIST, result);
+    return GeneralResponse.onSuccess(
+      AdminSuccessStatus.USER_LIST,
+      result.data.length === 0 ? null : result,
+    );
   }
 
   @UserDetailDocs()
@@ -296,7 +360,7 @@ export class AdminController {
   @Get('/admin/v1/users-prompts')
   async getChatLogUserList(
     @Query() dto: AdminReqDTO.UserPromptOverview,
-  ): Promise<GeneralResponse<AdminResDTO.UserPromptOverview>> {
+  ): Promise<GeneralResponse<AdminResDTO.UserPromptOverview | null>> {
     const result = await this.adminService.getUserPromptOverview(dto);
     return GeneralResponse.onSuccess(
       AdminSuccessStatus.USER_PROMPT_OVERVIEW,
@@ -326,21 +390,4 @@ export class AdminController {
     return GeneralResponse.onSuccess(AdminSuccessStatus.PROMPT_DETAIL, result);
   }
 
-  @LogListDocs()
-  @Get('/admin/v1/logs')
-  async getLegacyLogList(
-    @Query() dto: AdminReqDTO.LogList,
-  ): Promise<GeneralResponse<AdminResDTO.LogList>> {
-    const result = await this.adminService.getLogs(dto);
-    return GeneralResponse.onSuccess(AdminSuccessStatus.LEGACY_LOG_LIST, result);
-  }
-
-  @LogDetailDocs()
-  @Get('/admin/v1/logs/:logId')
-  async getLegacyLogDetail(
-    @Param('logId', ParseIntPipe) logId: number,
-  ): Promise<GeneralResponse<AdminResDTO.LogDetail>> {
-    const result = await this.adminService.getLogDetail(logId);
-    return GeneralResponse.onSuccess(AdminSuccessStatus.LEGACY_LOG_DETAIL, result);
-  }
 }

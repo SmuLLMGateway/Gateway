@@ -3,6 +3,7 @@ import {
   DataSource,
   In,
   IsNull,
+  LessThanOrEqual,
   MoreThanOrEqual,
   Not,
   QueryFailedError,
@@ -17,6 +18,7 @@ import { AdminException } from '../exception/admin.exception.js';
 import { DepartmentDAO } from '../dao/department.dao.js';
 import { MemberDAO } from '../../user/dao/member.dao.js';
 import { MemberDepartmentDAO } from '../../user/dao/member-department.dao.js';
+import { MemberLimitDAO } from '../../user/dao/member-limit.dao.js';
 import { UserMapper } from '../../user/mapper/user.mapper.js';
 import { PasswordEncoderService } from '../../../global/security/service/password-encoder.service.js';
 import { UserRole } from '../../../global/security/type/user-role.enum.js';
@@ -35,6 +37,7 @@ import { LlmApiKeyValidationResult } from '../../../global/llm/enum/llm-api-key-
 import { LlmService } from '../../../global/llm/enum/llm-service.enum.js';
 import {
   getLlmServiceDescriptor,
+  LOCAL_LLM_MODEL,
   normalizeLlmService,
 } from '../../../global/llm/llm-service.mapping.js';
 import { ApiKeyEncryptionService } from '../../../global/llm/service/api-key-encryption.service.js';
@@ -42,13 +45,28 @@ import { MaskingClass, PolicyDAO } from '../dao/policy.dao.js';
 import { DepartmentPolicyDAO } from '../dao/department-policy.dao.js';
 import {
   getDefaultPolicy,
+  getSecurityPolicyClassDisplayName,
+  getSecurityPolicyDisplayName,
   SECURITY_POLICY_CONTENTS,
   type SecurityPolicyContent,
 } from '../policy/security-policy.catalog.js';
 import { PromptRoomDAO } from '../../prompt/dao/prompt-room.dao.js';
 import { PromptLogDAO } from '../../prompt/dao/prompt-log.dao.js';
 import { MaskingDetailDAO } from '../../prompt/dao/masking-detail.dao.js';
+import { PromptException } from '../../prompt/exception/prompt.exception.js';
+import { PromptErrorStatus } from '../../prompt/code/prompt.status.js';
 import { AdminLogDAO } from '../dao/admin-log.dao.js';
+import { PromptLogStatus } from '../../prompt/type/prompt-log-status.enum.js';
+import { PresetDAO } from '../dao/preset.dao.js';
+import { PresetPolicyDAO } from '../dao/preset-policy.dao.js';
+import {
+  HealthHistoryDAO,
+  HealthServiceName,
+  HealthStatus,
+} from '../dao/health-history.dao.js';
+import { MinioObjectStorageService } from '../../../global/storage/service/minio-object-storage.service.js';
+import { NerConfig } from '../../../global/ner/config/ner.config.js';
+import { ProviderConfig } from '../../../global/llm/config/provider.config.js';
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const DEFAULT_PROFILE_URL = '';
@@ -59,9 +77,10 @@ const USER_LIST_ORDER = {
   STATUS: 'status',
 } as const;
 const MAX_USER_LIST_PAGE_SIZE = 100;
-const NEW_USER_PERIOD_DAYS = 7;
+const INITIAL_PAGE_NUMBER = 1;
 const MAX_DEPARTMENT_LIST_PAGE_SIZE = 100;
 const MAX_DEPARTMENT_NAME_LENGTH = 255;
+const MAX_DEPARTMENT_CODE_LENGTH = 10;
 
 type UserListOrder = (typeof USER_LIST_ORDER)[keyof typeof USER_LIST_ORDER];
 
@@ -96,7 +115,6 @@ interface DepartmentQuota {
 
 interface DepartmentAdminRaw {
   readonly name: string;
-  readonly role: string;
   readonly authorize: UserRole;
   readonly email: string;
 }
@@ -112,13 +130,17 @@ interface DepartmentDetailUsageMetrics {
   readonly remainUsd: number;
 }
 
+interface HealthCheckResult {
+  readonly status: HealthStatus;
+  readonly latency: number;
+}
+
 interface UserListRaw {
   readonly userId: string;
   readonly name: string;
   readonly email: string;
   readonly department: string | null;
   readonly authorize: UserRole;
-  readonly lastLoginAt: Date | string;
   readonly disabledAt: Date | string | null;
 }
 
@@ -132,15 +154,20 @@ interface UserSummaryRaw {
 interface UserDetailRaw {
   readonly name: string;
   readonly email: string;
-  readonly department: string;
+  readonly department: string | null;
   readonly role: UserRole;
   readonly createdAt: Date | string;
   readonly createdBy: string;
-  readonly lastLoginAt: Date | string;
   readonly chatCnt: string;
   readonly filterDetectCnt: string;
   readonly masking: string;
   readonly local: string;
+}
+
+interface UserPromptOverviewRaw {
+  readonly userId: string;
+  readonly name: string;
+  readonly department: string;
 }
 
 interface DashboardRaw {
@@ -174,6 +201,47 @@ interface DepartmentRiskRaw {
   readonly detectCnt: string;
 }
 
+interface LogsSummaryRaw {
+  readonly totalChatCnt: string;
+  readonly filterDetectCnt: string;
+  readonly masking: string;
+  readonly local: string;
+}
+
+type SystemHealthValue = AdminResDTO.SystemHealth['totalSystemHealth'];
+
+const SYSTEM_HEALTH_STATUS_BY_HISTORY: Readonly<Record<HealthStatus, SystemHealthValue>> = {
+  [HealthStatus.OK]: '정상',
+  [HealthStatus.DELAY]: '지연',
+  [HealthStatus.ERROR]: '오류',
+  [HealthStatus.CHECK]: '점검',
+};
+
+const SYSTEM_HEALTH_PRIORITY: Readonly<Record<SystemHealthValue, number>> = {
+  정상: 0,
+  지연: 1,
+  점검: 2,
+  오류: 3,
+};
+
+const OUTBOUND_LLM_SERVICES = [
+  HealthServiceName.GPT,
+  HealthServiceName.GEMINI,
+  HealthServiceName.CLAUDE,
+] as const;
+const MODEL_HEALTH_SERVICES = [
+  ...OUTBOUND_LLM_SERVICES,
+  HealthServiceName.LOCAL_LLM,
+] as const;
+const MODEL_HEALTH_HISTORY_LIMIT = 25;
+const DELAY_LATENCY_MS = 1_000;
+const MODEL_HISTORY_STATUS_VALUE: Readonly<Record<HealthStatus, number>> = {
+  [HealthStatus.OK]: 0,
+  [HealthStatus.DELAY]: 1,
+  [HealthStatus.ERROR]: 2,
+  [HealthStatus.CHECK]: 3,
+};
+
 @Injectable()
 export class AdminService {
   constructor(
@@ -187,6 +255,8 @@ export class AdminService {
     private readonly departmentRepository: Repository<DepartmentDAO>,
     @InjectRepository(MemberDepartmentDAO)
     private readonly memberDepartmentRepository: Repository<MemberDepartmentDAO>,
+    @InjectRepository(MemberLimitDAO)
+    private readonly memberLimitRepository: Repository<MemberLimitDAO>,
     @InjectRepository(ActiveApiKeyDAO)
     private readonly activeApiKeyRepository: Repository<ActiveApiKeyDAO>,
     @InjectRepository(DepartmentPolicyDAO)
@@ -195,8 +265,13 @@ export class AdminService {
     private readonly policyRepository: Repository<PolicyDAO>,
     @InjectRepository(AdminLogDAO)
     private readonly adminLogRepository: Repository<AdminLogDAO>,
+    @InjectRepository(HealthHistoryDAO)
+    private readonly healthHistoryRepository: Repository<HealthHistoryDAO>,
     private readonly apiKeyValidationClient: LlmApiKeyValidationClient,
     private readonly apiKeyEncryption: ApiKeyEncryptionService,
+    private readonly objectStorage: MinioObjectStorageService,
+    private readonly nerConfig?: NerConfig,
+    private readonly providerConfig?: ProviderConfig,
   ) {}
 
   async createUser(
@@ -204,24 +279,15 @@ export class AdminService {
     authentication: AuthenticatedUser,
   ): Promise<AdminResDTO.CreateUser> {
     return this.dataSource.transaction(async (manager) => {
-      const departmentRepository = manager.getRepository(DepartmentDAO);
       const memberRepository = manager.getRepository(MemberDAO);
       const memberDepartmentRepository = manager.getRepository(MemberDepartmentDAO);
       const adminLogRepository = manager.getRepository(AdminLogDAO);
-
-      const department = await departmentRepository.findOneBy({
-        departmentName: dto.department,
-      });
-
-      if (department === null) {
-        throw new AdminException(AdminErrorStatus.DEPARTMENT_NOT_FOUND);
-      }
 
       if (!this.isValidEmail(dto.email)) {
         throw new AdminException(AdminErrorStatus.INVALID_EMAIL);
       }
 
-      const authorize = this.toUserRole(dto.role);
+      const authorize = this.toUserRole(dto.authorize);
 
       const existingMember = await memberRepository.findOne({
         select: { memberId: true },
@@ -244,15 +310,14 @@ export class AdminService {
         throw new AuthException(AuthErrorStatus.DISABLE_ACCOUNT);
       }
 
-      if (creator.authorize === UserRole.DEPART_ADMIN) {
-        const managedDepartment = await memberDepartmentRepository.findOneBy({
+      const managedDepartment = creator.authorize === UserRole.DEPART_ADMIN
+        ? await memberDepartmentRepository.findOneBy({
           memberId: creator.memberId,
-          departmentId: department.departmentId,
-        });
+        })
+        : null;
 
-        if (managedDepartment === null) {
-          throw new AdminException(AdminErrorStatus.NOT_MANAGED_DEPARTMENT);
-        }
+      if (creator.authorize === UserRole.DEPART_ADMIN && managedDepartment === null) {
+        throw new AdminException(AdminErrorStatus.NOT_MANAGED_DEPARTMENT);
       }
 
       this.validateCreateRolePermission(creator.authorize, authorize);
@@ -273,13 +338,13 @@ export class AdminService {
 
       try {
         const savedMember = await memberRepository.save(member);
-        const memberDepartment = this.userMapper.toMemberDepartmentDAO({
-          role: '사원',
-          memberId: savedMember.memberId,
-          departmentId: department.departmentId,
-        });
-
-        await memberDepartmentRepository.save(memberDepartment);
+        if (managedDepartment !== null) {
+          const memberDepartment = this.userMapper.toMemberDepartmentDAO({
+            memberId: savedMember.memberId,
+            departmentId: managedDepartment.departmentId,
+          });
+          await memberDepartmentRepository.save(memberDepartment);
+        }
 
         await adminLogRepository.save({
           logContent: `${savedMember.memberName} 사용자 계정을 생성했습니다.`,
@@ -288,9 +353,8 @@ export class AdminService {
         });
 
         return AdminMapper.toCreateUser({
+          id: savedMember.memberId,
           name: savedMember.memberName,
-          role: this.toRoleName(savedMember.authorize),
-          createdAt: savedMember.createdAt,
         });
       } catch (error: unknown) {
         if (this.isDuplicateEntry(error)) {
@@ -306,6 +370,9 @@ export class AdminService {
     dto: AdminReqDTO.CreateDepartment,
   ): Promise<AdminResDTO.CreateDepartment> {
     const departmentName = this.normalizeDepartmentName(dto.name);
+    const departmentCode = this.normalizeDepartmentCode(dto.code);
+    const mustFiltering = this.normalizeDepartmentBoolean(dto.mustFiltering);
+    const departmentLimit = this.normalizeDepartmentLimit(dto.departmentLimit);
 
     return this.dataSource.transaction(async (manager) => {
       const departmentRepository = manager.getRepository(DepartmentDAO);
@@ -318,7 +385,12 @@ export class AdminService {
         throw new AdminException(AdminErrorStatus.DUPLICATE_DEPARTMENT);
       }
 
-      const department = this.adminMapper.toDepartmentDAO({ departmentName });
+      const department = this.adminMapper.toDepartmentDAO({
+        departmentName,
+        departmentCode,
+        mustFiltering,
+        limit: departmentLimit,
+      });
 
       try {
         const savedDepartment = await departmentRepository.save(department);
@@ -337,6 +409,129 @@ export class AdminService {
     });
   }
 
+  /**
+   * 미소속 활성 사용자만 대상 부서에 연동합니다.
+   * 요청에 포함됐더라도 존재하지 않거나 비활성화됐거나 이미 다른 부서에
+   * 연동된 사용자는 결과에서 제외합니다.
+   */
+  async linkDepartmentUsers(
+    departmentId: number,
+    dto: AdminReqDTO.LinkDepartmentUsers,
+    authentication: Readonly<AuthenticatedUser>,
+  ): Promise<AdminResDTO.LinkDepartmentUsers> {
+    const userIds = this.normalizeLinkDepartmentUserIds(dto.userIds);
+
+    return this.dataSource.transaction(async (manager) => {
+      const departmentRepository = manager.getRepository(DepartmentDAO);
+      const memberRepository = manager.getRepository(MemberDAO);
+      const memberDepartmentRepository = manager.getRepository(MemberDepartmentDAO);
+      const memberLimitRepository = manager.getRepository(MemberLimitDAO);
+      const activeApiKeyRepository = manager.getRepository(ActiveApiKeyDAO);
+      const adminLogRepository = manager.getRepository(AdminLogDAO);
+
+      const department = await departmentRepository.findOne({
+        select: { departmentId: true, departmentName: true, limit: true },
+        where: { departmentId: String(departmentId) },
+        // 같은 부서에 대한 동시 연동 요청은 사용자 수와 개인 한도 재배분을
+        // 하나의 순서로 처리해야 하므로 부서 행을 잠급니다.
+        lock: { mode: 'pessimistic_write' },
+      });
+
+      if (department === null) {
+        throw new AdminException(AdminErrorStatus.DEPARTMENT_NOT_FOUND);
+      }
+
+      const requestedMemberIds = userIds.map(String);
+      const [activeUsers, memberships] = await Promise.all([
+        memberRepository.find({
+          select: { memberId: true, memberName: true },
+          where: {
+            memberId: In(requestedMemberIds),
+            disabledAt: IsNull(),
+          },
+        }),
+        memberDepartmentRepository.find({
+          select: { memberId: true },
+          where: { memberId: In(requestedMemberIds) },
+        }),
+      ]);
+
+      const assignedMemberIds = new Set(
+        memberships.map((membership) => membership.memberId),
+      );
+      const activeUserById = new Map(
+        activeUsers.map((user) => [user.memberId, user]),
+      );
+      const usersToLink = requestedMemberIds
+        .map((memberId) => activeUserById.get(memberId))
+        .filter((user): user is MemberDAO =>
+          user !== undefined && !assignedMemberIds.has(user.memberId),
+        );
+
+      if (usersToLink.length === 0) {
+        throw new AdminException(AdminErrorStatus.NO_LINKABLE_USERS);
+      }
+
+      await memberDepartmentRepository.save(
+        usersToLink.map((user) => ({
+          memberId: user.memberId,
+          departmentId: department.departmentId,
+        })),
+      );
+
+      const [allMemberships, activeApiKeys] = await Promise.all([
+        memberDepartmentRepository.find({
+          select: { memberId: true },
+          where: { departmentId: department.departmentId },
+        }),
+        activeApiKeyRepository.find({
+          select: { activeApiKeyId: true },
+          where: { departmentId: department.departmentId },
+        }),
+      ]);
+      const memberIds = [...new Set(allMemberships.map(({ memberId }) => memberId))];
+
+      if (activeApiKeys.length > 0) {
+        const personalLimit = this.divideDepartmentLimit(
+          department.limit,
+          memberIds.length,
+        );
+        await memberLimitRepository.upsert(
+          memberIds.flatMap((memberId) =>
+            activeApiKeys.map((activeApiKey) => ({
+              memberId,
+              activeApiKeyId: activeApiKey.activeApiKeyId,
+              limit: personalLimit,
+            })),
+          ),
+          ['memberId', 'activeApiKeyId'],
+        );
+      }
+
+      const administrator = await memberRepository.findOneBy({
+        memberId: String(authentication.userId),
+      });
+      if (administrator === null) {
+        throw new AuthException(AuthErrorStatus.USER_NOT_FOUND);
+      }
+      await adminLogRepository.save({
+        logContent:
+          `${department.departmentName} 부서에 사용자 ${usersToLink.length}명을 연동했습니다.`,
+        actionAt: new Date(),
+        actionMemberName: administrator.memberName,
+      });
+
+      return {
+        departmentId: Number(department.departmentId),
+        departmentName: department.departmentName,
+        users: usersToLink.map((user) => ({
+          userId: Number(user.memberId),
+          userName: user.memberName,
+        })),
+      };
+    });
+  }
+
   async getDepartments(
     dto: AdminReqDTO.DepartmentList,
   ): Promise<AdminResDTO.DepartmentList | null> {
@@ -348,6 +543,8 @@ export class AdminService {
           departmentId: true,
           departmentName: true,
           mustFiltering: true,
+          limit: true,
+          usage: true,
         },
         order: {
           departmentName: 'ASC',
@@ -412,8 +609,6 @@ export class AdminService {
         select: {
           departmentId: true,
           serviceType: true,
-          limit: true,
-          usage: true,
         },
         where: { departmentId: In(departmentIds) },
         order: { serviceType: 'ASC' },
@@ -450,7 +645,7 @@ export class AdminService {
       const activeApiKeys = activeApiKeysByDepartment.get(department.departmentId)
         ?? [];
       const policyCnt = policyCountByDepartment.get(department.departmentId) ?? 0;
-      const quota = this.toDepartmentQuota(activeApiKeys);
+      const quota = this.toDepartmentQuota(department);
 
       return {
         departmentId: Number(department.departmentId),
@@ -469,77 +664,43 @@ export class AdminService {
   }
 
   /**
-   * 목록 응답의 USD 필드는 스칼라이므로 부서의 활성 서비스 값을 합산합니다.
-   * 서비스 한도 중 하나라도 0이면 부서 한도를 0(무제한)으로 표현합니다.
+   * v3에서는 부서 공통 한도와 사용량을 department에 저장합니다.
    */
   private toDepartmentQuota(
-    activeApiKeys: readonly ActiveApiKeyDAO[],
+    department: Pick<
+      DepartmentDAO,
+      'limit' | 'usage'
+    >,
   ): DepartmentQuota {
-    let totalLimit = 0n;
-    let totalUsage = 0n;
-    let hasUnlimitedLimit = false;
-
-    for (const activeApiKey of activeApiKeys) {
-      const limit = BigInt(activeApiKey.limit);
-      totalUsage += BigInt(activeApiKey.usage);
-
-      if (limit === 0n) {
-        hasUnlimitedLimit = true;
-      } else {
-        totalLimit += limit;
-      }
-    }
-
-    const isUnlimited = hasUnlimitedLimit || totalLimit === 0n;
+    const limit = Number(department.limit);
+    const usage = Number(department.usage);
+    const isUnlimited = limit === 0;
     return {
       departLimitPercent: isUnlimited
         ? 100
-        : Number((totalUsage * 100n + totalLimit / 2n) / totalLimit),
-      departLimitUsd: isUnlimited ? 0 : Number(totalLimit),
-      departUseUsd: Number(totalUsage),
+        : Math.round((usage * 100) / limit),
+      departLimitUsd: isUnlimited ? 0 : limit,
+      departUseUsd: usage,
     };
   }
 
   private toDepartmentDetailUsageMetrics(
-    activeApiKeys: readonly ActiveApiKeyDAO[],
+    department: Pick<
+      DepartmentDAO,
+      'limit' | 'usage'
+    >,
   ): DepartmentDetailUsageMetrics {
-    if (activeApiKeys.length === 0) {
-      return {
-        usePercent: 0,
-        useUsd: 0,
-        limitUsd: 0,
-        remainUsd: 0,
-      };
-    }
-
-    const serviceMetrics = activeApiKeys.map((activeApiKey) => {
-      const limit = BigInt(activeApiKey.limit);
-      const usage = BigInt(activeApiKey.usage);
-      const isUnlimited = limit === 0n;
-
-      return {
-        usePercent: isUnlimited
-          ? 100
-          : Number((usage * 100n + limit / 2n) / limit),
-        useUsd: Number(usage),
-        limitUsd: Number(limit),
-        remainUsd: isUnlimited || usage >= limit ? 0 : Number(limit - usage),
-      };
-    });
+    const limit = Number(department.limit);
+    const usage = Number(department.usage);
+    const isUnlimited = limit === 0;
 
     return {
-      usePercent: this.toAveragePercent(
-        serviceMetrics.map((metric) => metric.usePercent),
-      ),
-      useUsd: this.toAveragePercent(
-        serviceMetrics.map((metric) => metric.useUsd),
-      ),
-      limitUsd: this.toAveragePercent(
-        serviceMetrics.map((metric) => metric.limitUsd),
-      ),
-      remainUsd: this.toAveragePercent(
-        serviceMetrics.map((metric) => metric.remainUsd),
-      ),
+      usePercent: isUnlimited
+        ? 100
+        : Math.round((usage * 100) / limit),
+      useUsd: usage,
+      limitUsd: isUnlimited ? 0 : limit,
+      remainUsd: isUnlimited || usage >= limit ? 0 : limit - usage,
     };
   }
 
@@ -549,9 +710,9 @@ export class AdminService {
     const services = this.toAvailableLlmServices(activeApiKeys) ?? [];
 
     return [
-      { modelName: 'Local LLM', hasApiKey: true },
+      { modelName: LOCAL_LLM_MODEL, hasApiKey: true },
       ...services
-        .filter((service) => service !== 'Local LLM')
+        .filter((service) => service !== LOCAL_LLM_MODEL)
         .map((service) => ({ modelName: service, hasApiKey: true })),
     ];
   }
@@ -605,7 +766,7 @@ export class AdminService {
 
   private toAvailableLlmServices(
     activeApiKeys: readonly ActiveApiKeyDAO[],
-  ): string[] | null {
+  ): string[] {
     const serviceTypes = new Set(
       activeApiKeys.map((activeApiKey) => activeApiKey.serviceType),
     );
@@ -616,41 +777,35 @@ export class AdminService {
       .filter((service) => !canonicalServices.includes(service as LlmService))
       .sort((left, right) => left.localeCompare(right));
 
-    const services = [...canonicalServices, ...additionalServices];
-    return services.length === 0 ? null : services;
+    return [
+      LOCAL_LLM_MODEL,
+      ...canonicalServices,
+      ...additionalServices.filter((service) => service !== LOCAL_LLM_MODEL),
+    ];
   }
 
   async getDepartmentManagementSummary(): Promise<
     AdminResDTO.DepartmentManagementSummary
   > {
-    const [departments, totalUserCnt, activeApiKeys] = await Promise.all([
+    const [departments, totalUserCnt] = await Promise.all([
       this.departmentRepository.find({
         select: {
           departmentId: true,
           mustFiltering: true,
-        },
-      }),
-      this.memberRepository.count(),
-      this.activeApiKeyRepository.find({
-        select: {
-          departmentId: true,
           limit: true,
           usage: true,
           recentUsePercent: true,
         },
       }),
+      this.memberRepository.count(),
     ]);
-    const activeApiKeysByDepartment = this.groupActiveApiKeysByDepartment(
-      activeApiKeys,
-    );
     const averageUsePercent = this.toAveragePercent(
-      departments.map((department) => this.toDepartmentQuota(
-        activeApiKeysByDepartment.get(department.departmentId) ?? [],
-      ).departLimitPercent),
+      departments.map((department) => this.toDepartmentQuota(department)
+        .departLimitPercent),
     );
     const averageRecentUsePercent = this.toAveragePercent(
-      activeApiKeys.map((activeApiKey) => Number(
-        activeApiKey.recentUsePercent ?? '0',
+      departments.map((department) => Number(
+        department.recentUsePercent ?? '0',
       )),
     );
 
@@ -667,11 +822,6 @@ export class AdminService {
         averageUsePercent,
       ),
     });
-  }
-
-  async getDepartmentRoles(departmentId: number): Promise<unknown> {
-    void departmentId;
-    return null;
   }
 
   async getDepartmentDetail(
@@ -698,7 +848,6 @@ export class AdminService {
             'membership.memberId = member.memberId',
           )
           .select('member.memberName', 'name')
-          .addSelect('membership.role', 'role')
           .addSelect('member.authorize', 'authorize')
           .addSelect('member.email', 'email')
           .where('membership.departmentId = :departmentId', {
@@ -727,33 +876,33 @@ export class AdminService {
         this.activeApiKeyRepository.find({
           select: {
             serviceType: true,
-            limit: true,
-            usage: true,
           },
           where: { departmentId: department.departmentId },
           order: { serviceType: 'ASC' },
         }),
-        this.policyRepository.find({
+        this.departmentPolicyRepository.find({
           select: {
-            policyId: true,
-            maskingContent: true,
-            maskingClass: true,
-          },
-          where: {
-            departmentPolicies: {
-              departmentId: department.departmentId,
-              isActive: true,
+            departmentPolicyId: true,
+            isActive: true,
+            policy: {
+              policyId: true,
+              maskingContent: true,
+              maskingClass: true,
             },
           },
-          order: { policyId: 'ASC' },
+          relations: { policy: true },
+          where: { departmentId: department.departmentId },
+          order: {
+            policy: { policyId: 'ASC' },
+            departmentPolicyId: 'ASC',
+          },
         }),
       ]);
-    const metrics = this.toDepartmentDetailUsageMetrics(activeApiKeys);
+    const metrics = this.toDepartmentDetailUsageMetrics(department);
 
     return AdminMapper.toDepartmentDetail({
       departmentName: department.departmentName,
       departmentAdminName: departmentAdmin?.name ?? null,
-      departmentAdminRole: departmentAdmin?.role ?? null,
       departmentAdminAuthorize: departmentAdmin === undefined
         ? null
         : this.toRoleName(departmentAdmin.authorize),
@@ -762,12 +911,18 @@ export class AdminService {
       ...metrics,
       llmModel: this.toDepartmentLlmModels(activeApiKeys),
       mustFiltering: department.mustFiltering,
-      policies: policies.map((policy) => ({
-        policyId: Number(policy.policyId),
-        maskingContent: policy.maskingContent,
-        maskingClass: policy.maskingClass,
-        isActive: true,
-      })),
+      policies: policies.length === 0
+        ? null
+        : policies.map((departmentPolicy) => ({
+          policyId: Number(departmentPolicy.policy.policyId),
+          maskingContent: getSecurityPolicyDisplayName(
+            departmentPolicy.policy.maskingContent,
+          ),
+          maskingClass: getSecurityPolicyClassDisplayName(
+            departmentPolicy.policy.maskingClass,
+          ),
+          isActive: departmentPolicy.isActive,
+        })),
     });
   }
 
@@ -802,12 +957,15 @@ export class AdminService {
       const activeApiKeyRepository = manager.getRepository(ActiveApiKeyDAO);
       const activeLlmRepository = manager.getRepository(ActiveLlmDAO);
       const llmDetailModelRepository = manager.getRepository(LlmDetailModelDAO);
+      const memberDepartmentRepository = manager.getRepository(MemberDepartmentDAO);
+      const memberLimitRepository = manager.getRepository(MemberLimitDAO);
       const memberRepository = manager.getRepository(MemberDAO);
       const adminLogRepository = manager.getRepository(AdminLogDAO);
       const lockedDepartment = await departmentRepository.findOne({
         select: {
           departmentId: true,
           mustFiltering: true,
+          usage: true,
         },
         where: { departmentId: targetDepartmentId },
         lock: { mode: 'pessimistic_write' },
@@ -823,15 +981,11 @@ export class AdminService {
         ?? this.adminMapper.toActiveApiKeyDAO({
           apiKey: encryptedApiKey,
           serviceType: provider,
-          limit: '0',
-          usage: '0',
           departmentId: targetDepartmentId,
         });
 
       activeApiKey.apiKey = encryptedApiKey;
       activeApiKey.serviceType = provider;
-      activeApiKey.limit = '0';
-      activeApiKey.usage = '0';
       activeApiKey.departmentId = targetDepartmentId;
       const savedApiKey = await activeApiKeyRepository.save(activeApiKey);
 
@@ -855,7 +1009,20 @@ export class AdminService {
       }
 
       lockedDepartment.mustFiltering = true;
+      lockedDepartment.usage = '0';
       await departmentRepository.save(lockedDepartment);
+
+      const memberships = await memberDepartmentRepository.find({
+        select: { memberId: true },
+        where: { departmentId: targetDepartmentId },
+      });
+      const memberIds = [...new Set(memberships.map((membership) => membership.memberId))];
+      if (memberIds.length > 0) {
+        await memberLimitRepository.update(
+          { memberId: In(memberIds) },
+          { usage: '0' },
+        );
+      }
 
       const administrator = await memberRepository.findOneBy({
         memberId: String(authentication.userId),
@@ -875,6 +1042,34 @@ export class AdminService {
         createdAt: new Date(),
       });
     });
+  }
+
+  async getDepartmentApiKey(
+    dto: Readonly<AdminReqDTO.DepartmentApiKey>,
+    authentication: Readonly<AuthenticatedUser>,
+  ): Promise<AdminResDTO.DepartmentApiKey> {
+    const department = await this.findAdministrativeDepartment(authentication);
+    const service = this.toLlmService(dto.service);
+    const { provider } = getLlmServiceDescriptor(service);
+    const activeApiKey = await this.activeApiKeyRepository.findOne({
+      select: { apiKey: true },
+      where: {
+        departmentId: department.departmentId,
+        serviceType: provider,
+      },
+    });
+    if (activeApiKey === null) {
+      throw new AdminException(AdminErrorStatus.API_KEY_NOT_FOUND);
+    }
+
+    return {
+      service,
+      apiKey: this.apiKeyEncryption.decrypt(
+        activeApiKey.apiKey,
+        department.departmentId,
+        provider,
+      ),
+    };
   }
 
   async syncPolicies(
@@ -901,24 +1096,41 @@ export class AdminService {
       const policyRepository = manager.getRepository(PolicyDAO);
       const departmentPolicyRepository =
         manager.getRepository(DepartmentPolicyDAO);
+      const presetPolicyRepository = manager.getRepository(PresetPolicyDAO);
       const memberRepository = manager.getRepository(MemberDAO);
       const adminLogRepository = manager.getRepository(AdminLogDAO);
+      const activePresetPolicies = await presetPolicyRepository.find({
+        relations: { preset: true, policy: true },
+        where: {
+          preset: { isActive: true },
+        },
+        order: { policyId: 'ASC' },
+      });
+      const activePolicyContents = new Set(
+        activePresetPolicies.map(({ policy }) =>
+          this.toMaskingContent(policy.maskingContent)),
+      );
       const policies = await this.findMasterPolicies(
         policyRepository,
-        requestedPolicies,
+        requestedPolicies.filter((policy) => activePolicyContents.has(policy)),
       );
 
-      await departmentPolicyRepository.delete({
+      // 분석 이력은 department_policy_id를 FK로 참조합니다. 기존 연결을 삭제하지
+      // 않고 비활성화한 뒤, 요청된 항목만 다시 활성화하여 이력을 보존합니다.
+      await departmentPolicyRepository.update({
         departmentId: lockedDepartment.departmentId,
+      }, {
+        isActive: false,
       });
 
       if (policies.length > 0) {
-        await departmentPolicyRepository.insert(
+        await departmentPolicyRepository.upsert(
           policies.map((policy) => ({
             departmentId: lockedDepartment.departmentId,
             policyId: policy.policyId,
             isActive: true,
           })),
+          ['departmentId', 'policyId'],
         );
       }
 
@@ -943,7 +1155,7 @@ export class AdminService {
 
   async getPolicies(
     authentication: Readonly<AuthenticatedUser>,
-  ): Promise<AdminResDTO.PolicyList> {
+  ): Promise<AdminResDTO.PolicyList | null> {
     const department = await this.findDepartmentByUserId(authentication.userId);
     const policies = await this.policyRepository.find({
       select: {
@@ -959,7 +1171,331 @@ export class AdminService {
       },
       order: { policyId: 'ASC' },
     });
+    if (policies.length === 0) {
+      return null;
+    }
     return AdminMapper.toPolicyList(department.departmentName, policies);
+  }
+
+  /** 저장된 모든 보안 정책 프리셋과 프리셋별 정책 목록입니다. */
+  async getPolicyCatalog(): Promise<AdminResDTO.PolicyPreset[] | null> {
+    const presets = await this.dataSource.getRepository(PresetDAO).find({
+      select: {
+        policyPresetId: true,
+        name: true,
+        presetPolicies: {
+          presetPolicyId: true,
+          policy: { policyId: true, maskingContent: true },
+        },
+      },
+      relations: {
+        presetPolicies: { policy: true },
+      },
+      order: {
+        policyPresetId: 'ASC',
+        presetPolicies: { policy: { policyId: 'ASC' } },
+      },
+    });
+
+    return presets.length === 0
+      ? null
+      : AdminMapper.toPolicyPresetList(presets);
+  }
+
+  /** 보안 정책 프리셋을 생성하거나, 기존 프리셋을 활성화합니다. */
+  async syncGlobalPolicies(
+    dto: Readonly<AdminReqDTO.SyncGlobalPolicies>,
+    authentication: Readonly<AuthenticatedUser>,
+  ): Promise<string[]> {
+    if (authentication.role !== UserRole.TOTAL_ADMIN) {
+      throw new SecurityException(SecurityErrorStatus.FORBIDDEN);
+    }
+
+    const presetName = this.normalizePolicyPresetName(dto.presetName);
+
+    if (dto.policies === undefined) {
+      return this.dataSource.transaction(async (manager) => {
+        const presetRepository = manager.getRepository(PresetDAO);
+        const departmentPolicyRepository =
+          manager.getRepository(DepartmentPolicyDAO);
+        const memberRepository = manager.getRepository(MemberDAO);
+        const adminLogRepository = manager.getRepository(AdminLogDAO);
+        const preset = await presetRepository.findOne({
+          select: {
+            policyPresetId: true,
+            presetPolicies: {
+              presetPolicyId: true,
+              policy: { policyId: true, maskingContent: true },
+            },
+          },
+          relations: {
+            presetPolicies: { policy: true },
+          },
+          where: { name: presetName },
+          order: { policyPresetId: 'ASC' },
+        });
+        if (preset === null) {
+          throw new AdminException(AdminErrorStatus.POLICY_NOT_FOUND);
+        }
+
+        await presetRepository.update({ isActive: true }, { isActive: false });
+        await presetRepository.update(
+          { policyPresetId: preset.policyPresetId },
+          { isActive: true },
+        );
+
+        const policies = preset.presetPolicies ?? [];
+        const policyIds = policies.map(({ policy }) => policy.policyId);
+        if (policyIds.length === 0) {
+          await departmentPolicyRepository.update(
+            { isActive: true },
+            { isActive: false },
+          );
+        } else {
+          // 선택된 전역 프리셋에 없는 부서 정책은 활성 상태로 남을 수 없습니다.
+          await departmentPolicyRepository.update({
+            policyId: Not(In(policyIds)),
+            isActive: true,
+          }, {
+            isActive: false,
+          });
+          await departmentPolicyRepository.update({
+            policyId: In(policyIds),
+            isActive: false,
+          }, {
+            isActive: true,
+          });
+        }
+
+        const administrator = await memberRepository.findOneBy({
+          memberId: String(authentication.userId),
+        });
+        if (administrator === null) {
+          throw new AuthException(AuthErrorStatus.USER_NOT_FOUND);
+        }
+        await adminLogRepository.save({
+          logContent: `전역 보안 정책 프리셋 ${presetName}을 동기화했습니다.`,
+          actionAt: new Date(),
+          actionMemberName: administrator.memberName,
+        });
+
+        return policies.map(({ policy }) =>
+          getSecurityPolicyDisplayName(policy.maskingContent));
+      });
+    }
+
+    const requestedPolicies = this.normalizePolicyList(dto.policies);
+
+    return this.dataSource.transaction(async (manager) => {
+      const policyRepository = manager.getRepository(PolicyDAO);
+      const departmentPolicyRepository = manager.getRepository(DepartmentPolicyDAO);
+      const presetRepository = manager.getRepository(PresetDAO);
+      const presetPolicyRepository = manager.getRepository(PresetPolicyDAO);
+      const memberRepository = manager.getRepository(MemberDAO);
+      const adminLogRepository = manager.getRepository(AdminLogDAO);
+      const policies = await this.findMasterPolicies(
+        policyRepository,
+        requestedPolicies,
+      );
+
+      let preset = await presetRepository.findOne({
+        select: { policyPresetId: true },
+        where: { name: presetName },
+        order: { policyPresetId: 'ASC' },
+      });
+      // 기업에서 선택한 프리셋만 활성 상태로 유지합니다.
+      await presetRepository.update({ isActive: true }, { isActive: false });
+      if (preset === null) {
+        preset = await presetRepository.save(
+          presetRepository.create({ name: presetName, isActive: true }),
+        );
+      } else {
+        await presetRepository.update(
+          { policyPresetId: preset.policyPresetId },
+          { isActive: true },
+        );
+      }
+
+      await presetPolicyRepository.delete({
+        policyPresetId: preset.policyPresetId,
+      });
+      if (policies.length > 0) {
+        await presetPolicyRepository.save(
+          policies.map((policy) => ({
+            policyPresetId: preset.policyPresetId,
+            policyId: policy.policyId,
+          })),
+        );
+      }
+
+      // 전역 보안 정책의 활성 여부는 활성 프리셋에 포함됐는지로만 판단합니다.
+      // 프리셋에 없는 부서 정책은 활성 상태로 남기지 않습니다.
+      const policyIds = policies.map((policy) => policy.policyId);
+      if (policyIds.length === 0) {
+        await departmentPolicyRepository.update(
+          { isActive: true },
+          { isActive: false },
+        );
+      } else {
+        await departmentPolicyRepository.update({
+          policyId: Not(In(policyIds)),
+          isActive: true,
+        }, {
+          isActive: false,
+        });
+        await departmentPolicyRepository.update({
+          policyId: In(policyIds),
+          isActive: false,
+        }, {
+          isActive: true,
+        });
+      }
+
+      const administrator = await memberRepository.findOneBy({
+        memberId: String(authentication.userId),
+      });
+      if (administrator === null) {
+        throw new AuthException(AuthErrorStatus.USER_NOT_FOUND);
+      }
+      await adminLogRepository.save({
+        logContent: `전역 보안 정책 프리셋 ${presetName}을 동기화했습니다.`,
+        actionAt: new Date(),
+        actionMemberName: administrator.memberName,
+      });
+
+      return policies.map((policy) =>
+        getSecurityPolicyDisplayName(policy.maskingContent));
+    });
+  }
+
+  /** DB·MinIO·NER·Provider와 애플리케이션 내부 구성 요소를 점검해 기록합니다. */
+  async checkAndRecordSystemHealth(): Promise<void> {
+    const [database, storage, inboundLlm, outboundLlm] = await Promise.all([
+      this.checkDatabaseHealth(),
+      this.checkStorageHealth(),
+      this.checkNerHealth(),
+      this.checkProviderHealth(),
+    ]);
+    const currentInfrastructure = [
+      this.createHealthHistory(HealthServiceName.SECURITY_FILTERING, HealthStatus.OK),
+      this.createHealthHistory(
+        HealthServiceName.LOCAL_LLM,
+        inboundLlm.status,
+        inboundLlm.latency,
+      ),
+      ...OUTBOUND_LLM_SERVICES.map((serviceName) =>
+        this.createHealthHistory(
+          serviceName,
+          outboundLlm.status,
+          outboundLlm.latency,
+        )),
+      this.createHealthHistory(
+        HealthServiceName.DATABASE,
+        database.status,
+        database.latency,
+      ),
+      this.createHealthHistory(
+        HealthServiceName.STORAGE,
+        storage.status,
+        storage.latency,
+      ),
+      this.createHealthHistory(HealthServiceName.MONITORING, HealthStatus.OK),
+    ];
+    await this.healthHistoryRepository.save(currentInfrastructure);
+  }
+
+  /** 보관 기간(3일)이 지난 상태 점검 이력을 삭제합니다. */
+  async deleteExpiredHealthHistories(now = new Date()): Promise<void> {
+    const retentionBoundary = new Date(
+      now.getTime() - (3 * 24 * 60 * 60 * 1_000),
+    );
+    await this.healthHistoryRepository.delete({
+      createdAt: LessThanOrEqual(retentionBoundary),
+    });
+  }
+
+  /** health_history의 서비스별 최신 레코드를 읽어 시스템 상태를 집계합니다. */
+  async getSystemHealth(): Promise<AdminResDTO.SystemHealth> {
+    const histories = await this.healthHistoryRepository.find({
+      where: {
+        serviceName: In([
+          ...OUTBOUND_LLM_SERVICES,
+          HealthServiceName.LOCAL_LLM,
+          HealthServiceName.SECURITY_FILTERING,
+          HealthServiceName.DATABASE,
+          HealthServiceName.STORAGE,
+          HealthServiceName.MONITORING,
+        ]),
+      },
+      order: { healthHistoryId: 'DESC' },
+    });
+    const latestByService = this.getLatestHealthByService(histories);
+    const outboundLLM = this.aggregateHealthStatuses(
+      OUTBOUND_LLM_SERVICES.map((serviceName) =>
+        this.toSystemHealthStatus(latestByService.get(serviceName)),
+      ),
+    );
+    const inboundLLM = this.aggregateHealthStatuses([
+      this.toSystemHealthStatus(latestByService.get(HealthServiceName.LOCAL_LLM)),
+    ]);
+    const securityFiltering = this.toSystemHealthStatus(
+      latestByService.get(HealthServiceName.SECURITY_FILTERING),
+    );
+    const database = this.toSystemHealthStatus(
+      latestByService.get(HealthServiceName.DATABASE),
+    );
+    const storage = this.toSystemHealthStatus(
+      latestByService.get(HealthServiceName.STORAGE),
+    );
+    const monitoring = this.toSystemHealthStatus(
+      latestByService.get(HealthServiceName.MONITORING),
+    );
+
+    return {
+      totalSystemHealth: this.aggregateHealthStatuses([
+        outboundLLM,
+        inboundLLM,
+        securityFiltering,
+        database,
+        storage,
+        monitoring,
+      ]),
+      outboundLLM,
+      inboundLLM,
+      securityFiltering,
+      database,
+      storage,
+      monitoring,
+    };
+  }
+
+  /** 서비스별 최근 상태 이력으로 모델 가용성·P95 지연시간을 계산합니다. */
+  async getLlmHealth(): Promise<AdminResDTO.LlmHealth[]> {
+    const histories = await this.healthHistoryRepository.find({
+      select: {
+        healthHistoryId: true,
+        serviceName: true,
+        status: true,
+        latency: true,
+      },
+      where: { serviceName: In([...MODEL_HEALTH_SERVICES]) },
+      order: { healthHistoryId: 'DESC' },
+    });
+    const historiesByService = new Map<string, HealthHistoryDAO[]>();
+
+    for (const healthHistory of histories) {
+      const serviceHistories = historiesByService.get(healthHistory.serviceName)
+        ?? [];
+      if (serviceHistories.length >= MODEL_HEALTH_HISTORY_LIMIT) {
+        continue;
+      }
+      serviceHistories.push(healthHistory);
+      historiesByService.set(healthHistory.serviceName, serviceHistories);
+    }
+
+    return MODEL_HEALTH_SERVICES.map((service) =>
+      this.toLlmHealth(service, historiesByService.get(service) ?? []),
+    );
   }
 
   async getDashboard(): Promise<AdminResDTO.Dashboard> {
@@ -1071,11 +1607,6 @@ export class AdminService {
     });
   }
 
-  async getTrends(dto: AdminReqDTO.Trends): Promise<AdminResDTO.Trends> {
-    void dto;
-    return AdminMapper.toUnknown(null);
-  }
-
   async getAdminLogs(): Promise<AdminResDTO.AdminLogs> {
     const logs = await this.adminLogRepository.find({
       select: {
@@ -1099,9 +1630,14 @@ export class AdminService {
     const rows = await this.policyRepository
       .createQueryBuilder('policy')
       .leftJoin(
+        DepartmentPolicyDAO,
+        'departmentPolicy',
+        'departmentPolicy.policyId = policy.policyId',
+      )
+      .leftJoin(
         MaskingDetailDAO,
         'maskingDetail',
-        'maskingDetail.policyId = policy.policyId',
+        'maskingDetail.departmentPolicyId = departmentPolicy.departmentPolicyId',
       )
       .leftJoin(
         PromptLogDAO,
@@ -1133,13 +1669,13 @@ export class AdminService {
       .createQueryBuilder('department')
       .leftJoin(
         MemberDepartmentDAO,
-        'membership',
-        'membership.departmentId = department.departmentId',
+        'memberDepartment',
+        'memberDepartment.departmentId = department.departmentId',
       )
       .leftJoin(
         PromptRoomDAO,
         'promptRoom',
-        'promptRoom.memberId = membership.memberId',
+        'promptRoom.memberId = memberDepartment.memberId',
       )
       .leftJoin(
         PromptLogDAO,
@@ -1152,7 +1688,7 @@ export class AdminService {
         'maskingDetail.maskingReportId = promptLog.maskingReportId',
       )
       .select('department.departmentName', 'departmentName')
-      .addSelect('COUNT(DISTINCT membership.memberId)', 'userCnt')
+      .addSelect('COUNT(DISTINCT memberDepartment.memberId)', 'userCnt')
       .addSelect('COUNT(DISTINCT promptLog.promptLogId)', 'llmRequestCnt')
       .addSelect(
         'COUNT(DISTINCT CASE WHEN maskingDetail.maskingDetailId IS NOT NULL THEN promptLog.promptLogId END)',
@@ -1177,15 +1713,18 @@ export class AdminService {
     authentication: Readonly<AuthenticatedUser>,
   ): Promise<AdminResDTO.UserSummary> {
     const updatedAt = new Date();
-    const newUserSince = new Date(updatedAt);
-    newUserSince.setUTCDate(newUserSince.getUTCDate() - NEW_USER_PERIOD_DAYS);
+    const newUserSince = new Date(Date.UTC(
+      updatedAt.getUTCFullYear(),
+      updatedAt.getUTCMonth(),
+      1,
+    ));
 
     const departmentId = authentication.role === UserRole.DEPART_ADMIN
       ? (await this.findDepartmentByUserId(authentication.userId)).departmentId
       : undefined;
     const queryBuilder = this.memberRepository
       .createQueryBuilder('member')
-      .innerJoin(
+      .leftJoin(
         MemberDepartmentDAO,
         'membership',
         'membership.memberId = member.memberId',
@@ -1198,17 +1737,17 @@ export class AdminService {
     }
 
     const summary = await queryBuilder
-      .select('COUNT(member.memberId)', 'totalUserCnt')
+      .select('COUNT(DISTINCT member.memberId)', 'totalUserCnt')
       .addSelect(
-        'SUM(CASE WHEN member.disabledAt IS NULL THEN 1 ELSE 0 END)',
+        'COUNT(DISTINCT CASE WHEN member.disabledAt IS NULL THEN member.memberId END)',
         'activateUserCnt',
       )
       .addSelect(
-        'SUM(CASE WHEN member.disabledAt IS NOT NULL THEN 1 ELSE 0 END)',
+        'COUNT(DISTINCT CASE WHEN member.disabledAt IS NOT NULL THEN member.memberId END)',
         'disabledUserCnt',
       )
       .addSelect(
-        'SUM(CASE WHEN member.createdAt >= :newUserSince THEN 1 ELSE 0 END)',
+        'COUNT(DISTINCT CASE WHEN member.createdAt >= :newUserSince THEN member.memberId END)',
         'newUserCnt',
       )
       .setParameter('newUserSince', newUserSince)
@@ -1266,7 +1805,6 @@ export class AdminService {
       .addSelect('member.email', 'email')
       .addSelect('department.departmentName', 'department')
       .addSelect('member.authorize', 'authorize')
-      .addSelect('member.loginAt', 'lastLoginAt')
       .addSelect('member.disabledAt', 'disabledAt')
       .offset((query.pageNumber - 1) * query.pageSize)
       .limit(query.pageSize)
@@ -1279,7 +1817,6 @@ export class AdminService {
         email: row.email,
         department: row.department,
         authorize: this.toRoleName(row.authorize),
-        lastLoginAt: row.lastLoginAt,
         status: row.disabledAt === null ? '활성' : '비활성',
       })),
       totalCnt,
@@ -1301,12 +1838,12 @@ export class AdminService {
       : undefined;
     const queryBuilder = this.memberRepository
       .createQueryBuilder('member')
-      .innerJoin(
+      .leftJoin(
         MemberDepartmentDAO,
         'membership',
         'membership.memberId = member.memberId',
       )
-      .innerJoin(
+      .leftJoin(
         DepartmentDAO,
         'department',
         'department.departmentId = membership.departmentId',
@@ -1319,14 +1856,15 @@ export class AdminService {
       .leftJoin(
         PromptLogDAO,
         'promptLog',
-        'promptLog.promptRoomId = promptRoom.promptRoomId',
+        'promptLog.promptRoomId = promptRoom.promptRoomId AND promptLog.communicatedAt IS NOT NULL',
       )
       .leftJoin(
         MaskingDetailDAO,
         'maskingDetail',
         'maskingDetail.maskingReportId = promptLog.maskingReportId',
       )
-      .where('member.memberId = :userId', { userId: String(userId) });
+      .where('member.memberId = :userId', { userId: String(userId) })
+      .andWhere('member.disabledAt IS NULL');
 
     if (departmentId !== undefined) {
       queryBuilder.andWhere('membership.departmentId = :departmentId', {
@@ -1341,18 +1879,17 @@ export class AdminService {
       .addSelect('member.authorize', 'role')
       .addSelect('member.createdAt', 'createdAt')
       .addSelect('member.createdBy', 'createdBy')
-      .addSelect('member.loginAt', 'lastLoginAt')
       .addSelect('COUNT(DISTINCT promptLog.promptLogId)', 'chatCnt')
       .addSelect(
         'COUNT(DISTINCT CASE WHEN maskingDetail.maskingDetailId IS NOT NULL THEN promptLog.promptLogId END)',
         'filterDetectCnt',
       )
       .addSelect(
-        'COUNT(DISTINCT CASE WHEN maskingDetail.originalText <> maskingDetail.maskingText THEN promptLog.promptLogId END)',
+        "COUNT(DISTINCT CASE WHEN maskingDetail.maskingDetailId IS NOT NULL AND LOWER(promptLog.modelType) NOT LIKE 'local%' THEN promptLog.promptLogId END)",
         'masking',
       )
       .addSelect(
-        "COUNT(DISTINCT CASE WHEN LOWER(promptLog.modelType) = 'local' THEN promptLog.promptLogId END)",
+        "COUNT(DISTINCT CASE WHEN LOWER(promptLog.modelType) LIKE 'local%' THEN promptLog.promptLogId END)",
         'local',
       )
       .groupBy('member.memberId')
@@ -1363,14 +1900,21 @@ export class AdminService {
       throw new AuthException(AuthErrorStatus.USER_NOT_FOUND);
     }
 
+    const memberLimits = await this.memberLimitRepository.find({
+      select: { limit: true, usage: true },
+      where: { memberId: String(userId) },
+    });
+    const { limit, usage } = this.toMemberLimitTotals(memberLimits);
+
     return AdminMapper.toUserDetail({
       name: detail.name,
       email: detail.email,
       department: detail.department,
       role: this.toRoleName(detail.role),
-      createdAt: this.toDateString(detail.createdAt),
+      createdAt: this.toDateTimeString(detail.createdAt),
       createdBy: detail.createdBy,
-      lastLoginAt: this.toDateTimeString(detail.lastLoginAt),
+      limit,
+      usage,
       chatCnt: Number(detail.chatCnt),
       filterDetectCnt: Number(detail.filterDetectCnt),
       masking: Number(detail.masking),
@@ -1457,49 +2001,492 @@ export class AdminService {
   }
 
   async getLogsSummary(): Promise<AdminResDTO.LogsSummary> {
-    return AdminMapper.toLogsSummary('', 0, 0, 0, 0);
+    const summary = await this.dataSource
+      .getRepository(PromptLogDAO)
+      .createQueryBuilder('promptLog')
+      .leftJoin(
+        MaskingDetailDAO,
+        'maskingDetail',
+        'maskingDetail.maskingReportId = promptLog.maskingReportId',
+      )
+      .where('promptLog.status != :maskingStatus', {
+        maskingStatus: PromptLogStatus.MASKING,
+      })
+      .select('COUNT(DISTINCT promptLog.promptLogId)', 'totalChatCnt')
+      .addSelect(
+        'COUNT(DISTINCT CASE WHEN maskingDetail.maskingDetailId IS NOT NULL THEN promptLog.promptLogId END)',
+        'filterDetectCnt',
+      )
+      .addSelect(
+        "COUNT(DISTINCT CASE WHEN maskingDetail.maskingDetailId IS NOT NULL AND LOWER(promptLog.modelType) NOT LIKE 'local%' THEN promptLog.promptLogId END)",
+        'masking',
+      )
+      .addSelect(
+        "COUNT(DISTINCT CASE WHEN LOWER(promptLog.modelType) LIKE 'local%' THEN promptLog.promptLogId END)",
+        'local',
+      )
+      .getRawOne<LogsSummaryRaw>();
+    const totalChatCnt = Number(summary?.totalChatCnt ?? 0);
+    const filterDetectCnt = Number(summary?.filterDetectCnt ?? 0);
+    const masking = Number(summary?.masking ?? 0);
+    const local = Number(summary?.local ?? 0);
+    const localRate = filterDetectCnt === 0
+      ? 0
+      : (local / filterDetectCnt) * 100;
+
+    return AdminMapper.toLogsSummary(
+      new Date().toISOString(),
+      totalChatCnt,
+      filterDetectCnt,
+      masking,
+      local,
+      localRate,
+    );
   }
 
   async getUserPromptOverview(
     dto: AdminReqDTO.UserPromptOverview,
-  ): Promise<AdminResDTO.UserPromptOverview> {
-    void dto;
-    return null as unknown as AdminResDTO.UserPromptOverview;
+  ): Promise<AdminResDTO.UserPromptOverview | null> {
+    const query = this.normalizeUserPromptOverviewQuery(dto);
+    const queryBuilder = this.memberRepository
+      .createQueryBuilder('member')
+      .innerJoin(
+        MemberDepartmentDAO,
+        'membership',
+        'membership.memberId = member.memberId',
+      )
+      .innerJoin(
+        DepartmentDAO,
+        'department',
+        'department.departmentId = membership.departmentId',
+      )
+      .where('member.disabledAt IS NULL')
+      .andWhere(
+        '(member.memberName LIKE :query OR department.departmentName LIKE :query)',
+        { query: `%${this.escapeLikePattern(query.query)}%` },
+      );
+
+    const totalCnt = await queryBuilder.clone().getCount();
+    if (totalCnt === 0) {
+      return null;
+    }
+
+    const users = await queryBuilder
+      .select('member.memberId', 'userId')
+      .addSelect('member.memberName', 'name')
+      .addSelect('department.departmentName', 'department')
+      .orderBy('member.memberName', 'ASC')
+      .addOrderBy('member.memberId', 'ASC')
+      .offset((query.pageNumber - 1) * query.pageSize)
+      .limit(query.pageSize)
+      .getRawMany<UserPromptOverviewRaw>();
+    if (users.length === 0) {
+      return null;
+    }
+
+    const userIds = users.map((user) => user.userId);
+    const memberLimits = await this.memberLimitRepository.find({
+      select: { memberId: true, limit: true, usage: true },
+      where: { memberId: In(userIds) },
+      order: { memberId: 'ASC', memberLimitId: 'ASC' },
+    });
+    const limitsByUserId = new Map<string, MemberLimitDAO[]>();
+    for (const memberLimit of memberLimits) {
+      const limits = limitsByUserId.get(memberLimit.memberId);
+      if (limits === undefined) {
+        limitsByUserId.set(memberLimit.memberId, [memberLimit]);
+      } else {
+        limits.push(memberLimit);
+      }
+    }
+
+    return {
+      data: users.map((user) => {
+        const limit = this.toMemberLimitTotals(
+          limitsByUserId.get(user.userId) ?? [],
+        );
+        return {
+          userId: Number(user.userId),
+          name: user.name,
+          department: user.department,
+          usage: limit.usage,
+          limit: limit.limit,
+        };
+      }),
+      totalCnt,
+      dataCnt: users.length,
+      pageNumber: query.pageNumber,
+    };
   }
 
   async getUserPromptList(
     userId: number,
     dto: AdminReqDTO.UserPromptList,
   ): Promise<AdminResDTO.UserPromptList> {
-    void userId;
-    void dto;
-    return null as unknown as AdminResDTO.UserPromptList;
+    const query = this.normalizeUserPromptListQuery(dto);
+    const [promptLogs, totalCnt] = await this.dataSource
+      .getRepository(PromptLogDAO)
+      .findAndCount({
+        select: {
+          // 관계 조인 + 페이지네이션에서 TypeORM이 생성하는 DISTINCT 정렬 쿼리는
+          // ORDER BY 기본키를 SELECT에 포함해야 합니다. 응답에는 사용하지 않습니다.
+          promptLogId: true,
+          maskingReportId: true,
+          promptSummary: true,
+          communicatedAt: true,
+          modelType: true,
+          usage: true,
+        },
+        relations: { promptRoom: true },
+        where: {
+          status: Not(PromptLogStatus.MASKING),
+          communicatedAt: Not(IsNull()),
+          promptRoom: { memberId: String(userId) },
+        },
+        order: { communicatedAt: 'DESC', promptLogId: 'DESC' },
+        take: query.pageSize,
+        skip: (query.pageNumber - 1) * query.pageSize,
+      });
+
+    return {
+      data: promptLogs.map((promptLog) => ({
+        promptId: promptLog.maskingReportId,
+        promptSummary: promptLog.promptSummary,
+        promptedAt: this.toDateTimeString(promptLog.communicatedAt!),
+        model: promptLog.modelType ?? '',
+        usage: Number(promptLog.usage ?? 0),
+      })),
+      totalCnt,
+      dataCnt: promptLogs.length,
+      pageNumber: query.pageNumber,
+    };
   }
 
   async getPromptDetail(promptId: string): Promise<AdminResDTO.PromptDetail> {
-    void promptId;
-    return null as unknown as AdminResDTO.PromptDetail;
+    const promptLog = await this.dataSource.getRepository(PromptLogDAO).findOne({
+      select: {
+        promptLogId: true,
+        communicatedAt: true,
+        usage: true,
+        maskingReportId: true,
+        promptRoom: {
+          memberId: true,
+          member: { memberId: true, memberName: true, email: true },
+        },
+        maskingReport: { originalText: true, createdAt: true },
+      },
+      relations: {
+        promptRoom: { member: true },
+        maskingReport: true,
+      },
+      where: { promptLogId: promptId },
+    });
+    if (promptLog === null) {
+      throw new PromptException(PromptErrorStatus.NOT_FOUND_PROMPT);
+    }
+
+    const [membership, memberLimits, maskingDetails] = await Promise.all([
+      this.memberDepartmentRepository.findOne({
+        select: {
+          departmentId: true,
+          department: { departmentName: true },
+        },
+        relations: { department: true },
+        where: { memberId: promptLog.promptRoom.memberId },
+        order: { memberDepartmentId: 'ASC' },
+      }),
+      this.memberLimitRepository.find({
+        select: { limit: true, usage: true },
+        where: { memberId: promptLog.promptRoom.memberId },
+      }),
+      this.dataSource.getRepository(MaskingDetailDAO).find({
+        select: {
+          maskingDetailId: true,
+          originalText: true,
+          startIdx: true,
+          maskingText: true,
+          departmentPolicy: {
+            policy: { maskingContent: true, maskingClass: true },
+          },
+        },
+        relations: { departmentPolicy: { policy: true } },
+        where: { maskingReportId: promptLog.maskingReportId },
+        order: { maskingDetailId: 'ASC' },
+      }),
+    ]);
+    if (membership === null) {
+      throw new PromptException(PromptErrorStatus.NOT_FOUND_PROMPT);
+    }
+
+    const detect: AdminResDTO.PromptDetection[] = [];
+    for (const detail of maskingDetails) {
+      if (
+        detail.originalText === null
+        || detail.startIdx === null
+        || detail.maskingText === null
+      ) {
+        continue;
+      }
+
+      detect.push({
+        targetText: detail.originalText,
+        startIdx: detail.startIdx,
+        endIdx: detail.startIdx + detail.originalText.length - 1,
+        maskingCategory: getSecurityPolicyClassDisplayName(
+          detail.departmentPolicy.policy.maskingClass,
+        ),
+        detailCategory: getSecurityPolicyDisplayName(
+          detail.departmentPolicy.policy.maskingContent,
+        ),
+        maskingText: detail.maskingText,
+        maskingStartIdx: detail.startIdx,
+        maskingEndIdx: detail.startIdx + detail.maskingText.length - 1,
+      });
+    }
+
+    const { limit } = this.toMemberLimitTotals(memberLimits);
+    const usage = Number(promptLog.usage ?? 0);
+    return {
+      name: promptLog.promptRoom.member.memberName,
+      department: membership.department.departmentName,
+      email: promptLog.promptRoom.member.email,
+      limit,
+      usage,
+      usagePercent: this.toRatioPercent(usage, limit),
+      promptedAt: this.toDateTimeString(
+        promptLog.communicatedAt ?? promptLog.maskingReport.createdAt,
+      ),
+      detectCnt: maskingDetails.length,
+      maskingCnt: detect.length,
+      originalText: promptLog.maskingReport.originalText,
+      sendText: this.toMaskedPromptText(
+        promptLog.maskingReport.originalText,
+        detect,
+      ),
+      detect,
+    };
   }
 
-  async getLogs(dto: AdminReqDTO.LogList): Promise<AdminResDTO.LogList> {
-    void dto;
-    return AdminMapper.toLogList({
-      data: [],
-      totalCnt: 0,
-      filteringCnt: null,
-      pageNumber: 1,
+  private async checkDatabaseHealth(): Promise<HealthCheckResult> {
+    const startedAt = Date.now();
+    try {
+      await this.dataSource.query('SELECT 1');
+      return this.toHealthCheckResult(true, startedAt);
+    } catch {
+      return this.toHealthCheckResult(false, startedAt);
+    }
+  }
+
+  private async checkStorageHealth(): Promise<HealthCheckResult> {
+    const startedAt = Date.now();
+    try {
+      return this.toHealthCheckResult(
+        await this.objectStorage.isHealthy(),
+        startedAt,
+      );
+    } catch {
+      return this.toHealthCheckResult(false, startedAt);
+    }
+  }
+
+  /** NER는 내부 LLM 경로의 상태로 기록합니다. */
+  private async checkNerHealth(): Promise<HealthCheckResult> {
+    if (this.nerConfig === undefined) {
+      return { status: HealthStatus.CHECK, latency: 0 };
+    }
+
+    return this.checkHttpServerHealth(
+      this.nerConfig.healthUrl,
+      this.nerConfig.requestTimeoutMs,
+    );
+  }
+
+  /** Provider는 GPT·Gemini·Claude의 공통 외부 LLM 관문 상태로 기록합니다. */
+  private async checkProviderHealth(): Promise<HealthCheckResult> {
+    if (this.providerConfig === undefined) {
+      return { status: HealthStatus.CHECK, latency: 0 };
+    }
+
+    return this.checkHttpServerHealth(
+      this.providerConfig.healthUrl,
+      this.providerConfig.requestTimeoutMs,
+    );
+  }
+
+  private async checkHttpServerHealth(
+    endpoint: string,
+    timeoutMs: number,
+  ): Promise<HealthCheckResult> {
+    const startedAt = Date.now();
+    try {
+      const response = await fetch(endpoint, {
+        method: 'GET',
+        headers: { accept: 'application/json' },
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      return this.toHealthCheckResult(response.ok, startedAt);
+    } catch {
+      return this.toHealthCheckResult(false, startedAt);
+    }
+  }
+
+  /**
+   * 상태 점검 대상이 응답하지 않거나 5xx 등으로 실패하면 ERROR를, 정상 응답이
+   * 1초 이상 걸리면 DELAY를 기록합니다. MinIO SDK의 5xx 예외는 isHealthy가
+   * false로 변환하므로 동일하게 ERROR로 저장됩니다.
+   */
+  private toHealthCheckResult(
+    isAvailable: boolean,
+    startedAt: number,
+  ): HealthCheckResult {
+    const latency = Math.max(0, Date.now() - startedAt);
+    return {
+      status: !isAvailable
+        ? HealthStatus.ERROR
+        : latency >= DELAY_LATENCY_MS
+          ? HealthStatus.DELAY
+          : HealthStatus.OK,
+      latency,
+    };
+  }
+
+  private createHealthHistory(
+    serviceName: string,
+    status: HealthStatus,
+    latency = 0,
+  ): HealthHistoryDAO {
+    return this.healthHistoryRepository.create({
+      serviceName,
+      status,
+      latency,
     });
   }
 
-  async getLogDetail(logId: number): Promise<AdminResDTO.LogDetail> {
-    void logId;
-    return AdminMapper.toUnknown(null);
+  private getLatestHealthByService(
+    histories: readonly HealthHistoryDAO[],
+  ): ReadonlyMap<string, HealthStatus> {
+    const latestByService = new Map<string, HealthStatus>();
+
+    for (const history of histories) {
+      if (!latestByService.has(history.serviceName)) {
+        latestByService.set(history.serviceName, history.status);
+      }
+    }
+
+    return latestByService;
+  }
+
+  private toSystemHealthStatus(
+    status: HealthStatus | undefined,
+  ): SystemHealthValue {
+    return status === undefined
+      ? '점검'
+      : SYSTEM_HEALTH_STATUS_BY_HISTORY[status];
+  }
+
+  private toLlmHealth(
+    service: string,
+    latestFirstHistories: readonly HealthHistoryDAO[],
+  ): AdminResDTO.LlmHealth {
+    const totalHistoryCount = latestFirstHistories.length;
+    const averageResponse = this.toP95Latency(latestFirstHistories);
+    const latestStatus = latestFirstHistories[0]?.status ?? HealthStatus.CHECK;
+    const currentStatus = latestStatus === HealthStatus.OK
+      && averageResponse >= DELAY_LATENCY_MS
+      ? HealthStatus.DELAY
+      : latestStatus;
+    const availability = totalHistoryCount === 0
+      ? 0
+      : Math.round(
+        (latestFirstHistories.filter(({ status }) => status === HealthStatus.OK).length
+          * 100)
+        / totalHistoryCount,
+      );
+    const history = latestFirstHistories
+      .slice()
+      .reverse()
+      .map(({ status }) => MODEL_HISTORY_STATUS_VALUE[status]);
+
+    return {
+      service,
+      currentStatus,
+      availability,
+      averageResponse,
+      history: [
+        ...Array<number>(MODEL_HEALTH_HISTORY_LIMIT - history.length).fill(
+          MODEL_HISTORY_STATUS_VALUE[HealthStatus.CHECK],
+        ),
+        ...history,
+      ],
+    };
+  }
+
+  /** 최근 이력의 nearest-rank 방식 P95 지연시간(ms)을 반환합니다. */
+  private toP95Latency(histories: readonly HealthHistoryDAO[]): number {
+    if (histories.length === 0) {
+      return 0;
+    }
+
+    const latencies = histories
+      .map(({ latency }) => Math.max(0, Math.trunc(Number(latency))))
+      .sort((left, right) => left - right);
+    const percentileIndex = Math.ceil(latencies.length * 0.95) - 1;
+    return latencies[percentileIndex]!;
+  }
+
+  private aggregateHealthStatuses(
+    statuses: readonly SystemHealthValue[],
+  ): SystemHealthValue {
+    return statuses.reduce<SystemHealthValue>(
+      (current, status) =>
+        SYSTEM_HEALTH_PRIORITY[status] > SYSTEM_HEALTH_PRIORITY[current]
+          ? status
+          : current,
+      '정상',
+    );
   }
 
   private isValidEmail(email: string): boolean {
     return typeof email === 'string'
       && email.length <= 255
       && EMAIL_REGEX.test(email);
+  }
+
+  private normalizeLinkDepartmentUserIds(value: unknown): number[] {
+    if (!Array.isArray(value) || value.length === 0) {
+      throw new AdminException(AdminErrorStatus.INVALID_USER_IDS);
+    }
+
+    if (value.some((userId) => typeof userId !== 'number')) {
+      throw new AdminException(AdminErrorStatus.INVALID_USER_IDS);
+    }
+
+    const userIds = value as number[];
+    if (
+      userIds.some((userId) => !Number.isSafeInteger(userId) || userId <= 0)
+      || new Set(userIds).size !== userIds.length
+    ) {
+      throw new AdminException(AdminErrorStatus.INVALID_USER_IDS);
+    }
+
+    return userIds;
+  }
+
+  private normalizePolicyPresetName(value: unknown): string {
+    if (typeof value !== 'string') {
+      throw new AdminException(AdminErrorStatus.INVALID_POLICY);
+    }
+
+    const policyName = value.trim();
+    if (
+      policyName.length === 0
+      || policyName.length > 255
+      || /[\r\n]/.test(policyName)
+    ) {
+      throw new AdminException(AdminErrorStatus.INVALID_POLICY);
+    }
+
+    return policyName;
   }
 
   private normalizeDepartmentName(value: unknown): string {
@@ -1518,13 +2505,62 @@ export class AdminService {
     return departmentName;
   }
 
-  private toUserRole(role: string): UserRole {
+  private normalizeDepartmentCode(value: unknown): string {
+    if (typeof value !== 'string') {
+      throw new AdminException(AdminErrorStatus.INVALID_DEPARTMENT_NAME);
+    }
+
+    const departmentCode = value.trim();
+    if (
+      departmentCode.length === 0
+      || departmentCode.length > MAX_DEPARTMENT_CODE_LENGTH
+    ) {
+      throw new AdminException(AdminErrorStatus.INVALID_DEPARTMENT_NAME);
+    }
+
+    return departmentCode;
+  }
+
+  private normalizeDepartmentBoolean(value: unknown): boolean {
+    if (typeof value !== 'boolean') {
+      throw new AdminException(AdminErrorStatus.INVALID_DEPARTMENT_NAME);
+    }
+
+    return value;
+  }
+
+  private normalizeDepartmentLimit(value: unknown): string {
+    if (
+      typeof value !== 'number'
+      || !Number.isSafeInteger(value)
+      || value < 0
+    ) {
+      throw new AdminException(AdminErrorStatus.INVALID_DEPARTMENT_NAME);
+    }
+
+    return String(value);
+  }
+
+  /**
+   * 부서 한도 0은 무제한이므로 개인 한도도 0으로 유지합니다. 유한 한도는
+   * 정수 컬럼에 저장하므로 소수점 이하는 버립니다.
+   */
+  private divideDepartmentLimit(
+    departmentLimit: string,
+    memberCount: number,
+  ): string {
+    if (memberCount <= 0) {
+      return '0';
+    }
+
+    return (BigInt(departmentLimit) / BigInt(memberCount)).toString();
+  }
+
+  private toUserRole(role: unknown): UserRole {
     switch (role) {
       case UserRole.USER:
-      case '일반 사용자':
         return UserRole.USER;
       case UserRole.DEPART_ADMIN:
-      case '부서 관리자':
         return UserRole.DEPART_ADMIN;
       default:
         throw new AdminException(AdminErrorStatus.INVALID_ROLE);
@@ -1715,13 +2751,13 @@ export class AdminService {
       case UserRole.DEPART_ADMIN:
         return '부서 관리자';
       case UserRole.TOTAL_ADMIN:
-        return '총괄 관리자';
+        return '총 관리자';
     }
   }
 
   private normalizeUserListQuery(dto: AdminReqDTO.UserList): UserListQuery {
     const pageSize = Number(dto.pageSize);
-    const pageNumber = Number(dto.pageNumber);
+    const pageNumber = this.toPageNumber(dto.pageNumber);
     if (
       !Number.isSafeInteger(pageSize)
       || pageSize < 1
@@ -1754,11 +2790,48 @@ export class AdminService {
     };
   }
 
+  private normalizeUserPromptOverviewQuery(
+    dto: AdminReqDTO.UserPromptOverview,
+  ): { pageSize: number; pageNumber: number; query: string } {
+    const pageSize = Number(dto.pageSize);
+    const pageNumber = this.toPageNumber(dto.pageNumber);
+    const query = typeof dto.query === 'string' ? dto.query.trim() : '';
+    if (
+      !Number.isSafeInteger(pageSize)
+      || pageSize < 1
+      || pageSize > MAX_USER_LIST_PAGE_SIZE
+      || !Number.isSafeInteger(pageNumber)
+      || pageNumber < 1
+      || query.length === 0
+      || query.length > MAX_DEPARTMENT_NAME_LENGTH
+    ) {
+      throw new AdminException(AdminErrorStatus.INVALID_USER_LIST_QUERY);
+    }
+    return { pageSize, pageNumber, query };
+  }
+
+  private normalizeUserPromptListQuery(
+    dto: AdminReqDTO.UserPromptList,
+  ): { pageSize: number; pageNumber: number } {
+    const pageSize = Number(dto.pageSize);
+    const pageNumber = this.toPageNumber(dto.pageNumber);
+    if (
+      !Number.isSafeInteger(pageSize)
+      || pageSize < 1
+      || pageSize > MAX_USER_LIST_PAGE_SIZE
+      || !Number.isSafeInteger(pageNumber)
+      || pageNumber < 1
+    ) {
+      throw new AdminException(AdminErrorStatus.INVALID_USER_LIST_QUERY);
+    }
+    return { pageSize, pageNumber };
+  }
+
   private normalizeDepartmentListQuery(
     dto: AdminReqDTO.DepartmentList,
   ): DepartmentListQuery {
     const pageSize = Number(dto.pageSize);
-    const pageNumber = Number(dto.pageNumber);
+    const pageNumber = this.toPageNumber(dto.pageNumber);
     if (
       !Number.isSafeInteger(pageSize)
       || pageSize < 1
@@ -1790,11 +2863,23 @@ export class AdminService {
     return { pageSize, pageNumber, query };
   }
 
+  /** HTTP 클라이언트가 첫 페이지를 `null` 문자열로 보내는 경우를 허용합니다. */
+  private toPageNumber(value: unknown): number {
+    if (
+      value === null
+      || (typeof value === 'string' && value.trim().toLowerCase() === 'null')
+    ) {
+      return INITIAL_PAGE_NUMBER;
+    }
+
+    return Number(value);
+  }
+
   private toDepartmentRiskSince(recent: string, now: Date): Date {
     const daysByRecent: Record<string, number> = {
-      '7일': 7,
-      '1달': 30,
-      '3달': 90,
+      '7d': 7,
+      '30d': 30,
+      '90d': 90,
     };
     const days = daysByRecent[recent];
     if (days === undefined) {
@@ -1836,6 +2921,57 @@ export class AdminService {
 
   private toDateTimeString(value: Date | string): string {
     return value instanceof Date ? value.toISOString() : value;
+  }
+
+  private toMemberLimitTotals(
+    memberLimits: readonly Readonly<Pick<MemberLimitDAO, 'limit' | 'usage'>>[],
+  ): { limit: number; usage: number } {
+    let totalLimit = 0n;
+    let totalUsage = 0n;
+    let hasUnlimitedLimit = false;
+
+    for (const memberLimit of memberLimits) {
+      const limit = BigInt(memberLimit.limit);
+      totalUsage += BigInt(Math.round(Number(memberLimit.usage) * 1_000_000));
+      if (limit === 0n) {
+        hasUnlimitedLimit = true;
+      } else {
+        totalLimit += limit;
+      }
+    }
+
+    return {
+      limit: hasUnlimitedLimit ? 0 : Number(totalLimit),
+      usage: Number(totalUsage) / 1_000_000,
+    };
+  }
+
+  /** 마스킹 상세의 원문 위치를 뒤에서부터 치환해 최종 전송문을 복원합니다. */
+  private toMaskedPromptText(
+    originalText: string,
+    detections: readonly Readonly<AdminResDTO.PromptDetection>[],
+  ): string {
+    let maskedText = originalText;
+    const descendingDetections = [...detections].sort(
+      (left, right) => right.startIdx - left.startIdx,
+    );
+
+    for (const detection of descendingDetections) {
+      const endExclusive = detection.endIdx + 1;
+      if (
+        detection.startIdx < 0
+        || endExclusive > originalText.length
+        || originalText.slice(detection.startIdx, endExclusive)
+          !== detection.targetText
+      ) {
+        continue;
+      }
+      maskedText = maskedText.slice(0, detection.startIdx)
+        + detection.maskingText
+        + maskedText.slice(endExclusive);
+    }
+
+    return maskedText;
   }
 
   private async recordAdminActivity(

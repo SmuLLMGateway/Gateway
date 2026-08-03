@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   HttpCode,
   HttpStatus,
@@ -26,12 +27,14 @@ import { PromptFileExceptionInterceptor } from '../interceptor/prompt-file-excep
 import { PromptStagedFileCleanupInterceptor } from '../interceptor/prompt-staged-file-cleanup.interceptor.js';
 import type { StoredPromptFile } from '../type/stored-prompt-file.type.js';
 import { ParseAnalyzeQueryPipe } from '../pipe/parse-analyze-query.pipe.js';
+import { ParsePromptListQueryPipe } from '../pipe/parse-prompt-list-query.pipe.js';
 import {
   ParseFileDownloadBodyPipe as ParseFileDownloadQueryPipe,
 } from '../pipe/parse-file-download-body.pipe.js';
 import type { Response } from 'express';
 import {
   AnalysisStatusCheckDocs,
+  CancelAnalyzeDocs,
   ChatRoomListDocs,
   FileDownloadDocs,
   LlmResultCheckDocs,
@@ -76,7 +79,7 @@ export class PromptController {
     @Query(ParseAnalyzeQueryPipe) dto: PromptReqDTO.Analyze,
     @CurrentUser() authentication: AuthenticatedUser,
     @Res({ passthrough: true }) response: Response,
-  ): Promise<GeneralResponse<PromptResDTO.Analyze | null>> {
+  ): Promise<GeneralResponse<PromptResDTO.AnalyzeResult | null>> {
     response.setHeader('Cache-Control', 'no-store');
     response.setHeader('Pragma', 'no-cache');
     const analyze = await this.promptService.getAnalyze(dto, authentication);
@@ -94,13 +97,25 @@ export class PromptController {
     );
   }
 
+  @CancelAnalyzeDocs()
+  @Delete('/api/v1/analyze')
+  @HttpCode(HttpStatus.OK)
+  async cancelAnalysis(
+    @Query(ParseAnalyzeQueryPipe) dto: PromptReqDTO.CancelAnalyze,
+    @CurrentUser() authentication: AuthenticatedUser,
+  ): Promise<GeneralResponse<PromptResDTO.Empty>> {
+    const result = await this.promptService.cancelAnalyze(dto, authentication);
+    return GeneralResponse.onSuccess(PromptSuccessStatus.CANCEL_ANALYZE, result);
+  }
+
   @LlmSendDocs()
   @Post('/api/v1/prompt')
   @HttpCode(HttpStatus.OK)
   async sendToLlm(
     @Body() dto: PromptReqDTO.LlmRequest,
+    @CurrentUser() authentication: AuthenticatedUser,
   ): Promise<GeneralResponse<PromptResDTO.Empty>> {
-    const result = await this.promptService.requestLlm(dto);
+    const result = await this.promptService.requestLlm(dto, authentication);
     return GeneralResponse.onSuccess(PromptSuccessStatus.LLM_REQUEST, result);
   }
 
@@ -108,8 +123,9 @@ export class PromptController {
   @Get('/api/v1/prompt')
   async checkLlmResult(
     @Query() dto: PromptReqDTO.LlmResponse,
+    @CurrentUser() authentication: AuthenticatedUser,
   ): Promise<GeneralResponse<PromptResDTO.LlmResponse>> {
-    const llmResponse = await this.promptService.getLlmResponse(dto);
+    const llmResponse = await this.promptService.getLlmResponse(dto, authentication);
     if (llmResponse.pending) {
       return GeneralResponse.onSuccess(
         PromptSuccessStatus.BEFORE_LLM_RESPONSE,
@@ -163,9 +179,14 @@ export class PromptController {
   async getPromptList(
     @Param('chatRoomId', new ParseUUIDPipe({ version: '4' }))
     chatRoomId: string,
+    @Query(ParsePromptListQueryPipe) dto: PromptReqDTO.PromptList,
     @CurrentUser() authentication: AuthenticatedUser,
   ): Promise<GeneralResponse<PromptResDTO.PromptList>> {
-    const result = await this.promptService.getPromptList(chatRoomId, authentication);
+    const result = await this.promptService.getPromptList(
+      chatRoomId,
+      dto,
+      authentication,
+    );
     return GeneralResponse.onSuccess(PromptSuccessStatus.PROMPT_LIST, result);
   }
 

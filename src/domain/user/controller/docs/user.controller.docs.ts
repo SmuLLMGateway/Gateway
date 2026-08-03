@@ -59,7 +59,7 @@ export const UserInfoDocs = () =>
   applyDecorators(
     ApiOperation({
       summary: '사용자 정보 조회',
-      description: '현재 로그인한 사용자의 정보를 조회합니다.',
+      description: '현재 로그인한 사용자의 정보를 조회합니다. 부서 미소속 총 관리자의 department는 null, departmentLimitRate는 0으로 반환합니다.',
     }),
     ApiSuccessResponse(
       UserSuccessStatus.USER_INFO,
@@ -72,14 +72,18 @@ export const MessageHistoryDocs = () =>
   applyDecorators(
     ApiOperation({
       summary: '대화 기록 조회',
-      description: '조회 기간에 전송된 대화 기록을 프롬프트 단위로 조회합니다.',
+      description: '조회 기간에 전송된 대화 기록을 프롬프트 단위로 조회합니다. '
+        + 'llmModel은 생성 시점의 active_api_key.service_type이며 로컬 LLM은 Local LLM으로 반환합니다.',
     }),
     ApiQuery({
       name: 'recent',
-      type: String,
       required: true,
-      enum: ['7일전', '30일전', '90일전', '전체'],
-      description: '불러올 대화 기록의 기간',
+      schema: {
+        type: 'string',
+        example: '7d',
+        enum: ['7d', '30d', '90d', 'all'],
+      },
+      description: '불러올 대화 기록의 기간: 7d, 30d, 90d, all',
     }),
     ApiQuery({
       name: 'pageSize',
@@ -113,7 +117,11 @@ export const MessageHistoryDocs = () =>
         true,
       ),
     ),
-    ...commonErrors(),
+    ...ApiErrorResponses([
+      UserErrorStatus.INVALID_MESSAGE_LIST,
+      UserErrorStatus.TOKEN_EXPIRED,
+      ErrorStatus.INTERNAL_SERVER_ERROR,
+    ]),
   );
 
 export const DepartmentPolicyListDocs = () =>

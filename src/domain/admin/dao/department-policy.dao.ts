@@ -24,7 +24,7 @@ export class DepartmentPolicyDAO {
     @PrimaryGeneratedColumn({ name: 'department_policy_id', type: 'bigint' })
     departmentPolicyId!: string;
 
-    @Column({ name: 'is_active', type: 'boolean' })
+    @Column({ name: 'is_active', type: 'boolean', default: true })
     isActive!: boolean;
 
     @Column({ name: 'department_id', type: 'bigint' })

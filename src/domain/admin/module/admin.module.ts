@@ -15,6 +15,13 @@ import { ActiveLlmDAO } from '../dao/active-llm.dao.js';
 import { LlmDetailModelDAO } from '../dao/llm-detail-model.dao.js';
 import { MemberDAO } from '../../user/dao/member.dao.js';
 import { DepartmentPolicyDAO } from '../dao/department-policy.dao.js';
+import { MemberLimitDAO } from '../../user/dao/member-limit.dao.js';
+import { PresetDAO } from '../dao/preset.dao.js';
+import { PresetPolicyDAO } from '../dao/preset-policy.dao.js';
+import { HealthHistoryDAO } from '../dao/health-history.dao.js';
+import { ObjectStorageModule } from '../../../global/storage/module/object-storage.module.js';
+import { SystemHealthMonitorService } from '../service/system-health-monitor.service.js';
+import { NerModule } from '../../../global/ner/module/ner.module.js';
 
 @Module({
   imports: [
@@ -24,16 +31,22 @@ import { DepartmentPolicyDAO } from '../dao/department-policy.dao.js';
       AdminLogDAO,
       DepartmentDAO,
       DepartmentPolicyDAO,
+      HealthHistoryDAO,
       LlmDetailModelDAO,
       MemberDAO,
       MemberDepartmentDAO,
+      MemberLimitDAO,
       PolicyDAO,
+      PresetDAO,
+      PresetPolicyDAO,
     ]),
     UserModule,
     SecurityModule,
     LlmModule,
+    NerModule,
+    ObjectStorageModule,
   ],
   controllers: [AdminController],
-  providers: [AdminService, AdminMapper],
+  providers: [AdminService, AdminMapper, SystemHealthMonitorService],
 })
 export class AdminModule {}

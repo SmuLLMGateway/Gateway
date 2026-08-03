@@ -1,16 +1,20 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { randomUUID } from 'node:crypto';
-import { Repository } from 'typeorm';
-import { MaskingClass, PolicyDAO } from '../../admin/dao/policy.dao.js';
+import { DataSource, In, Raw, Repository } from 'typeorm';
+import { MaskingClass } from '../../admin/dao/policy.dao.js';
 import { ActiveLlmDAO } from '../../admin/dao/active-llm.dao.js';
+import { LlmDetailModelDAO } from '../../admin/dao/llm-detail-model.dao.js';
+import { DepartmentPolicyDAO } from '../../admin/dao/department-policy.dao.js';
+import { DepartmentDAO } from '../../admin/dao/department.dao.js';
 import { MemberDepartmentDAO } from '../../user/dao/member-department.dao.js';
+import { MemberLimitDAO } from '../../user/dao/member-limit.dao.js';
 import { GatewayException } from '../../../global/apiPayload/exception/gateway.exception.js';
 import type { AuthenticatedUser } from '../../../global/security/type/jwt-payload.type.js';
 import { UserRole } from '../../../global/security/type/user-role.enum.js';
 import { MinioObjectStorageService } from '../../../global/storage/service/minio-object-storage.service.js';
 import { PromptErrorStatus } from '../code/prompt.status.js';
-import type { NerCallbackRequestDTO } from '../dto/ner-callback.request.dto.js';
+import type { PromptData } from '../data/prompt.data.js';
 import { PromptReqDTO } from '../dto/prompt.request.dto.js';
 import { PromptResDTO } from '../dto/prompt.response.dto.js';
 import { PromptException } from '../exception/prompt.exception.js';
@@ -28,8 +32,22 @@ import {
 import { MaskingReportStatus } from '../type/masking-report-status.enum.js';
 import type { StoredPromptFile } from '../type/stored-prompt-file.type.js';
 import { LlmProvider } from '../../../global/llm/enum/llm-provider.enum.js';
+import { ProviderClient } from '../../../global/llm/client/provider.client.js';
+import { ApiKeyEncryptionService } from '../../../global/llm/service/api-key-encryption.service.js';
+import { NerClient } from '../../../global/ner/client/ner.client.js';
+import type {
+  NerAnalyzeRequest,
+  NerDetection,
+  NerExistingDetection,
+} from '../../../global/ner/type/ner-analyze-request.type.js';
+import { PromptLogDAO } from '../dao/prompt-log.dao.js';
+import { MaskingDetailDAO } from '../dao/masking-detail.dao.js';
+import { MaskingReportDAO } from '../dao/masking-report.dao.js';
+import { PromptLogStatus } from '../type/prompt-log-status.enum.js';
 import {
   getLlmServiceDescriptor,
+  isLocalLlmModelName,
+  LOCAL_LLM_MODEL,
   resolveLlmServiceFromModelName,
 } from '../../../global/llm/llm-service.mapping.js';
 
@@ -83,20 +101,35 @@ interface CandidateOptions {
   readonly captureGroup?: number;
 }
 
+interface AccessiblePromptModel {
+  /** 이력 조회용 분류. 외부 LLM은 active_api_key.service_type입니다. */
+  readonly modelType: string;
+  /** 실제 Provider 요청에 전달할 세부 모델명입니다. */
+  readonly modelName: string;
+}
+
 @Injectable()
 export class PromptService {
+  private readonly logger = new Logger(PromptService.name);
+
   constructor(
+    private readonly dataSource: DataSource,
     @InjectRepository(MemberDepartmentDAO)
     private readonly memberDepartmentRepository: Repository<MemberDepartmentDAO>,
-    @InjectRepository(PolicyDAO)
-    private readonly policyRepository: Repository<PolicyDAO>,
+    @InjectRepository(DepartmentPolicyDAO)
+    private readonly departmentPolicyRepository: Repository<DepartmentPolicyDAO>,
     @InjectRepository(ActiveLlmDAO)
     private readonly activeLlmRepository: Repository<ActiveLlmDAO>,
+    @InjectRepository(LlmDetailModelDAO)
+    private readonly llmDetailModelRepository: Repository<LlmDetailModelDAO>,
     private readonly maskingReportRepository: MaskingReportRepository,
     private readonly promptFileRepository: PromptFileRepository,
     private readonly promptLogRepository: PromptLogRepository,
     private readonly promptRoomRepository: PromptRoomRepository,
     private readonly objectStorage: MinioObjectStorageService,
+    private readonly providerClient: ProviderClient,
+    private readonly apiKeyEncryption: ApiKeyEncryptionService,
+    private readonly nerClient: NerClient,
   ) {}
 
   /** 마스킹 요소 탐지 요청의 전체 비즈니스 흐름을 수행합니다. */
@@ -117,7 +150,10 @@ export class PromptService {
 
     try {
       const departmentId = await this.resolveDepartmentId(authentication.userId);
-      await this.assertModelAccessible(departmentId, dto.model);
+      const accessibleModel = await this.resolveAccessiblePromptModel(
+        departmentId,
+        dto.model,
+      );
       await this.maskingReportRepository.validateRequestTickets(
         dto.ticket,
         recentTicket,
@@ -129,10 +165,7 @@ export class PromptService {
           authentication.userId,
         );
       }
-      const policies = await this.findSupportedPolicies(
-        departmentId,
-        MaskingClass.PRIVATE,
-      );
+      const policies = await this.findSupportedPolicies(departmentId);
 
       const chatRoomId = requestedChatRoomId ?? await this.createInitialChatRoom(
         authentication.userId,
@@ -141,17 +174,21 @@ export class PromptService {
       if (requestedChatRoomId === null) {
         createdChatRoomId = chatRoomId;
       }
+      // NER 응답 전에는 최종 분석 완료가 될 수 없으므로 항상 PENDING으로 생성합니다.
       await this.maskingReportRepository.create(
         dto.ticket,
         authentication.userId,
         dto.text,
         recentTicket,
+        true,
       );
       reportCreated = true;
       await this.promptLogRepository.replaceMasking(
         chatRoomId,
         dto.ticket,
         this.toPromptSummary(dto.text),
+        accessibleModel.modelType,
+        accessibleModel.modelName,
       );
       promptLogCreated = true;
 
@@ -186,7 +223,8 @@ export class PromptService {
           startIdx: detection.startIdx,
           endIdx: detection.endIdx,
           maskingText: this.maskDetectedText(detection.maskingContent),
-          policyId: policyByContent.get(detection.maskingContent)!.policyId,
+          departmentPolicyId:
+            policyByContent.get(detection.maskingContent)!.departmentPolicyId,
         })),
       );
 
@@ -195,7 +233,19 @@ export class PromptService {
       }
       regexCompleted = true;
 
-      // NER 서버가 완성되면 json.text 전송과 ner_status 전이를 이 지점에 추가합니다.
+      const existingDetections = this.toNerExistingDetections(detections);
+      void this.requestNerAnalysis({
+        ticket: dto.ticket,
+        text: dto.text,
+        existingDetections,
+        policies,
+      }).catch(async (error: unknown) => {
+        await this.safeCancelNer(dto.ticket);
+        this.logger.error(
+          `NER 탐지 요청 실패: ticket=${dto.ticket}`,
+          error instanceof Error ? error.stack : undefined,
+        );
+      });
 
       return { chatRoomId };
     } catch (error: unknown) {
@@ -206,9 +256,7 @@ export class PromptService {
         if (!regexCompleted) {
           await this.safeCancelRegex(dto.ticket);
         }
-        if (file !== undefined) {
-          await this.safeCancelNer(dto.ticket);
-        }
+        await this.safeCancelNer(dto.ticket);
       }
 
       if (finalObjectKey !== undefined) {
@@ -229,63 +277,12 @@ export class PromptService {
     }
   }
 
-  /** NER 서버의 비동기 분석 결과를 검증하고 리포트에 반영합니다. */
-  async applyNerResult(dto: Readonly<NerCallbackRequestDTO>): Promise<null> {
-    if (dto.status === 'CANCEL') {
-      await this.maskingReportRepository.cancelNer(dto.ticket);
-      return null;
-    }
-
-    const memberId = await this.maskingReportRepository.findMemberId(dto.ticket);
-    if (memberId === null) {
-      throw new PromptException(PromptErrorStatus.NOT_FOUND_ANAL_REQ);
-    }
-
-    const numericMemberId = Number(memberId);
-    if (!Number.isSafeInteger(numericMemberId) || numericMemberId <= 0) {
-      throw new PromptException(PromptErrorStatus.INVALID_NER_CALLBACK);
-    }
-
-    const departmentId = await this.resolveDepartmentId(numericMemberId);
-    const policies = await this.findSupportedPolicies(departmentId);
-    const policyByContent = new Map(
-      policies.map((policy) => [policy.maskingContent, policy] as const),
-    );
-
-    const detections = dto.detections.map((detection) => {
-      const maskingContent = normalizeMaskingContent(detection.maskingContent);
-      const policy = maskingContent === null
-        ? undefined
-        : policyByContent.get(maskingContent);
-
-      if (policy === undefined) {
-        throw new PromptException(PromptErrorStatus.INVALID_NER_CALLBACK);
-      }
-
-      return { policyId: policy.policyId };
-    });
-
-    const [promptFile] = await this.promptFileRepository.findByReportId(
-      dto.ticket,
-    );
-    if (promptFile === undefined) {
-      throw new PromptException(PromptErrorStatus.INVALID_NER_CALLBACK);
-    }
-
-    await this.maskingReportRepository.saveNerDetections(
-      dto.ticket,
-      promptFile.fileUrl,
-      detections,
-    );
-    return null;
-  }
-
   async getAnalyze(
     dto: Readonly<PromptReqDTO.Analyze>,
     authentication: Readonly<AuthenticatedUser>,
   ): Promise<{
     pending: boolean;
-    result: PromptResDTO.Analyze | null;
+    result: PromptResDTO.AnalyzeResult | null;
   }> {
     const report = await this.maskingReportRepository.findAnalyzeResult(
       dto.ticket,
@@ -317,24 +314,244 @@ export class PromptService {
     }
   }
 
+  async cancelAnalyze(
+    dto: Readonly<PromptReqDTO.CancelAnalyze>,
+    authentication: Readonly<AuthenticatedUser>,
+  ): Promise<PromptResDTO.Empty> {
+    const canceled = await this.maskingReportRepository.cancelForMember(
+      dto.ticket,
+      authentication.userId,
+    );
+    if (!canceled) {
+      throw new PromptException(PromptErrorStatus.NOT_FOUND_ANAL_REQ);
+    }
+
+    return null;
+  }
+
   async requestLlm(
     dto: PromptReqDTO.LlmRequest,
+    authentication: Readonly<AuthenticatedUser>,
   ): Promise<PromptResDTO.Empty> {
-    void dto;
+    if (typeof dto.ticket !== 'string' || !UUID_PATTERN.test(dto.ticket.trim())) {
+      throw new PromptException(PromptErrorStatus.INVALID_ANALYZE_REQUEST);
+    }
+    const ticket = dto.ticket.trim().toLowerCase();
+    const promptLogRepository = this.dataSource.getRepository(PromptLogDAO);
+    const promptLog = await promptLogRepository.findOne({
+      relations: { maskingReport: true, promptRoom: true },
+      where: { maskingReportId: ticket, promptRoom: { memberId: String(authentication.userId) } },
+    });
+    if (promptLog === null) {
+      throw new PromptException(PromptErrorStatus.NOT_FOUND_ANAL_REQ);
+    }
+    if (promptLog.maskingReport.status !== MaskingReportStatus.DONE) {
+      throw new PromptException(PromptErrorStatus.ANALYZE_SERVICE_UNAVAILABLE);
+    }
+    // 이미 전송을 시작했거나 완료한 ticket은 재전송하지 않습니다.
+    if (
+      promptLog.status !== PromptLogStatus.MASKING
+      && promptLog.status !== PromptLogStatus.ERROR
+    ) {
+      return null;
+    }
+
+    const model = promptLog.modelName ?? promptLog.modelType;
+    if (
+      model === null
+      || promptLog.modelType?.trim().toLowerCase() === LOCAL_LLM_MODEL.toLowerCase()
+      || isLocalLlmModelName(model)
+    ) {
+      throw new PromptException(PromptErrorStatus.FORBIDDEN_LLM_MODEL);
+    }
+    const departmentId = await this.resolveDepartmentId(authentication.userId);
+    const provider = this.resolveModelProvider(model);
+    const activeLlm = await this.activeLlmRepository.findOne({
+      relations: { activeApiKey: true, llmDetailModel: true },
+      where: {
+        activeApiKey: { departmentId, serviceType: provider },
+        llmDetailModel: { llmName: model },
+      },
+    });
+    if (activeLlm === null) {
+      this.throwForbiddenModel();
+    }
+    const maskedText = await this.toMaskedPromptText(
+      ticket,
+      promptLog.maskingReport.originalText,
+    );
+    const reserved = await promptLogRepository.update(
+      {
+        promptLogId: promptLog.promptLogId,
+        status: In([PromptLogStatus.MASKING, PromptLogStatus.ERROR]),
+      },
+      {
+        status: PromptLogStatus.PENDING,
+        communicatedAt: new Date(),
+        activeApiKeyId: activeLlm.activeApiKeyId,
+      },
+    );
+    if (reserved.affected !== 1) {
+      return null;
+    }
+    const apiKey = this.apiKeyEncryption.decrypt(
+      activeLlm.activeApiKey.apiKey,
+      departmentId,
+      provider,
+    );
+    void this.sendProviderRequest({
+      ticket,
+      memberId: String(authentication.userId),
+      departmentId,
+      activeApiKeyId: activeLlm.activeApiKeyId,
+      model,
+      text: maskedText,
+      apiKey,
+    }).catch(async (error: unknown) => {
+      try {
+        await this.dataSource.getRepository(PromptLogDAO).update(
+          { maskingReportId: ticket, status: PromptLogStatus.PENDING },
+          { status: PromptLogStatus.ERROR },
+        );
+      } catch (statusUpdateError: unknown) {
+        this.logger.error(
+          `Provider LLM 실패 상태 기록 실패: ticket=${ticket}`,
+          statusUpdateError instanceof Error ? statusUpdateError.stack : undefined,
+        );
+      }
+      this.logger.error(`Provider LLM 전송 실패: ticket=${ticket}`, error instanceof Error ? error.stack : undefined);
+    });
     return null;
   }
 
   async getLlmResponse(
     dto: PromptReqDTO.LlmResponse,
+    authentication: Readonly<AuthenticatedUser>,
   ): Promise<{
     pending: boolean;
     result: PromptResDTO.LlmResponse;
   }> {
-    void dto;
+    const promptLog = await this.dataSource
+      .getRepository(PromptLogDAO)
+      .createQueryBuilder('promptLog')
+      .innerJoin('promptLog.promptRoom', 'promptRoom')
+      .select(['promptLog.promptLogId', 'promptLog.responseText', 'promptLog.status'])
+      .where('promptLog.maskingReportId = :ticket', { ticket: dto.ticket })
+      .andWhere('promptRoom.memberId = :memberId', {
+        memberId: String(authentication.userId),
+      })
+      .getOne();
+    if (promptLog === null) {
+      throw new PromptException(PromptErrorStatus.NOT_FOUND_ANAL_REQ);
+    }
+    if (promptLog.status === PromptLogStatus.ERROR) {
+      throw new PromptException(PromptErrorStatus.LLM_REQUEST_FAILED);
+    }
     return {
-      pending: true,
-      result: null,
+      pending: promptLog.responseText === null,
+      result: promptLog.responseText,
     };
+  }
+
+  private async sendProviderRequest(data: Readonly<{
+    ticket: string; memberId: string; departmentId: string; activeApiKeyId: string;
+    model: string; text: string; apiKey: string;
+  }>): Promise<void> {
+    const fileReferences = await this.promptFileRepository.findByReportId(data.ticket);
+    const files = await Promise.all(fileReferences.map(async (file) => ({
+      stream: await this.objectStorage.getObject(this.objectStorage.parseObjectUrl(file.fileUrl)),
+      fileName: file.fileOriginalName,
+    })));
+    const response = await this.providerClient.request({
+      ticket: data.ticket,
+      model: data.model,
+      apiKey: data.apiKey,
+      text: data.text,
+      files,
+    });
+    await this.dataSource.transaction(async (manager) => {
+      await manager.getRepository(PromptLogDAO).update(
+        { maskingReportId: data.ticket, status: PromptLogStatus.PENDING },
+        {
+          status: PromptLogStatus.DONE,
+          responseText: response.outputText,
+          usage: String(response.totalUsd),
+        },
+      );
+      await manager.getRepository(MemberLimitDAO).increment(
+        { memberId: data.memberId, activeApiKeyId: data.activeApiKeyId },
+        'usage',
+        response.totalUsd,
+      );
+      await manager.getRepository(DepartmentDAO).increment(
+        { departmentId: data.departmentId }, 'usage', response.totalUsd,
+      );
+    });
+  }
+
+  /**
+   * 저장된 텍스트 탐지 결과를 뒤에서부터 적용해 원문의 인덱스를 보존합니다.
+   * 파일 탐지처럼 텍스트 위치나 치환 문자열이 없는 상세 항목은 LLM 본문에 적용하지 않습니다.
+   */
+  private async toMaskedPromptText(
+    ticket: string,
+    originalText: string,
+  ): Promise<string> {
+    const details = await this.dataSource.getRepository(MaskingDetailDAO).find({
+      select: {
+        originalText: true,
+        startIdx: true,
+        maskingText: true,
+      },
+      where: { maskingReportId: ticket },
+    });
+    const textDetails = details.flatMap((detail) => {
+      if (
+        detail.originalText === null
+        && detail.startIdx === null
+        && detail.maskingText === null
+      ) {
+        return [];
+      }
+      if (
+        typeof detail.originalText !== 'string'
+        || typeof detail.startIdx !== 'number'
+        || typeof detail.maskingText !== 'string'
+      ) {
+        throw new PromptException(
+          PromptErrorStatus.ANALYZE_SERVICE_UNAVAILABLE,
+        );
+      }
+      return [detail];
+    }).sort((left, right) => right.startIdx! - left.startIdx!);
+
+    let maskedText = originalText;
+    let nextStartIdx = originalText.length;
+    for (const detail of textDetails) {
+      const targetText = detail.originalText!;
+      const maskingText = detail.maskingText!;
+      const startIdx = detail.startIdx!;
+      const endIdx = startIdx + targetText.length;
+
+      if (
+        !Number.isSafeInteger(startIdx)
+        || startIdx < 0
+        || targetText.length === 0
+        || maskingText.length === 0
+        || endIdx > originalText.length
+        || endIdx > nextStartIdx
+        || originalText.slice(startIdx, endIdx) !== targetText
+      ) {
+        throw new PromptException(
+          PromptErrorStatus.ANALYZE_SERVICE_UNAVAILABLE,
+        );
+      }
+
+      maskedText = `${maskedText.slice(0, startIdx)}${maskingText}${maskedText.slice(endIdx)}`;
+      nextStartIdx = startIdx;
+    }
+
+    return maskedText;
   }
 
   async getRecentPrompts(
@@ -350,17 +567,42 @@ export class PromptService {
     authentication: Readonly<AuthenticatedUser>,
   ): Promise<PromptResDTO.ModelList> {
     const departmentId = await this.resolveDepartmentId(authentication.userId);
-    const activeLlms = await this.activeLlmRepository.find({
-      select: { llmDetailModel: { llmName: true } },
-      relations: { activeApiKey: true, llmDetailModel: true },
-      where: { activeApiKey: { departmentId } },
-      order: { llmDetailModel: { llmName: 'ASC' } },
-    });
+    const [activeLlms, localLlmModels] = await Promise.all([
+      this.activeLlmRepository.find({
+        select: { llmDetailModel: { llmName: true } },
+        relations: { activeApiKey: true, llmDetailModel: true },
+        where: { activeApiKey: { departmentId } },
+        order: { llmDetailModel: { llmName: 'ASC' } },
+      }),
+      this.llmDetailModelRepository.find({
+        select: { llmName: true },
+        where: {
+          llmName: Raw(
+            (columnAlias) => `LOWER(${columnAlias}) LIKE :localLlmPrefix`,
+            { localLlmPrefix: 'local-%' },
+          ),
+        },
+        order: { llmName: 'ASC' },
+      }),
+    ]);
 
-    return [...new Set(activeLlms.flatMap((activeLlm) => {
+    const externalModels = activeLlms.flatMap((activeLlm) => {
       const llmName = activeLlm.llmDetailModel.llmName;
       return llmName === null ? [] : [llmName];
-    }))].sort((left, right) => left.localeCompare(right));
+    });
+
+    const localModels = localLlmModels.flatMap((model) => (
+      model.llmName === null || !isLocalLlmModelName(model.llmName)
+        ? []
+        : [model.llmName]
+    ));
+
+    return [
+      ...[...new Set(localModels)].sort((left, right) => left.localeCompare(right)),
+      ...[...new Set(externalModels)]
+        .filter((model) => model !== LOCAL_LLM_MODEL && !isLocalLlmModelName(model))
+        .sort((left, right) => left.localeCompare(right)),
+    ];
   }
 
   async getRecentAnalyze(
@@ -383,17 +625,20 @@ export class PromptService {
 
   async getPromptList(
     chatRoomId: string,
+    dto: Readonly<PromptReqDTO.PromptList>,
     authentication: Readonly<AuthenticatedUser>,
   ): Promise<PromptResDTO.PromptList> {
     await this.assertChatRoomAccessible(chatRoomId, authentication.userId);
-    const promptLogs = await this.promptLogRepository.findHistoryByPromptRoomId(
+    const promptLogPage = await this.promptLogRepository.findHistoryPageByPromptRoomId(
       chatRoomId,
+      dto.cursor === undefined ? undefined : new Date(Number(dto.cursor)),
+      dto.pageSize,
     );
-    if (promptLogs.length === 0) {
+    if (promptLogPage.items.length === 0) {
       return null;
     }
 
-    return Promise.all(promptLogs.map(async (promptLog) => {
+    const data = await Promise.all(promptLogPage.items.map(async (promptLog) => {
       const files = await this.promptFileRepository.findByReportId(
         promptLog.maskingReportId,
       );
@@ -408,6 +653,13 @@ export class PromptService {
           })),
       };
     }));
+
+    const lastPromptLog = promptLogPage.items[promptLogPage.items.length - 1]!;
+    return {
+      data,
+      hasNext: promptLogPage.hasNext,
+      nextCursor: String(lastPromptLog.communicatedAt.getTime()),
+    };
   }
 
   async downloadFile(
@@ -483,10 +735,21 @@ export class PromptService {
     return membership.departmentId;
   }
 
-  private async assertModelAccessible(
+  private async resolveAccessiblePromptModel(
     departmentId: string,
     model: string,
-  ): Promise<void> {
+  ): Promise<AccessiblePromptModel> {
+    if (isLocalLlmModelName(model)) {
+      const localLlm = await this.llmDetailModelRepository.findOne({
+        select: { llmDetailModelId: true },
+        where: { llmName: model },
+      });
+      if (localLlm === null) {
+        this.throwForbiddenModel();
+      }
+      return { modelType: LOCAL_LLM_MODEL, modelName: model };
+    }
+
     const provider = this.resolveModelProvider(model);
     const activeLlm = await this.activeLlmRepository.findOne({
       select: { activeLlmId: true },
@@ -499,6 +762,8 @@ export class PromptService {
     if (activeLlm === null) {
       this.throwForbiddenModel();
     }
+
+    return { modelType: provider, modelName: model };
   }
 
   private resolveModelProvider(model: string): LlmProvider {
@@ -551,34 +816,34 @@ export class PromptService {
   private async findSupportedPolicies(
     departmentId: string,
     maskingClass?: MaskingClass,
+    includeInactive = false,
   ): Promise<DepartmentMaskingPolicy[]> {
+    const activeCondition = includeInactive ? {} : { isActive: true };
     const where = maskingClass === undefined
-      ? {
-        departmentPolicies: {
-          departmentId,
-          isActive: true,
-        },
-      }
+      ? { departmentId, ...activeCondition }
       : {
-        maskingClass,
-        departmentPolicies: {
-          departmentId,
-          isActive: true,
-        },
+        departmentId,
+        ...activeCondition,
+        policy: { maskingClass },
       };
-    const policies = await this.policyRepository.find({
+    const policies = await this.departmentPolicyRepository.find({
       select: {
-        policyId: true,
-        maskingContent: true,
-        maskingClass: true,
+        departmentPolicyId: true,
+        policy: {
+          maskingContent: true,
+          maskingClass: true,
+        },
       },
+      relations: { policy: true },
       where,
-      order: { policyId: 'ASC' },
+      order: { departmentPolicyId: 'ASC' },
     });
     const selectedContents = new Set<MaskingContent>();
 
-    return policies.flatMap((policy) => {
-      const maskingContent = normalizeMaskingContent(policy.maskingContent);
+    return policies.flatMap((departmentPolicy) => {
+      const maskingContent = normalizeMaskingContent(
+        departmentPolicy.policy.maskingContent,
+      );
 
       if (maskingContent === null || selectedContents.has(maskingContent)) {
         return [];
@@ -586,11 +851,133 @@ export class PromptService {
 
       selectedContents.add(maskingContent);
       return [{
-        policyId: policy.policyId,
+        departmentPolicyId: departmentPolicy.departmentPolicyId,
         maskingContent,
-        maskingClass: policy.maskingClass,
+        maskingClass: departmentPolicy.policy.maskingClass,
       }];
     });
+  }
+
+  /**
+   * LPL은 Gateway가 정규식으로 이미 확정한 범위를 다시 반환하지 않으므로,
+   * 원문 기준 반열림 인덱스와 실제 문자열을 함께 전달합니다.
+   */
+  private toNerExistingDetections(
+    detections: readonly Readonly<MaskingDetection>[],
+  ): NerExistingDetection[] {
+    return detections.map((detection) => ({
+      start: detection.startIdx,
+      end: detection.endIdx,
+      text: detection.targetText,
+      type: this.toNerDetectionType(detection.maskingContent),
+      source: 'regex',
+      score: 1,
+    }));
+  }
+
+  private async requestNerAnalysis(data: Readonly<{
+    ticket: string;
+    text: string;
+    existingDetections: readonly NerExistingDetection[];
+    policies: readonly Readonly<DepartmentMaskingPolicy>[];
+  }>): Promise<void> {
+    const config = this.nerClient.getDetectionConfiguration();
+    const response = await this.nerClient.requestAnalyze({
+      text: data.text,
+      nerDeploymentId: config.nerDeploymentId,
+      llmDeploymentId: config.llmDeploymentId,
+      existingDetections: data.existingDetections,
+    } satisfies NerAnalyzeRequest);
+    const detections = this.toNerTextDetections(
+      data.text,
+      response.detections,
+      data.existingDetections,
+      data.policies,
+    );
+    const saved = await this.maskingReportRepository.saveNerTextDetections(
+      data.ticket,
+      detections,
+    );
+    if (!saved) {
+      // 사용자가 이미 취소한 요청 등, 완료 권한이 사라진 응답은 저장하지 않습니다.
+      return;
+    }
+  }
+
+  private toNerTextDetections(
+    text: string,
+    detections: readonly Readonly<NerDetection>[],
+    existingDetections: readonly Readonly<NerExistingDetection>[],
+    policies: readonly Readonly<DepartmentMaskingPolicy>[],
+  ): PromptData.NerTextDetection[] {
+    const policyByContent = new Map(
+      policies.map((policy) => [policy.maskingContent, policy] as const),
+    );
+    const occupiedRanges = existingDetections.map((detection) => ({
+      start: detection.start,
+      end: detection.end,
+    }));
+
+    return detections.map((detection) => {
+      const maskingContent = this.toMaskingContentFromNerType(detection.type);
+      const policy = maskingContent === null
+        ? undefined
+        : policyByContent.get(maskingContent);
+      if (policy === undefined) {
+        throw new Error(`활성 부서 정책에 매핑할 수 없는 NER 탐지 유형입니다: ${detection.type}`);
+      }
+      if (detection.maskingText === undefined) {
+        throw new Error('NER 탐지 응답에 maskingText가 없습니다.');
+      }
+      if (
+        detection.text.length > MAX_STORED_DETECTION_LENGTH
+        || detection.maskingText.length > MAX_STORED_DETECTION_LENGTH
+        || detection.start < 0
+        || detection.end > text.length
+        || text.slice(detection.start, detection.end) !== detection.text
+      ) {
+        throw new Error('NER 탐지 응답의 원문 범위 또는 치환 문자열이 올바르지 않습니다.');
+      }
+      if (occupiedRanges.some((range) =>
+        detection.start < range.end && range.start < detection.end
+      )) {
+        throw new Error('NER 탐지 응답이 기존 탐지 범위와 겹칩니다.');
+      }
+      occupiedRanges.push({ start: detection.start, end: detection.end });
+
+      return {
+        originalText: detection.text,
+        startIdx: detection.start,
+        maskingText: detection.maskingText,
+        departmentPolicyId: policy.departmentPolicyId,
+      };
+    });
+  }
+
+  private toNerDetectionType(maskingContent: MaskingContent): string {
+    switch (maskingContent) {
+      case MASKING_CONTENT.PHONE:
+        return 'PHONE_NUMBER';
+      case MASKING_CONTENT.CARD:
+        return 'CARD_NUMBER';
+      default:
+        return maskingContent;
+    }
+  }
+
+  private toMaskingContentFromNerType(type: string): MaskingContent | null {
+    switch (type.trim().toUpperCase().replace(/[\s-]+/g, '_')) {
+      case 'PHONE_NUMBER':
+        return MASKING_CONTENT.PHONE;
+      case 'CARD_NUMBER':
+        return MASKING_CONTENT.CARD;
+      case 'RESIDENT_REGISTRATION_NUMBER':
+        return MASKING_CONTENT.RESIDENT;
+      case 'EMAIL_ADDRESS':
+        return MASKING_CONTENT.EMAIL;
+      default:
+        return normalizeMaskingContent(type);
+    }
   }
 
   private detectMaskingElements(
@@ -834,7 +1221,7 @@ export class PromptService {
       case MASKING_CONTENT.EMAIL:
         return '이메일';
       case MASKING_CONTENT.API_KEY:
-        return 'API Key';
+        return 'API 키';
     }
   }
 

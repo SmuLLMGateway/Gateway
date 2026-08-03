@@ -42,6 +42,7 @@ export class PromptMapper {
       communicatedAt: data.communicatedAt,
       modelType: data.modelType,
       responseText: data.responseText,
+      usage: data.usage,
       promptSummary: data.promptSummary,
       promptRoomId: data.promptRoomId,
       maskingReportId: data.maskingReportId,
@@ -68,11 +69,10 @@ export class PromptMapper {
     return this.maskingDetailRepository.create({
       originalText: data.originalText,
       startIdx: data.startIdx,
-      endIdx: data.endIdx,
       fileUrl: data.fileUrl,
       maskingText: data.maskingText,
       maskingReportId: data.maskingReportId,
-      policyId: data.policyId,
+      departmentPolicyId: data.departmentPolicyId,
     });
   }
 
@@ -104,7 +104,7 @@ export class PromptMapper {
   }
 
   static toMasking(
-    file: PromptResDTO.MaskingFile[] | null,
+    file: PromptResDTO.MaskingFile | null,
     text: PromptResDTO.MaskingText[],
   ): PromptResDTO.Masking {
     return { file, text: text.length === 0 ? null : [...text] };
@@ -113,20 +113,21 @@ export class PromptMapper {
   static toAnalyze(
     originText: string,
     masking: PromptResDTO.Masking,
+    recentDetectCnt: number,
   ): PromptResDTO.Analyze {
-    return { originText, masking };
+    return { originText, recentDetectCnt, masking };
   }
 
   static toAnalyzeResult(
     report: Readonly<PromptData.AnalyzeReport>,
     promptFiles: readonly Readonly<{ fileOriginalName: string; fileUrl: string }>[] = [],
-  ): PromptResDTO.Analyze | null {
-    const masking = this.toAnalyzeMasking(report, promptFiles);
-    if (masking.text === null && masking.file === null) {
-      return null;
+  ): PromptResDTO.AnalyzeResult {
+    if (report.details.length === 0) {
+      return { recentDetectCnt: 0 };
     }
 
-    return this.toAnalyze(report.originalText, masking);
+    const masking = this.toAnalyzeMasking(report, promptFiles);
+    return this.toAnalyze(report.originalText, masking, report.details.length);
   }
 
   static toRecentAnalyze(
@@ -217,46 +218,36 @@ export class PromptMapper {
   private static toAnalyzeFiles(
     promptFiles: readonly Readonly<{ fileOriginalName: string; fileUrl: string }>[],
     detections: readonly PromptData.AnalyzeDetail[],
-  ): PromptResDTO.MaskingFile[] | null {
-    if (promptFiles.length === 0) {
+  ): PromptResDTO.MaskingFile | null {
+    // 분석 요청은 FileInterceptor로 단일 파일만 허용한다. 과거 데이터에 파일이
+    // 여러 개 남아 있더라도 v3 계약의 단일 file 객체에는 첫 파일만 반영한다.
+    const [promptFile] = promptFiles;
+    if (promptFile === undefined) {
       if (detections.length > 0) {
         throw new Error('파일 탐지 결과에 연결된 프롬프트 파일이 없습니다.');
       }
       return null;
     }
 
-    const detectionsByFileUrl = new Map<string, PromptData.AnalyzeDetail[]>();
-    for (const detection of detections) {
+    const { fileOriginalName, fileUrl } = promptFile;
+    this.validateAnalyzeFileReference(fileOriginalName, fileUrl);
+    const fileDetections = detections.filter((detection) => {
       if (detection.fileUrl === null) {
         throw new Error('파일 탐지 결과의 파일 URL이 올바르지 않습니다.');
       }
-      const grouped = detectionsByFileUrl.get(detection.fileUrl) ?? [];
-      grouped.push(detection);
-      detectionsByFileUrl.set(detection.fileUrl, grouped);
-    }
-
-    return promptFiles.flatMap((promptFile) => {
-      const { fileOriginalName, fileUrl } = promptFile;
-      this.validateAnalyzeFileReference(fileOriginalName, fileUrl);
-      const fileDetections = detectionsByFileUrl.get(fileUrl) ?? [];
-      if (fileDetections.length === 0) {
-        return [this.toMaskingFile(fileOriginalName, fileUrl, null, 0)];
-      }
-      return [MaskingClass.SENSITIVE, MaskingClass.PRIVATE]
-        .flatMap((maskingClass) => {
-          const count = fileDetections.filter(
-            (detection) => detection.maskingClass === maskingClass,
-          ).length;
-          return count === 0
-            ? []
-            : [this.toMaskingFile(
-              fileOriginalName,
-              fileUrl,
-              this.toMaskingCategory(maskingClass),
-              count,
-            )];
-        });
+      return detection.fileUrl === fileUrl;
     });
+    const maskingClass = [MaskingClass.SENSITIVE, MaskingClass.PRIVATE]
+      .find((candidate) => fileDetections.some(
+        (detection) => detection.maskingClass === candidate,
+      ));
+
+    return this.toMaskingFile(
+      fileOriginalName,
+      fileUrl,
+      maskingClass === undefined ? null : this.toMaskingCategory(maskingClass),
+      fileDetections.length,
+    );
   }
 
   private static validateAnalyzeFileReference(
@@ -291,7 +282,7 @@ export class PromptMapper {
       case MASKING_CONTENT.EMAIL:
         return '이메일';
       case MASKING_CONTENT.API_KEY:
-        return 'API Key';
+        return 'API 키';
     }
   }
 }

@@ -30,6 +30,16 @@ export const SwaggerResultSchema = {
     items: { $ref: schemaPath },
     nullable,
   }),
+  stringArray: (nullable = false): SchemaObject => ({
+    type: 'array',
+    items: { type: 'string' },
+    nullable,
+  }),
+  objectArray: (nullable = false): SchemaObject => ({
+    type: 'array',
+    items: { type: 'object', additionalProperties: true },
+    nullable,
+  }),
   string: (format?: string): SchemaObject => ({
     type: 'string',
     ...(format ? { format } : {}),

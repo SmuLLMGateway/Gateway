@@ -1,8 +1,16 @@
 import type { TypeOrmModuleOptions } from "@nestjs/typeorm";
-import { MoveMustFilteringToDepartment2026072600000 } from '../migration/move-must-filtering-to-department.migration.js';
-import { MoveDepartmentLimitToDepartment2026072600001 } from '../migration/move-department-limit-to-department.migration.js';
-import { MoveDepartmentQuotaToActiveApiKey2026072600002 } from '../migration/move-department-quota-to-active-api-key.migration.js';
-import { AddRecentUsePercentToActiveApiKey2026072600003 } from '../migration/add-recent-use-percent-to-active-api-key.migration.js';
+import { AlignV3DepartmentQuotaAndMaskingDetail2026073100000 } from '../migration/align-v3-department-quota-and-masking-detail.migration.js';
+import { NormalizeDepartmentPolicyAndRemoveDeprecatedTables2026073100001 } from '../migration/normalize-department-policy-and-remove-deprecated-tables.migration.js';
+import { AddPolicyIsActive2026073100002 } from '../migration/add-policy-is-active.migration.js';
+import { AddPresetIsActive2026080200000 } from '../migration/add-preset-is-active.migration.js';
+import { AddPromptLogUsage2026080200001 } from '../migration/add-prompt-log-usage.migration.js';
+import { ChangeUsageToDecimal2026080200002 } from '../migration/change-usage-to-decimal.migration.js';
+import { AddHealthHistoryCreatedAt2026080200003 } from '../migration/add-health-history-created-at.migration.js';
+import { FixApiKeyMaskingClass2026080200004 } from '../migration/fix-api-key-masking-class.migration.js';
+import { RemovePolicyIsActive2026080200005 } from '../migration/remove-policy-is-active.migration.js';
+import { RemoveDuplicateApiKeyPolicies2026080200006 } from '../migration/remove-duplicate-api-key-policies.migration.js';
+import { AddPromptLogActiveApiKey2026080200007 } from '../migration/add-prompt-log-active-api-key.migration.js';
+import { AddPromptLogModelName2026080200008 } from '../migration/add-prompt-log-model-name.migration.js';
 
 export function createDatabaseConfig(): TypeOrmModuleOptions {
     return {
@@ -19,10 +27,18 @@ export function createDatabaseConfig(): TypeOrmModuleOptions {
         autoLoadEntities: true,
         synchronize: true,
         migrations: [
-            MoveMustFilteringToDepartment2026072600000,
-            MoveDepartmentLimitToDepartment2026072600001,
-            MoveDepartmentQuotaToActiveApiKey2026072600002,
-            AddRecentUsePercentToActiveApiKey2026072600003
+            AlignV3DepartmentQuotaAndMaskingDetail2026073100000,
+            NormalizeDepartmentPolicyAndRemoveDeprecatedTables2026073100001,
+            AddPolicyIsActive2026073100002,
+            AddPresetIsActive2026080200000,
+            AddPromptLogUsage2026080200001,
+            ChangeUsageToDecimal2026080200002,
+            AddHealthHistoryCreatedAt2026080200003,
+            FixApiKeyMaskingClass2026080200004,
+            RemovePolicyIsActive2026080200005,
+            RemoveDuplicateApiKeyPolicies2026080200006,
+            AddPromptLogActiveApiKey2026080200007,
+            AddPromptLogModelName2026080200008
         ],
         migrationsRun: true,
         migrationsTransactionMode: 'each',

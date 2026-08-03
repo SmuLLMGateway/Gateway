@@ -6,6 +6,7 @@ import {
 } from "typeorm";
 import type { Relation } from "typeorm";
 import { DepartmentPolicyDAO } from "./department-policy.dao.js";
+import { PresetPolicyDAO } from './preset-policy.dao.js';
 import { SECURITY_POLICY_CONTENTS } from "../policy/security-policy.catalog.js";
 
 export const POLICY_TABLE = 'policy' as const;
@@ -35,4 +36,10 @@ export class PolicyDAO {
         (departmentPolicy) => departmentPolicy.policy
     )
     departmentPolicies?: Relation<DepartmentPolicyDAO[]>;
+
+    @OneToMany(
+        () => PresetPolicyDAO,
+        (presetPolicy) => presetPolicy.policy
+    )
+    presetPolicies?: Relation<PresetPolicyDAO[]>;
 }

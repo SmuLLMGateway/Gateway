@@ -10,21 +10,18 @@ import { AdminController } from '../../src/domain/admin/controller/admin.control
 import { AdminService } from '../../src/domain/admin/service/admin.service.js';
 import { AuthController } from '../../src/domain/auth/controller/auth.controller.js';
 import { AuthService } from '../../src/domain/auth/service/auth.service.js';
-import { NerCallbackController } from '../../src/domain/prompt/controller/ner-callback.controller.js';
 import { PromptController } from '../../src/domain/prompt/controller/prompt.controller.js';
 import { PromptReqDTO } from '../../src/domain/prompt/dto/prompt.request.dto.js';
-import { NerCallbackGuard } from '../../src/domain/prompt/guard/ner-callback.guard.js';
 import { PromptFileExceptionInterceptor } from '../../src/domain/prompt/interceptor/prompt-file-exception.interceptor.js';
 import { PromptStagedFileCleanupInterceptor } from '../../src/domain/prompt/interceptor/prompt-staged-file-cleanup.interceptor.js';
 import { ParseAnalyzeQueryPipe } from '../../src/domain/prompt/pipe/parse-analyze-query.pipe.js';
 import { ParseFileDownloadBodyPipe } from '../../src/domain/prompt/pipe/parse-file-download-body.pipe.js';
-import { ParseNerCallbackPipe } from '../../src/domain/prompt/pipe/parse-ner-callback.pipe.js';
 import { ParseOptionalPromptFileFieldPipe } from '../../src/domain/prompt/pipe/parse-optional-prompt-file-field.pipe.js';
+import { ParsePromptListQueryPipe } from '../../src/domain/prompt/pipe/parse-prompt-list-query.pipe.js';
 import { ParsePrePromptJsonPipe } from '../../src/domain/prompt/pipe/parse-pre-prompt-json.pipe.js';
 import { PromptService } from '../../src/domain/prompt/service/prompt.service.js';
 import { UserController } from '../../src/domain/user/controller/user.controller.js';
 import { UserService } from '../../src/domain/user/service/user.service.js';
-import { NerConfig } from '../../src/global/ner/config/ner.config.js';
 import { RefreshTokenGuard } from '../../src/global/security/guard/refresh-token.guard.js';
 import { JwtTokenService } from '../../src/global/security/service/jwt-token.service.js';
 import { MinioObjectStorageService } from '../../src/global/storage/service/minio-object-storage.service.js';
@@ -80,6 +77,13 @@ const EXPECTED_OPERATIONS: readonly ExpectedOperation[] = [
     path: '/api/v1/analyze',
     summary: '분석 여부 확인',
     operationId: 'PromptController_checkAnalysisStatus',
+    tag: '프롬프트',
+  },
+  {
+    method: 'delete',
+    path: '/api/v1/analyze',
+    summary: '분석 취소',
+    operationId: 'PromptController_cancelAnalysis',
     tag: '프롬프트',
   },
   {
@@ -167,6 +171,48 @@ const EXPECTED_OPERATIONS: readonly ExpectedOperation[] = [
     tag: '관리자',
   },
   {
+    method: 'post',
+    path: '/admin/v1/departments/{departmentId}/users',
+    summary: '부서-사용자 연동',
+    operationId: 'AdminController_linkDepartmentUsers',
+    tag: '관리자',
+  },
+  {
+    method: 'get',
+    path: '/admin/v1/departments/me/api-key',
+    summary: '부서 API 키 조회',
+    operationId: 'AdminController_getDepartmentApiKey',
+    tag: '관리자',
+  },
+  {
+    method: 'get',
+    path: '/admin/v1/policies',
+    summary: '보안 정책 목록 조회',
+    operationId: 'AdminController_getPolicyCatalog',
+    tag: '관리자',
+  },
+  {
+    method: 'put',
+    path: '/admin/v1/policies',
+    summary: '보안 정책 동기화',
+    operationId: 'AdminController_syncGlobalPolicies',
+    tag: '관리자',
+  },
+  {
+    method: 'get',
+    path: '/admin/v1/health',
+    summary: '시스템 상태 요약 조회',
+    operationId: 'AdminController_getSystemHealth',
+    tag: '관리자',
+  },
+  {
+    method: 'get',
+    path: '/admin/v1/llms/health',
+    summary: '모델 상태 조회',
+    operationId: 'AdminController_getLlmHealth',
+    tag: '관리자',
+  },
+  {
     method: 'put',
     path: '/admin/v1/departments/{departmentId}/policies',
     summary: '부서 정책 전체 교체',
@@ -230,13 +276,6 @@ const EXPECTED_OPERATIONS: readonly ExpectedOperation[] = [
     tag: '관리자',
   },
   {
-    method: 'get',
-    path: '/admin/v1/departments/{departmentId}/roles',
-    summary: '직책 조회(대체될 가능성 높음)',
-    operationId: 'AdminController_getDepartmentRoles',
-    tag: '관리자',
-  },
-  {
     method: 'post',
     path: '/admin/v1/departments',
     summary: '부서 생성',
@@ -279,6 +318,13 @@ const EXPECTED_OPERATIONS: readonly ExpectedOperation[] = [
     tag: '관리자',
   },
   {
+    method: 'post',
+    path: '/admin/v1/users/batch',
+    summary: '사용자 일괄 생성',
+    operationId: 'AdminController_createUsersBatch',
+    tag: '관리자',
+  },
+  {
     method: 'get',
     path: '/admin/v1/department-risks',
     summary: '부서별 위험 분포 조회',
@@ -313,32 +359,12 @@ const EXPECTED_OPERATIONS: readonly ExpectedOperation[] = [
     operationId: 'AdminController_getOperationalStatus',
     tag: '관리자',
   },
-  {
-    method: 'get',
-    path: '/admin/v1/trends',
-    summary: 'LLM 이용 및 필터 감지 추이 조회',
-    operationId: 'AdminController_getLlmUsageAndFilterDetectionTrends',
-    tag: '관리자',
-  },
 ] as const;
 
 const IN_PROGRESS_OPERATION_IDS: ReadonlySet<string> = new Set([
   'PromptController_requestMaskingElementDetection',
-  'PromptController_sendToLlm',
-  'PromptController_checkLlmResult',
-  'AdminController_getUserAccountDetail',
-  'AdminController_deactivateUserAccount',
-  'AdminController_restoreUserAccount',
-  'AdminController_getDepartmentRoles',
-  'AdminController_createDepartment',
-  'AdminController_getAllChatLogSummary',
-  'AdminController_getChatLogUserList',
-  'AdminController_getUserPromptList',
-  'AdminController_getPromptDetail',
-  'AdminController_createUser',
-  'AdminController_getUserAccountSummary',
-  'AdminController_getLlmUsageAndFilterDetectionTrends',
   'AdminController_updateUserInformation',
+  'AdminController_createUsersBatch',
 ]);
 
 const HTTP_METHODS: readonly HttpMethod[] = [
@@ -358,7 +384,6 @@ describe('Swagger와 Notion API 명세 정합성', () => {
       controllers: [
         AdminController,
         AuthController,
-        NerCallbackController,
         PromptController,
         UserController,
       ],
@@ -367,14 +392,12 @@ describe('Swagger와 Notion API 명세 정합성', () => {
         { provide: AuthService, useValue: {} },
         { provide: JwtTokenService, useValue: {} },
         { provide: MinioObjectStorageService, useValue: {} },
-        { provide: NerConfig, useValue: { callbackSecret: 'test-secret' } },
         { provide: PromptService, useValue: {} },
         { provide: UserService, useValue: {} },
-        NerCallbackGuard,
         ParseAnalyzeQueryPipe,
         ParseFileDownloadBodyPipe,
-        ParseNerCallbackPipe,
         ParseOptionalPromptFileFieldPipe,
+        ParsePromptListQueryPipe,
         ParsePrePromptJsonPipe,
         PromptFileExceptionInterceptor,
         PromptStagedFileCleanupInterceptor,
@@ -415,7 +438,7 @@ describe('Swagger와 Notion API 명세 정합성', () => {
       EXPECTED_OPERATIONS.map(({ operationId }) => operationId),
     );
 
-    expect(IN_PROGRESS_OPERATION_IDS.size).toBe(16);
+    expect(IN_PROGRESS_OPERATION_IDS.size).toBe(3);
     for (const operationId of IN_PROGRESS_OPERATION_IDS) {
       expect(knownOperationIds.has(operationId)).toBe(true);
     }
@@ -437,6 +460,20 @@ describe('Swagger와 Notion API 명세 정합성', () => {
       required: false,
     });
 
+    const messageHistory = document.paths['/api/v1/messages']?.get;
+    const recentQuery = (messageHistory?.parameters ?? []).find(
+      (parameter) => !('$ref' in parameter) && parameter.name === 'recent',
+    );
+    expect(recentQuery).toMatchObject({
+      name: 'recent',
+      in: 'query',
+      required: true,
+      schema: {
+        example: '7d',
+        enum: ['7d', '30d', '90d', 'all'],
+      },
+    });
+
     const apiKeyRequest = document.components?.schemas
       ?.AdminRegisterApiKeyRequest as {
         properties?: Record<string, { enum?: string[] }>;
@@ -445,6 +482,24 @@ describe('Swagger와 Notion API 명세 정합성', () => {
       'Claude',
       'GPT',
       'Gemini',
+    ]);
+
+    const createUserRequest = document.components?.schemas
+      ?.AdminCreateUserRequest as {
+        properties?: Record<string, unknown>;
+        required?: string[];
+      };
+    expect(Object.keys(createUserRequest.properties ?? {})).toEqual([
+      'name',
+      'email',
+      'password',
+      'authorize',
+    ]);
+    expect(createUserRequest.required).toEqual([
+      'name',
+      'email',
+      'password',
+      'authorize',
     ]);
 
     const apiKeyResponse = document.components?.schemas
@@ -457,14 +512,50 @@ describe('Swagger와 Notion API 명세 정합성', () => {
       'Gemini',
     ]);
 
+    const systemHealth = document.components?.schemas
+      ?.AdminSystemHealthResponse as {
+        properties?: Record<string, { enum?: string[] }>;
+        required?: string[];
+      };
+    expect(Object.keys(systemHealth.properties ?? {})).toEqual([
+      'totalSystemHealth',
+      'outboundLLM',
+      'inboundLLM',
+      'securityFiltering',
+      'database',
+      'storage',
+      'monitoring',
+    ]);
+    expect(systemHealth.required).toEqual([
+      'totalSystemHealth',
+      'outboundLLM',
+      'inboundLLM',
+      'securityFiltering',
+      'database',
+      'storage',
+      'monitoring',
+    ]);
+    expect(systemHealth.properties?.totalSystemHealth?.enum).toEqual([
+      '정상', '지연', '오류', '점검',
+    ]);
+
     const policyRequest = document.components?.schemas
-      ?.AdminSyncPoliciesRequest as {
+      ?.AdminSyncGlobalPoliciesRequest as {
         properties?: Record<string, {
           type?: string;
           enum?: string[];
           items?: { enum?: string[] };
         }>;
+        required?: string[];
       };
+    expect(Object.keys(policyRequest.properties ?? {})).toEqual([
+      'presetName',
+      'policies',
+    ]);
+    expect(policyRequest.required).toEqual(['presetName']);
+    expect(policyRequest.properties?.presetName).toMatchObject({
+      type: 'string',
+    });
     expect(policyRequest.properties?.policies?.type).toBe('array');
     expect(
       policyRequest.properties?.policies?.items?.enum
@@ -523,12 +614,9 @@ describe('Swagger와 Notion API 명세 정합성', () => {
     expect(departmentItem.properties?.outbound).toMatchObject({
       enum: ['허용', '불가'],
     });
-    expect(departmentItem.properties?.canUseLLMModel).toMatchObject({
-      nullable: true,
-    });
     expect(departmentItem.properties?.departLimitUsd).toMatchObject({
       type: 'number',
-      description: expect.stringContaining('0이면 무제한'),
+      description: expect.stringContaining('부서 공통 한도'),
     });
     expect(departmentItem.properties?.departUseUsd).toMatchObject({
       type: 'number',
@@ -542,7 +630,6 @@ describe('Swagger와 Notion API 명세 정합성', () => {
     expect(Object.keys(departmentDetail.properties ?? {})).toEqual([
       'departmentName',
       'departmentAdminName',
-      'departmentAdminRole',
       'departmentAdminAuthorize',
       'email',
       'userCnt',
@@ -557,13 +644,13 @@ describe('Swagger와 Notion API 명세 정합성', () => {
     expect(departmentDetail.properties?.departmentAdminName).toMatchObject({
       nullable: true,
     });
-    expect(departmentDetail.properties?.departmentAdminRole).toMatchObject({
-      nullable: true,
-    });
     expect(departmentDetail.properties?.departmentAdminAuthorize).toMatchObject({
       nullable: true,
     });
     expect(departmentDetail.properties?.email).toMatchObject({
+      nullable: true,
+    });
+    expect(departmentDetail.properties?.policies).toMatchObject({
       nullable: true,
     });
     expect(departmentDetail.properties?.usePercent).toMatchObject({
@@ -581,7 +668,6 @@ describe('Swagger와 Notion API 명세 정합성', () => {
     expect(departmentDetail.required).toEqual([
       'departmentName',
       'departmentAdminName',
-      'departmentAdminRole',
       'departmentAdminAuthorize',
       'email',
       'userCnt',
@@ -617,6 +703,40 @@ describe('Swagger와 Notion API 명세 정합성', () => {
     expect(syncPoliciesResponse.required).toEqual([
       'targetDepartment',
       'policies',
+    ]);
+
+    const promptDetail = document.components?.schemas
+      ?.PromptDetail as {
+        properties?: Record<string, unknown>;
+        required?: string[];
+      };
+    expect(Object.keys(promptDetail.properties ?? {})).toEqual([
+      'name',
+      'department',
+      'email',
+      'limit',
+      'usage',
+      'usagePercent',
+      'promptedAt',
+      'detectCnt',
+      'maskingCnt',
+      'originalText',
+      'sendText',
+      'detect',
+    ]);
+    expect(promptDetail.required).toEqual([
+      'name',
+      'department',
+      'email',
+      'limit',
+      'usage',
+      'usagePercent',
+      'promptedAt',
+      'detectCnt',
+      'maskingCnt',
+      'originalText',
+      'sendText',
+      'detect',
     ]);
 
     const departmentListResponse = document.components?.schemas
@@ -677,7 +797,6 @@ describe('Swagger와 Notion API 명세 정합성', () => {
       'email',
       'department',
       'authorize',
-      'lastLoginAt',
       'status',
     ]);
     expect(userItem.required).toEqual([
@@ -686,17 +805,55 @@ describe('Swagger와 Notion API 명세 정합성', () => {
       'email',
       'department',
       'authorize',
-      'lastLoginAt',
       'status',
     ]);
     expect(userItem.properties?.authorize?.enum).toEqual([
       '일반 사용자',
       '부서 관리자',
-      '총괄 관리자',
+      '총 관리자',
     ]);
     expect(userItem.properties?.status?.enum).toEqual(['활성', '비활성']);
     expect(userItem.properties?.department?.nullable).toBe(true);
-    expect(userItem.properties?.lastLoginAt?.format).toBe('date-time');
+
+    const userPromptOverviewItem = document.components?.schemas
+      ?.UserPromptOverviewItem as {
+        properties?: Record<string, { type?: string }>;
+        required?: string[];
+      };
+    expect(Object.keys(userPromptOverviewItem.properties ?? {})).toEqual([
+      'userId',
+      'name',
+      'department',
+      'usage',
+      'limit',
+    ]);
+    expect(userPromptOverviewItem.required).toEqual([
+      'userId',
+      'name',
+      'department',
+      'usage',
+      'limit',
+    ]);
+
+    const userPromptListItem = document.components?.schemas
+      ?.UserPromptListItem as {
+        properties?: Record<string, { type?: string }>;
+        required?: string[];
+      };
+    expect(Object.keys(userPromptListItem.properties ?? {})).toEqual([
+      'promptId',
+      'promptSummary',
+      'promptedAt',
+      'model',
+      'usage',
+    ]);
+    expect(userPromptListItem.required).toEqual([
+      'promptId',
+      'promptSummary',
+      'promptedAt',
+      'model',
+      'usage',
+    ]);
 
     const userInfo = document.components?.schemas?.UserInfoResponse as {
       properties?: Record<string, { type?: string }>;
@@ -706,7 +863,7 @@ describe('Swagger와 Notion API 명세 정합성', () => {
       'email',
       'name',
       'department',
-      'role',
+      'authorize',
       'filter',
       'personalLimitRate',
       'departmentLimitRate',
@@ -715,7 +872,7 @@ describe('Swagger와 Notion API 명세 정합성', () => {
       'email',
       'name',
       'department',
-      'role',
+      'authorize',
       'filter',
       'personalLimitRate',
       'departmentLimitRate',
@@ -753,7 +910,42 @@ describe('Swagger와 Notion API 명세 정합성', () => {
     expect(chatRoomId.required).not.toBe(false);
   });
 
-  it('노션에 없는 내부·레거시 API를 공개 Swagger에서 제외한다', () => {
+  it('분석 결과는 탐지 여부별 v3 응답과 단일 파일 객체를 노출한다', () => {
+    const analysisOperation = document.paths['/api/v1/analyze']?.get;
+    const successResponse = analysisOperation?.responses?.['200'] as {
+      content?: Record<string, { schema?: unknown }>;
+    } | undefined;
+    const responseSchema = successResponse?.content?.['application/json']
+      ?.schema as {
+        properties?: Record<string, {
+          oneOf?: unknown[];
+          nullable?: boolean;
+        }>;
+      };
+    const result = responseSchema.properties?.result;
+
+    expect(result).toMatchObject({ nullable: true });
+    expect(result?.oneOf).toEqual([
+      { $ref: '#/components/schemas/PromptAnalyzeResponse' },
+      { $ref: '#/components/schemas/PromptAnalyzeNoDetectionResponse' },
+    ]);
+
+    const noDetection = document.components?.schemas
+      ?.PromptAnalyzeNoDetectionResponse as {
+        properties?: Record<string, unknown>;
+        required?: string[];
+      };
+    expect(Object.keys(noDetection.properties ?? {})).toEqual(['recentDetectCnt']);
+    expect(noDetection.required).toEqual(['recentDetectCnt']);
+
+    const masking = document.components?.schemas?.Masking as {
+      properties?: Record<string, { type?: string; nullable?: boolean }>;
+    };
+    expect(masking.properties?.file).toMatchObject({ nullable: true });
+    expect(masking.properties?.file?.type).not.toBe('array');
+  });
+
+  it('노션에 없는 API를 Swagger에 노출하지 않는다', () => {
     const actualOperations = Object.entries(document.paths)
       .flatMap(([path, pathItem]) =>
         HTTP_METHODS.flatMap((method) =>
@@ -766,8 +958,9 @@ describe('Swagger와 Notion API 명세 정합성', () => {
       .sort();
 
     expect(actualOperations).toEqual(expectedOperations);
-    expect(document.paths['/internal/v1/ner/callback']).toBeUndefined();
+    expect(document.paths['/admin/v1/departments/{departmentId}/roles']).toBeUndefined();
     expect(document.paths['/admin/v1/logs']).toBeUndefined();
     expect(document.paths['/admin/v1/logs/{logId}']).toBeUndefined();
+    expect(document.paths['/admin/v1/trends']).toBeUndefined();
   });
 });

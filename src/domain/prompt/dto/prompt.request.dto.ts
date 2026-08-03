@@ -51,6 +51,9 @@ export namespace PromptReqDTO {
         ticket!: string;
     }
 
+    @ApiSchema({ name: 'PromptCancelAnalyzeRequest' })
+    export class CancelAnalyze extends Analyze {}
+
     export class LlmRequest {
         @ApiProperty({
             example: 'a81cc17e-e10a-46ae-8113-dceffb932d6c',

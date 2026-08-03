@@ -65,6 +65,15 @@ export class MinioObjectStorageService {
     return this.config.bucket;
   }
 
+  /** 설정된 버킷에 요청을 보내 MinIO 연결·인증 상태를 확인합니다. */
+  async isHealthy(): Promise<boolean> {
+    try {
+      return await this.client.bucketExists(this.config.bucket);
+    } catch {
+      return false;
+    }
+  }
+
   /**
    * DB에 장기 보관할 MinIO 객체 위치를 반환합니다.
    * 만료되는 presigned URL은 전송 시점에만 별도로 발급합니다.
@@ -211,6 +220,11 @@ export class MinioObjectStorageService {
       objectKey,
       versionId === undefined ? undefined : { versionId },
     );
+  }
+
+  async getObject(objectKey: string): Promise<Readable> {
+    this.assertObjectKey(objectKey);
+    return this.client.getObject(this.config.bucket, objectKey);
   }
 
   async removeIncompleteUpload(objectKey: string): Promise<void> {

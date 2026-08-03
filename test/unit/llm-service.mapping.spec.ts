@@ -2,8 +2,10 @@ import { LlmProvider } from '../../src/global/llm/enum/llm-provider.enum.js';
 import { LlmService } from '../../src/global/llm/enum/llm-service.enum.js';
 import {
   getLlmServiceDescriptor,
+  isLocalLlmModelName,
   normalizeLlmService,
   resolveLlmServiceFromModelName,
+  toLocalLlmModelName,
 } from '../../src/global/llm/llm-service.mapping.js';
 
 describe('LLM 외부 서비스와 내부 provider 매핑', () => {
@@ -28,6 +30,24 @@ describe('LLM 외부 서비스와 내부 provider 매핑', () => {
       });
     },
   );
+
+  it.each([
+    ['Qwen2.5-7B-Instruct', 'local-Qwen2.5-7B-Instruct'],
+    [' local-Qwen2.5-7B-Instruct ', 'local-Qwen2.5-7B-Instruct'],
+    ['LOCAL-Llama-3.1', 'local-Llama-3.1'],
+  ])('%s 로컬 모델명을 %s로 정규화한다', (modelName, expected) => {
+    expect(toLocalLlmModelName(modelName)).toBe(expected);
+  });
+
+  it.each(['local-Qwen2.5-7B-Instruct', 'LOCAL-Llama-3.1'])
+  ('%s을 로컬 LLM 모델로 판별한다', (modelName) => {
+    expect(isLocalLlmModelName(modelName)).toBe(true);
+  });
+
+  it.each(['local-', 'Local LLM', 'gpt-5.5', '', null])
+  ('%p을 로컬 LLM 모델로 허용하지 않는다', (modelName) => {
+    expect(isLocalLlmModelName(modelName)).toBe(false);
+  });
 
   it.each([
     ['Gemini 2.5 Pro', LlmService.GEMINI],

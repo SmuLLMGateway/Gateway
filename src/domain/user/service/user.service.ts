@@ -7,7 +7,6 @@ import { In, IsNull, MoreThanOrEqual, Not, Repository } from 'typeorm';
 import { MemberDAO } from '../dao/member.dao.js';
 import { MemberDepartmentDAO } from '../dao/member-department.dao.js';
 import { DepartmentDAO } from '../../admin/dao/department.dao.js';
-import { ActiveApiKeyDAO } from '../../admin/dao/active-api-key.dao.js';
 import { MaskingDetailDAO } from '../../prompt/dao/masking-detail.dao.js';
 import { PromptLogDAO } from '../../prompt/dao/prompt-log.dao.js';
 import type { AuthenticatedUser } from '../../../global/security/type/jwt-payload.type.js';
@@ -15,6 +14,8 @@ import { AuthException } from '../../auth/exception/auth.exception.js';
 import { AuthErrorStatus } from '../../auth/code/auth.status.js';
 import { UserRole } from '../../../global/security/type/user-role.enum.js';
 import { MemberLimitDAO } from '../dao/member-limit.dao.js';
+import { UserErrorStatus } from '../code/user.status.js';
+import { UserException } from '../exception/user.exception.js';
 
 @Injectable()
 export class UserService {
@@ -27,8 +28,6 @@ export class UserService {
     private readonly departmentRepository: Repository<DepartmentDAO>,
     @InjectRepository(MemberLimitDAO)
     private readonly memberLimitRepository: Repository<MemberLimitDAO>,
-    @InjectRepository(ActiveApiKeyDAO)
-    private readonly activeApiKeyRepository: Repository<ActiveApiKeyDAO>,
     @InjectRepository(PromptLogDAO)
     private readonly promptLogRepository: Repository<PromptLogDAO>,
     @InjectRepository(MaskingDetailDAO)
@@ -45,26 +44,28 @@ export class UserService {
       select: { departmentId: true },
       where: { memberId: String(authentication.userId) },
     });
-    if (member === null || membership === null) {
+    if (member === null) {
       throw new AuthException(AuthErrorStatus.USER_NOT_FOUND);
     }
 
-    const department = await this.departmentRepository.findOneBy({
-      departmentId: membership.departmentId,
-    });
-    if (department === null) {
+    if (membership === null && member.authorize !== UserRole.TOTAL_ADMIN) {
+      throw new AuthException(AuthErrorStatus.USER_NOT_FOUND);
+    }
+
+    const department = membership === null
+      ? null
+      : await this.departmentRepository.findOneBy({
+        departmentId: membership.departmentId,
+      });
+    if (membership !== null && department === null) {
       throw new AuthException(AuthErrorStatus.USER_NOT_FOUND);
     }
 
     const monthStart = this.getCurrentMonthStart();
-    const [memberLimits, activeApiKeys, promptLogs] = await Promise.all([
+    const [memberLimits, promptLogs] = await Promise.all([
       this.memberLimitRepository.find({
         select: { usage: true },
         where: { memberId: String(authentication.userId) },
-      }),
-      this.activeApiKeyRepository.find({
-        select: { usage: true },
-        where: { departmentId: membership.departmentId },
       }),
       this.promptLogRepository.find({
         select: {
@@ -90,11 +91,11 @@ export class UserService {
     return {
       email: member.email,
       name: member.memberName,
-      department: department.departmentName,
-      role: this.toRoleName(member.authorize),
+      department: department?.departmentName ?? null,
+      authorize: this.toRoleName(member.authorize),
       filter: new Set(detectedReports.map(({ maskingReportId }) => maskingReportId)).size,
       personalLimitRate: this.sumUsages(memberLimits),
-      departmentLimitRate: this.sumUsages(activeApiKeys),
+      departmentLimitRate: Number(department?.usage ?? 0),
     };
   }
 
@@ -156,6 +157,8 @@ export class UserService {
     const since = this.toMessageHistorySince(dto.recent);
     const [promptLogs, totalCnt] = await this.promptLogRepository.findAndCount({
       select: {
+        // 관계 조회 + 페이지네이션에서 TypeORM이 만드는 DISTINCT 정렬 쿼리에는
+        // 정렬 키가 SELECT에 포함되어야 합니다. 응답에는 maskingReportId만 반환합니다.
         promptLogId: true,
         promptSummary: true,
         communicatedAt: true,
@@ -193,10 +196,10 @@ export class UserService {
 
     return {
       data: promptLogs.map((promptLog) => ({
-        promptId: promptLog.promptLogId,
+        promptId: promptLog.maskingReportId,
         promptSummary: promptLog.promptSummary,
         promptedAt: this.toDateTimeString(promptLog.communicatedAt),
-        llmModel: promptLog.modelType ?? '',
+        llmModel: promptLog.modelType,
         detectCnt: detectCntByReportId.get(promptLog.maskingReportId) ?? 0,
       })),
       totalCnt,
@@ -223,13 +226,18 @@ export class UserService {
   }
 
   private toMessageHistorySince(recent: string): Date | null {
-    const days = recent === '7일전'
+    const days = recent === '7d'
       ? 7
-      : recent === '30일전'
+      : recent === '30d'
         ? 30
-        : recent === '90일전'
+        : recent === '90d'
           ? 90
-          : null;
+          : recent === 'all'
+            ? null
+            : undefined;
+    if (days === undefined) {
+      throw new UserException(UserErrorStatus.INVALID_MESSAGE_LIST);
+    }
     if (days === null) {
       return null;
     }

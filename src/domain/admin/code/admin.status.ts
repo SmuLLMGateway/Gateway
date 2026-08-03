@@ -7,11 +7,6 @@ export const AdminSuccessStatus = {
         code: 'ADMIN200_1',
         message: '성공적으로 운영 현황을 조회했습니다.'
     },
-    TRENDS: {
-        httpStatus: HttpStatus.OK,
-        code: 'ADMIN200_2',
-        message: '성공적으로 이용 및 감지 추이를 조회했습니다.'
-    },
     ADMIN_LOGS: {
         httpStatus: HttpStatus.OK,
         code: 'ADMIN200_3',
@@ -92,20 +87,35 @@ export const AdminSuccessStatus = {
         code: 'ADMIN200_18',
         message: '성공적으로 부서 상세정보를 조회했습니다.'
     },
-    LEGACY_LOG_LIST: {
-        httpStatus: HttpStatus.OK,
-        code: 'ADMIN200_13',
-        message: '성공적으로 이용 기록 목록을 조회했습니다.'
-    },
-    LEGACY_LOG_DETAIL: {
-        httpStatus: HttpStatus.OK,
-        code: 'ADMIN200_14',
-        message: '성공적으로 이용 기록 상세 정보를 조회했습니다.'
-    },
     SYNC_POLICIES: {
         httpStatus: HttpStatus.OK,
         code: 'ADMIN200_19',
         message: '성공적으로 부서 정책을 동기화했습니다.'
+    },
+    DEPARTMENT_API_KEY: {
+        httpStatus: HttpStatus.OK,
+        code: 'ADMIN200_20',
+        message: '성공적으로 부서 API키를 조회했습니다.'
+    },
+    POLICY_CATALOG: {
+        httpStatus: HttpStatus.OK,
+        code: 'ADMIN200_21',
+        message: '성공적으로 보안 정책 목록을 조회했습니다.'
+    },
+    SYNC_GLOBAL_POLICIES: {
+        httpStatus: HttpStatus.OK,
+        code: 'ADMIN200_22',
+        message: '성공적으로 보안 정책을 동기화했습니다.'
+    },
+    SYSTEM_HEALTH: {
+        httpStatus: HttpStatus.OK,
+        code: 'ADMIN200_23',
+        message: '성공적으로 시스템 상태를 조회했습니다.'
+    },
+    LLM_HEALTH: {
+        httpStatus: HttpStatus.OK,
+        code: 'ADMIN200_24',
+        message: '성공적으로 모델 상태를 조회했습니다.'
     },
     CREATE_USER: {
         httpStatus: HttpStatus.CREATED,
@@ -121,6 +131,16 @@ export const AdminSuccessStatus = {
         httpStatus: HttpStatus.CREATED,
         code: 'ADMIN201_3',
         message: '성공적으로 부서에 API키를 생성했습니다.'
+    },
+    CREATE_USERS_BATCH: {
+        httpStatus: HttpStatus.CREATED,
+        code: 'ADMIN201_4',
+        message: '성공적으로 사용자를 일괄 생성했습니다.'
+    },
+    LINK_DEPARTMENT_USERS: {
+        httpStatus: HttpStatus.CREATED,
+        code: 'ADMIN201_5',
+        message: '성공적으로 부서에 사용자를 연동했습니다.'
     }
 } as const satisfies Record<string, BaseStatus>;
 
@@ -180,11 +200,6 @@ export const AdminErrorStatus = {
         code: 'ADMIN400_11',
         message: '부서 목록 조회 조건이 올바르지 않습니다.'
     },
-    LOG_NOT_FOUND: {
-        httpStatus: HttpStatus.NOT_FOUND,
-        code: 'ADMIN404_1',
-        message: '해당 이용기록이 존재하지 않습니다.'
-    },
     DEPARTMENT_NOT_FOUND: {
         httpStatus: HttpStatus.NOT_FOUND,
         code: 'ADMIN404_2',
@@ -194,5 +209,25 @@ export const AdminErrorStatus = {
         httpStatus: HttpStatus.NOT_FOUND,
         code: 'ADMIN404_3',
         message: '해당 부서 정책이 존재하지 않습니다.'
+    },
+    API_KEY_NOT_FOUND: {
+        httpStatus: HttpStatus.NOT_FOUND,
+        code: 'ADMIN404_4',
+        message: '해당 부서의 API 키가 존재하지 않습니다.'
+    },
+    NOT_IMPLEMENTED: {
+        httpStatus: HttpStatus.NOT_IMPLEMENTED,
+        code: 'ADMIN501_1',
+        message: '아직 구현되지 않은 API입니다.'
+    },
+    INVALID_USER_IDS: {
+        httpStatus: HttpStatus.BAD_REQUEST,
+        code: 'ADMIN400_12',
+        message: '사용자 ID 목록이 올바르지 않습니다.'
+    },
+    NO_LINKABLE_USERS: {
+        httpStatus: HttpStatus.BAD_REQUEST,
+        code: 'ADMIN400_13',
+        message: '연동 가능한 사용자가 없습니다.'
     }
 } as const satisfies Record<string, BaseStatus>;

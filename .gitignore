@@ -1,6 +1,7 @@
 .DS_Store
 .env
 .env.docker
+.env.ec2
 dist/
 build/
 .idea/
