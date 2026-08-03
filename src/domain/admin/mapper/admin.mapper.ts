@@ -5,6 +5,7 @@ import { AdminResDTO } from '../dto/admin.response.dto.js';
 import { AdminData } from '../data/admin.data.js';
 import { OffsetPageData } from '../../../global/data/offset-page.data.js';
 import { ActiveApiKeyDAO } from '../dao/active-api-key.dao.js';
+import { LOCAL_LLM_MODEL } from '../../../global/llm/llm-service.mapping.js';
 import { AdminLogDAO } from '../dao/admin-log.dao.js';
 import { DepartmentDAO } from '../dao/department.dao.js';
 import {
@@ -12,6 +13,7 @@ import {
   getSecurityPolicyClassDisplayName,
   getSecurityPolicyDisplayName,
 } from '../policy/security-policy.catalog.js';
+import { toKoreaStandardTimeISOString } from '../../../global/time/korea-standard-time.js';
 
 @Injectable()
 export class AdminMapper {
@@ -45,6 +47,15 @@ export class AdminMapper {
     });
   }
 
+  /** Local LLM은 외부 Provider API 키와 달리 별도 키 없이 부서별 권한만 둡니다. */
+  toLocalLlmActiveApiKeyDAO(departmentId: string): ActiveApiKeyDAO {
+    return this.activeApiKeyRepository.create({
+      apiKey: null,
+      serviceType: LOCAL_LLM_MODEL,
+      departmentId,
+    });
+  }
+
   toAdminLogDAO(data: Readonly<AdminData.CreateAdminLog>): AdminLogDAO {
     return this.adminLogRepository.create({
       logContent: data.logContent,
@@ -66,7 +77,8 @@ export class AdminMapper {
     data: Readonly<AdminData.CreateDepartmentResult>,
   ): AdminResDTO.CreateDepartment {
     return {
-      name: data.name,
+      departmentId: Number(data.departmentId),
+      departmentName: data.departmentName,
       createdAt: this.toDateTimeString(data.createdAt),
     };
   }
@@ -152,6 +164,7 @@ export class AdminMapper {
   static toPolicyPresetList(
     presets: readonly Readonly<{
       name: string | null;
+      isActive: boolean;
       presetPolicies?: readonly Readonly<{
         policy: Readonly<{ maskingContent: string }>;
       }>[];
@@ -159,6 +172,7 @@ export class AdminMapper {
   ): AdminResDTO.PolicyPreset[] {
     return presets.map((preset) => ({
       presetName: preset.name ?? '',
+      isActive: preset.isActive,
       policies: (preset.presetPolicies ?? []).map(({ policy }) =>
         getSecurityPolicyDisplayName(policy.maskingContent)),
     }));
@@ -298,6 +312,6 @@ export class AdminMapper {
   }
 
   private static toDateTimeString(value: Date | string): string {
-    return value instanceof Date ? value.toISOString() : value;
+    return toKoreaStandardTimeISOString(value);
   }
 }

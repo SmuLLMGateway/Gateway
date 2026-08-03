@@ -8,7 +8,6 @@ import {
 } from '../../../domain/admin/policy/security-policy.catalog.js';
 import { DEFAULT_LLM_DETAIL_MODELS } from '../seed/master-data.seed.js';
 import { NerClient } from '../../ner/client/ner.client.js';
-import type { NerLlmDeployment } from '../../ner/type/ner-llm-deployment.type.js';
 import { toLocalLlmModelName } from '../../llm/llm-service.mapping.js';
 
 /**
@@ -65,18 +64,17 @@ export class MasterDataSeedService implements OnApplicationBootstrap {
   }
 
   private async getLocalLlmModelNames(): Promise<readonly string[]> {
-    let deployments: readonly NerLlmDeployment[];
+    let modelNames: readonly string[];
 
     try {
-      deployments = await this.nerClient.getLlmDeployments();
+      modelNames = await this.nerClient.getEnabledLlmModelNames();
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : '알 수 없는 오류';
-      this.logger.warn(`NER 로컬 LLM 모델 조회에 실패했습니다: ${message}`);
+      this.logger.warn(`LPL 로컬 LLM 모델 조회에 실패했습니다: ${message}`);
       return [];
     }
 
-    return [...new Set(deployments.flatMap((deployment) => {
-      const modelName = (deployment.modelId ?? deployment.displayName).trim();
+    return [...new Set(modelNames.flatMap((modelName) => {
       const localModelName = toLocalLlmModelName(modelName);
       return localModelName === null ? [] : [localModelName];
     }))];

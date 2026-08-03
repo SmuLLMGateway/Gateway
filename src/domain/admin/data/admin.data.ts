@@ -7,7 +7,8 @@ export namespace AdminData {
   }
 
   export interface CreateDepartmentResult {
-    name: string;
+    departmentId: string;
+    departmentName: string;
     createdAt: Date | string;
   }
 

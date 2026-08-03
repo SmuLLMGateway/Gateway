@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { HttpStatus, Injectable, Optional } from '@nestjs/common';
 import {
   DataSource,
   In,
@@ -28,7 +28,7 @@ import { SecurityErrorStatus } from '../../../global/security/code/security.stat
 import { AuthException } from '../../auth/exception/auth.exception.js';
 import { AuthErrorStatus } from '../../auth/code/auth.status.js';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Repository, type EntityManager } from 'typeorm';
 import { ActiveApiKeyDAO } from '../dao/active-api-key.dao.js';
 import { ActiveLlmDAO } from '../dao/active-llm.dao.js';
 import { LlmDetailModelDAO } from '../dao/llm-detail-model.dao.js';
@@ -38,7 +38,9 @@ import { LlmService } from '../../../global/llm/enum/llm-service.enum.js';
 import {
   getLlmServiceDescriptor,
   LOCAL_LLM_MODEL,
+  LOCAL_LLM_MODEL_PREFIX,
   normalizeLlmService,
+  toLocalLlmModelName,
 } from '../../../global/llm/llm-service.mapping.js';
 import { ApiKeyEncryptionService } from '../../../global/llm/service/api-key-encryption.service.js';
 import { MaskingClass, PolicyDAO } from '../dao/policy.dao.js';
@@ -66,7 +68,26 @@ import {
 } from '../dao/health-history.dao.js';
 import { MinioObjectStorageService } from '../../../global/storage/service/minio-object-storage.service.js';
 import { NerConfig } from '../../../global/ner/config/ner.config.js';
+import { NerClient } from '../../../global/ner/client/ner.client.js';
+import { NerRequestException } from '../../../global/ner/exception/ner-request.exception.js';
+import type {
+  NerDeploymentDetail,
+  NerDeploymentSummary,
+} from '../../../global/ner/type/ner-deployment-summary.type.js';
+import type { NerLlmDeploymentDetail } from '../../../global/ner/type/ner-llm-deployment.type.js';
+import {
+  LLM_ADAPTER_TYPES,
+  NER_ADAPTER_TYPES,
+  type LlmAdapterType,
+  type LlmDeploymentCreateRequest,
+  type NerAdapterType,
+  type NerDeploymentCreateRequest,
+} from '../../../global/ner/type/ner-deployment-registration.type.js';
 import { ProviderConfig } from '../../../global/llm/config/provider.config.js';
+import {
+  toKoreaStandardTimeDateString,
+  toKoreaStandardTimeISOString,
+} from '../../../global/time/korea-standard-time.js';
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const DEFAULT_PROFILE_URL = '';
@@ -81,6 +102,10 @@ const INITIAL_PAGE_NUMBER = 1;
 const MAX_DEPARTMENT_LIST_PAGE_SIZE = 100;
 const MAX_DEPARTMENT_NAME_LENGTH = 255;
 const MAX_DEPARTMENT_CODE_LENGTH = 10;
+const MAX_LOCAL_DEPLOYMENT_TEXT_LENGTH = 255;
+const MAX_LOCAL_DEPLOYMENT_URL_LENGTH = 2_048;
+const MAX_LOCAL_DEPLOYMENT_TIMEOUT_MS = 3_600_000;
+const MAX_LLM_DETAIL_MODEL_NAME_LENGTH = 50;
 
 type UserListOrder = (typeof USER_LIST_ORDER)[keyof typeof USER_LIST_ORDER];
 
@@ -272,6 +297,8 @@ export class AdminService {
     private readonly objectStorage: MinioObjectStorageService,
     private readonly nerConfig?: NerConfig,
     private readonly providerConfig?: ProviderConfig,
+    @Optional()
+    private readonly nerClient?: NerClient,
   ) {}
 
   async createUser(
@@ -371,11 +398,19 @@ export class AdminService {
   ): Promise<AdminResDTO.CreateDepartment> {
     const departmentName = this.normalizeDepartmentName(dto.name);
     const departmentCode = this.normalizeDepartmentCode(dto.code);
+    const departmentAdminId = this.normalizeDepartmentAdminId(
+      dto.departmentAdminId,
+    );
+    // 로컬 LLM은 항상 활성화하지만, 명세상 전달되는 Boolean 값의 형식은 검증합니다.
+    this.normalizeDepartmentBoolean(dto.activeLocalLLM);
     const mustFiltering = this.normalizeDepartmentBoolean(dto.mustFiltering);
     const departmentLimit = this.normalizeDepartmentLimit(dto.departmentLimit);
 
     return this.dataSource.transaction(async (manager) => {
       const departmentRepository = manager.getRepository(DepartmentDAO);
+      const memberRepository = manager.getRepository(MemberDAO);
+      const memberDepartmentRepository = manager.getRepository(MemberDepartmentDAO);
+      const activeApiKeyRepository = manager.getRepository(ActiveApiKeyDAO);
       const existingDepartment = await departmentRepository.findOne({
         select: { departmentId: true },
         where: { departmentName },
@@ -384,6 +419,33 @@ export class AdminService {
       if (existingDepartment !== null) {
         throw new AdminException(AdminErrorStatus.DUPLICATE_DEPARTMENT);
       }
+
+      const departmentAdmin = await memberRepository.findOne({
+        select: { memberId: true, authorize: true },
+        where: {
+          memberId: String(departmentAdminId),
+          disabledAt: IsNull(),
+        },
+        // 하나의 부서 관리자가 동시에 여러 부서에 연결되는 것을 방지합니다.
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (departmentAdmin === null) {
+        throw new AuthException(AuthErrorStatus.USER_NOT_FOUND);
+      }
+      if (departmentAdmin.authorize !== UserRole.DEPART_ADMIN) {
+        throw new AdminException(AdminErrorStatus.INVALID_DEPARTMENT_ADMIN);
+      }
+
+      const existingMembership = await memberDepartmentRepository.findOneBy({
+        memberId: departmentAdmin.memberId,
+      });
+      if (existingMembership !== null) {
+        throw new AdminException(AdminErrorStatus.INVALID_DEPARTMENT_ADMIN);
+      }
+
+      // llm_detail_model에는 비활성화된 모델도 카탈로그로 남아 있으므로, 새 부서는
+      // LPL에서 실제로 enabled인 local-* 모델만 연결합니다.
+      const enabledLocalLlmModelNames = await this.getEnabledLocalLlmModelNames();
 
       const department = this.adminMapper.toDepartmentDAO({
         departmentName,
@@ -394,9 +456,24 @@ export class AdminService {
 
       try {
         const savedDepartment = await departmentRepository.save(department);
+        const localLlmActiveApiKey = await activeApiKeyRepository.save(
+          this.adminMapper.toLocalLlmActiveApiKeyDAO(
+            savedDepartment.departmentId,
+          ),
+        );
+        await this.linkLocalLlmModelsToActiveApiKey(
+          manager,
+          localLlmActiveApiKey.activeApiKeyId,
+          enabledLocalLlmModelNames,
+        );
+        await memberDepartmentRepository.save({
+          memberId: departmentAdmin.memberId,
+          departmentId: savedDepartment.departmentId,
+        });
 
         return AdminMapper.toCreateDepartment({
-          name: savedDepartment.departmentName,
+          departmentId: savedDepartment.departmentId,
+          departmentName: savedDepartment.departmentName,
           createdAt: new Date(),
         });
       } catch (error: unknown) {
@@ -486,7 +563,10 @@ export class AdminService {
         }),
         activeApiKeyRepository.find({
           select: { activeApiKeyId: true },
-          where: { departmentId: department.departmentId },
+          where: {
+            departmentId: department.departmentId,
+            serviceType: Not(LOCAL_LLM_MODEL),
+          },
         }),
       ]);
       const memberIds = [...new Set(allMemberships.map(({ memberId }) => memberId))];
@@ -1044,6 +1124,102 @@ export class AdminService {
     });
   }
 
+  async registerLocalLlm(
+    dto: Readonly<AdminReqDTO.RegisterLocalLlm>,
+    authentication: Readonly<AuthenticatedUser>,
+  ): Promise<AdminResDTO.RegisterLocalLlm> {
+    this.assertTotalAdministrator(authentication);
+    const request = this.toLocalLlmDeploymentCreateRequest(dto);
+    const deployment = await this.createLlmDeployment(request);
+    await this.syncEnabledLocalLlmModels();
+    const createdAt = new Date();
+
+    await this.recordAdminActivity(
+      authentication.userId,
+      `로컬 LLM Deployment ${deployment.deploymentId}를 등록하고 모든 부서의 사용 가능 모델을 동기화했습니다.`,
+    );
+
+    return {
+      deploymentId: deployment.deploymentId,
+      createdAt: toKoreaStandardTimeISOString(createdAt),
+    };
+  }
+
+  async getLocalLlmList(
+    authentication: Readonly<AuthenticatedUser>,
+  ): Promise<AdminResDTO.LocalLlmList> {
+    this.assertTotalAdministrator(authentication);
+
+    return {
+      deployments: await this.getLocalDeploymentSummaries(
+        () => this.getNerClient().getLlmDeployments(),
+      ),
+    };
+  }
+
+  async updateLocalLlmStatus(
+    deploymentId: string,
+    dto: Readonly<AdminReqDTO.UpdateLocalDeploymentStatus>,
+    authentication: Readonly<AuthenticatedUser>,
+  ): Promise<AdminResDTO.UpdateLocalLlmStatus> {
+    this.assertTotalAdministrator(authentication);
+    const normalizedDeploymentId = this.normalizeLocalDeploymentText(deploymentId);
+    const enabled = this.toLocalDeploymentStatusUpdateRequest(dto);
+    const deployment = await this.updateLlmDeploymentEnabled(
+      normalizedDeploymentId,
+      enabled,
+    );
+
+    await this.synchronizeUpdatedLocalLlmAvailability(deployment);
+    await this.recordAdminActivity(
+      authentication.userId,
+      `로컬 LLM Deployment ${deployment.deploymentId}를 ${deployment.enabled ? '활성화' : '비활성화'}했습니다.`,
+    );
+
+    return deployment;
+  }
+
+  async updateLocalNerStatus(
+    deploymentId: string,
+    dto: Readonly<AdminReqDTO.UpdateLocalDeploymentStatus>,
+    authentication: Readonly<AuthenticatedUser>,
+  ): Promise<AdminResDTO.UpdateLocalNerStatus> {
+    this.assertTotalAdministrator(authentication);
+    const normalizedDeploymentId = this.normalizeLocalDeploymentText(deploymentId);
+    const enabled = this.toLocalDeploymentStatusUpdateRequest(dto);
+    const deployment = await this.updateNerDeploymentEnabled(
+      normalizedDeploymentId,
+      enabled,
+    );
+
+    await this.recordAdminActivity(
+      authentication.userId,
+      `로컬 NER Deployment ${deployment.deploymentId}를 ${deployment.enabled ? '활성화' : '비활성화'}했습니다.`,
+    );
+
+    return deployment;
+  }
+
+  async registerLocalNer(
+    dto: Readonly<AdminReqDTO.RegisterLocalNer>,
+    authentication: Readonly<AuthenticatedUser>,
+  ): Promise<AdminResDTO.RegisterLocalNer> {
+    this.assertTotalAdministrator(authentication);
+    const request = this.toLocalNerDeploymentCreateRequest(dto);
+    const deployment = await this.createNerDeployment(request);
+    const createdAt = new Date();
+
+    await this.recordAdminActivity(
+      authentication.userId,
+      `로컬 NER Deployment ${deployment.deploymentId}를 등록했습니다.`,
+    );
+
+    return {
+      deploymentId: deployment.deploymentId,
+      createdAt: toKoreaStandardTimeISOString(createdAt),
+    };
+  }
+
   async getDepartmentApiKey(
     dto: Readonly<AdminReqDTO.DepartmentApiKey>,
     authentication: Readonly<AuthenticatedUser>,
@@ -1058,7 +1234,7 @@ export class AdminService {
         serviceType: provider,
       },
     });
-    if (activeApiKey === null) {
+    if (activeApiKey === null || activeApiKey.apiKey === null) {
       throw new AdminException(AdminErrorStatus.API_KEY_NOT_FOUND);
     }
 
@@ -1183,6 +1359,7 @@ export class AdminService {
       select: {
         policyPresetId: true,
         name: true,
+        isActive: true,
         presetPolicies: {
           presetPolicyId: true,
           policy: { policyId: true, maskingContent: true },
@@ -1532,7 +1709,7 @@ export class AdminService {
           'filterDetectRate',
         )
         .addSelect(
-          "COUNT(DISTINCT CASE WHEN maskingDetail.maskingDetailId IS NOT NULL AND LOWER(promptLog.modelType) LIKE 'gpt%' THEN promptLog.promptLogId END)",
+          "COUNT(DISTINCT CASE WHEN maskingDetail.maskingDetailId IS NOT NULL AND promptLog.status != :errorStatus AND LOWER(promptLog.modelType) LIKE 'gpt%' THEN promptLog.promptLogId END)",
           'maskingToGpt',
         )
         .addSelect(
@@ -1575,7 +1752,11 @@ export class AdminService {
           'COUNT(DISTINCT CASE WHEN promptLog.communicatedAt >= :previousSince AND promptLog.communicatedAt < :recentSince THEN promptLog.promptLogId END)',
           'previousTotalCnt',
         )
-        .setParameters({ recentSince, previousSince })
+        .setParameters({
+          recentSince,
+          previousSince,
+          errorStatus: PromptLogStatus.ERROR,
+        })
         .getRawOne<DashboardRaw>(),
     ]);
 
@@ -1589,7 +1770,7 @@ export class AdminService {
     );
 
     return AdminMapper.toDashboard({
-      updatedAt: updatedAt.toISOString(),
+      updatedAt: toKoreaStandardTimeISOString(updatedAt),
       userCnt,
       userRate,
       chatCnt: Number(dashboard?.chatCnt ?? 0),
@@ -1754,7 +1935,7 @@ export class AdminService {
       .getRawOne<UserSummaryRaw>();
 
     return AdminMapper.toUserSummary(
-      updatedAt.toISOString(),
+      toKoreaStandardTimeISOString(updatedAt),
       Number(summary?.totalUserCnt ?? 0),
       Number(summary?.activateUserCnt ?? 0),
       Number(summary?.disabledUserCnt ?? 0),
@@ -1930,7 +2111,7 @@ export class AdminService {
     if (member.disabledAt !== null) {
       return AdminMapper.toDisableUser(
         member.memberName,
-        member.disabledAt.toISOString(),
+        toKoreaStandardTimeISOString(member.disabledAt),
       );
     }
 
@@ -1948,7 +2129,7 @@ export class AdminService {
       }
       return AdminMapper.toDisableUser(
         current.memberName,
-        current.disabledAt.toISOString(),
+        toKoreaStandardTimeISOString(current.disabledAt),
       );
     }
 
@@ -1959,7 +2140,7 @@ export class AdminService {
 
     return AdminMapper.toDisableUser(
       member.memberName,
-      disabledAt.toISOString(),
+      toKoreaStandardTimeISOString(disabledAt),
     );
   }
 
@@ -1990,7 +2171,7 @@ export class AdminService {
 
     return AdminMapper.toRestoreUser(
       member.memberName,
-      restoredAt.toISOString(),
+      toKoreaStandardTimeISOString(restoredAt),
     );
   }
 
@@ -2035,7 +2216,7 @@ export class AdminService {
       : (local / filterDetectCnt) * 100;
 
     return AdminMapper.toLogsSummary(
-      new Date().toISOString(),
+      toKoreaStandardTimeISOString(new Date()),
       totalChatCnt,
       filterDetectCnt,
       masking,
@@ -2390,11 +2571,8 @@ export class AdminService {
   ): AdminResDTO.LlmHealth {
     const totalHistoryCount = latestFirstHistories.length;
     const averageResponse = this.toP95Latency(latestFirstHistories);
-    const latestStatus = latestFirstHistories[0]?.status ?? HealthStatus.CHECK;
-    const currentStatus = latestStatus === HealthStatus.OK
-      && averageResponse >= DELAY_LATENCY_MS
-      ? HealthStatus.DELAY
-      : latestStatus;
+    // 현재 상태는 P95 보정 없이 가장 최근 health_history 상태를 그대로 사용합니다.
+    const currentStatus = latestFirstHistories[0]?.status ?? HealthStatus.CHECK;
     const availability = totalHistoryCount === 0
       ? 0
       : Math.round(
@@ -2521,6 +2699,18 @@ export class AdminService {
     return departmentCode;
   }
 
+  private normalizeDepartmentAdminId(value: unknown): number {
+    if (
+      typeof value !== 'number'
+      || !Number.isSafeInteger(value)
+      || value <= 0
+    ) {
+      throw new AdminException(AdminErrorStatus.INVALID_DEPARTMENT_ADMIN);
+    }
+
+    return value;
+  }
+
   private normalizeDepartmentBoolean(value: unknown): boolean {
     if (typeof value !== 'boolean') {
       throw new AdminException(AdminErrorStatus.INVALID_DEPARTMENT_NAME);
@@ -2589,6 +2779,506 @@ export class AdminService {
     return apiKey;
   }
 
+  private toLocalLlmDeploymentCreateRequest(
+    dto: Readonly<AdminReqDTO.RegisterLocalLlm>,
+  ): LlmDeploymentCreateRequest {
+    const adapterType = this.toLocalLlmAdapterType(dto.adapterType);
+    const deploymentId = this.normalizeLocalDeploymentId(dto.deploymentId);
+
+    if (adapterType === 'mock') {
+      this.assertMockDeploymentOptionsAbsent(
+        dto.baseUrl,
+        dto.modelName,
+        dto.timeoutMs,
+      );
+      return { deploymentId, adapterType, enabled: true };
+    }
+
+    const modelName = this.normalizeLocalDeploymentText(dto.modelName);
+    const localModelName = toLocalLlmModelName(modelName);
+    if (
+      localModelName === null
+      || localModelName.length > MAX_LLM_DETAIL_MODEL_NAME_LENGTH
+      || deploymentId !== localModelName
+    ) {
+      throw new AdminException(AdminErrorStatus.INVALID_LOCAL_DEPLOYMENT);
+    }
+
+    return {
+      // LPL Deployment ID와 llm_detail_model.llm_name을 동일한 canonical local-* 값으로 유지합니다.
+      deploymentId: localModelName,
+      adapterType,
+      baseUrl: this.normalizeLocalDeploymentUrl(dto.baseUrl),
+      modelName,
+      timeoutMs: this.normalizeLocalDeploymentTimeout(dto.timeoutMs),
+      enabled: true,
+    };
+  }
+
+  private toLocalNerDeploymentCreateRequest(
+    dto: Readonly<AdminReqDTO.RegisterLocalNer>,
+  ): NerDeploymentCreateRequest {
+    const adapterType = this.toLocalNerAdapterType(dto.adapterType);
+    const deploymentId = this.normalizeLocalDeploymentId(dto.deploymentId);
+
+    if (adapterType === 'mock') {
+      this.assertMockDeploymentOptionsAbsent(dto.baseUrl, dto.timeoutMs);
+      return { deploymentId, adapterType, enabled: true };
+    }
+
+    return {
+      deploymentId,
+      adapterType,
+      baseUrl: this.normalizeLocalDeploymentUrl(dto.baseUrl),
+      timeoutMs: this.normalizeLocalDeploymentTimeout(dto.timeoutMs),
+      enabled: true,
+    };
+  }
+
+  private toLocalLlmAdapterType(value: unknown): LlmAdapterType {
+    if (
+      typeof value !== 'string'
+      || !LLM_ADAPTER_TYPES.includes(value as LlmAdapterType)
+    ) {
+      throw new AdminException(AdminErrorStatus.INVALID_LOCAL_DEPLOYMENT);
+    }
+
+    return value as LlmAdapterType;
+  }
+
+  private toLocalNerAdapterType(value: unknown): NerAdapterType {
+    if (
+      typeof value !== 'string'
+      || !NER_ADAPTER_TYPES.includes(value as NerAdapterType)
+    ) {
+      throw new AdminException(AdminErrorStatus.INVALID_LOCAL_DEPLOYMENT);
+    }
+
+    return value as NerAdapterType;
+  }
+
+  private assertMockDeploymentOptionsAbsent(...options: unknown[]): void {
+    if (options.some((option) => option !== undefined)) {
+      throw new AdminException(AdminErrorStatus.INVALID_LOCAL_DEPLOYMENT);
+    }
+  }
+
+  private normalizeLocalDeploymentText(value: unknown): string {
+    if (typeof value !== 'string') {
+      throw new AdminException(AdminErrorStatus.INVALID_LOCAL_DEPLOYMENT);
+    }
+
+    const text = value.trim();
+    if (
+      text.length === 0
+      || text.length > MAX_LOCAL_DEPLOYMENT_TEXT_LENGTH
+      || /[\r\n]/.test(text)
+    ) {
+      throw new AdminException(AdminErrorStatus.INVALID_LOCAL_DEPLOYMENT);
+    }
+
+    return text;
+  }
+
+  /**
+   * 새 전역 Deployment는 Gateway의 local-* 식별자 공간을 사용합니다.
+   * 상태 변경은 기존 LPL 등록 항목도 관리할 수 있도록 별도 일반 정규화를 유지합니다.
+   */
+  private normalizeLocalDeploymentId(value: unknown): string {
+    const deploymentId = this.normalizeLocalDeploymentText(value);
+    if (
+      !deploymentId.startsWith(LOCAL_LLM_MODEL_PREFIX)
+      || deploymentId.length === LOCAL_LLM_MODEL_PREFIX.length
+    ) {
+      throw new AdminException(AdminErrorStatus.INVALID_LOCAL_DEPLOYMENT);
+    }
+
+    return deploymentId;
+  }
+
+  private normalizeLocalDeploymentUrl(value: unknown): string {
+    if (typeof value !== 'string') {
+      throw new AdminException(AdminErrorStatus.INVALID_LOCAL_DEPLOYMENT);
+    }
+
+    const baseUrl = value.trim();
+    if (
+      baseUrl.length === 0
+      || baseUrl.length > MAX_LOCAL_DEPLOYMENT_URL_LENGTH
+      || /[\r\n]/.test(baseUrl)
+    ) {
+      throw new AdminException(AdminErrorStatus.INVALID_LOCAL_DEPLOYMENT);
+    }
+
+    try {
+      const url = new URL(baseUrl);
+      if (
+        (url.protocol !== 'http:' && url.protocol !== 'https:')
+        || url.username.length > 0
+        || url.password.length > 0
+      ) {
+        throw new TypeError('허용하지 않는 로컬 Deployment URL입니다.');
+      }
+    } catch {
+      throw new AdminException(AdminErrorStatus.INVALID_LOCAL_DEPLOYMENT);
+    }
+
+    return baseUrl;
+  }
+
+  private normalizeLocalDeploymentTimeout(value: unknown): number {
+    if (
+      typeof value !== 'number'
+      || !Number.isSafeInteger(value)
+      || value <= 0
+      || value > MAX_LOCAL_DEPLOYMENT_TIMEOUT_MS
+    ) {
+      throw new AdminException(AdminErrorStatus.INVALID_LOCAL_DEPLOYMENT);
+    }
+
+    return value;
+  }
+
+  private toLocalDeploymentStatusUpdateRequest(
+    dto: Readonly<AdminReqDTO.UpdateLocalDeploymentStatus>,
+  ): boolean {
+    if (
+      typeof dto !== 'object'
+      || dto === null
+      || Array.isArray(dto)
+      || Object.keys(dto).length !== 1
+      || !Object.prototype.hasOwnProperty.call(dto, 'enabled')
+      || typeof dto.enabled !== 'boolean'
+    ) {
+      throw new AdminException(AdminErrorStatus.INVALID_LOCAL_DEPLOYMENT_STATE);
+    }
+
+    return dto.enabled;
+  }
+
+  private async createLlmDeployment(
+    request: Readonly<LlmDeploymentCreateRequest>,
+  ) {
+    try {
+      return await this.getNerClient().createLlmDeployment(request);
+    } catch (error: unknown) {
+      this.throwDeploymentRegistrationError(error);
+    }
+  }
+
+  private async createNerDeployment(
+    request: Readonly<NerDeploymentCreateRequest>,
+  ) {
+    try {
+      return await this.getNerClient().createNerDeployment(request);
+    } catch (error: unknown) {
+      this.throwDeploymentRegistrationError(error);
+    }
+  }
+
+  private async updateLlmDeploymentEnabled(
+    deploymentId: string,
+    enabled: boolean,
+  ): Promise<NerLlmDeploymentDetail> {
+    try {
+      return await this.getNerClient().updateLlmDeploymentEnabled(
+        deploymentId,
+        enabled,
+      );
+    } catch (error: unknown) {
+      this.throwDeploymentStateUpdateError(error);
+    }
+  }
+
+  private async updateNerDeploymentEnabled(
+    deploymentId: string,
+    enabled: boolean,
+  ): Promise<NerDeploymentDetail> {
+    try {
+      return await this.getNerClient().updateNerDeploymentEnabled(
+        deploymentId,
+        enabled,
+      );
+    } catch (error: unknown) {
+      this.throwDeploymentStateUpdateError(error);
+    }
+  }
+
+  /**
+   * LPL Registry의 활성 로컬 LLM 모델을 DB 카탈로그와 부서별 Local LLM
+   * 연결에 동기화합니다. Local LLM은 외부 Provider API 키와 분리됩니다.
+   */
+  private async syncEnabledLocalLlmModels(): Promise<void> {
+    const localModelNames = await this.getEnabledLocalLlmModelNames();
+
+    await this.syncEnabledLocalLlmModelsByNames(localModelNames);
+  }
+
+  private async getEnabledLocalLlmModelNames(): Promise<readonly string[]> {
+    try {
+      return this.toEnabledLocalLlmModelNames(
+        await this.getNerClient().getEnabledLlmModelNames(),
+      );
+    } catch (error: unknown) {
+      this.throwDeploymentRegistrationError(error);
+    }
+  }
+
+  private async syncEnabledLocalLlmModelsByNames(
+    localModelNames: readonly string[],
+  ): Promise<void> {
+    if (localModelNames.length === 0) {
+      return;
+    }
+
+    try {
+      await this.dataSource.transaction(async (manager) => {
+        const llmDetailModelRepository = manager.getRepository(
+          LlmDetailModelDAO,
+        );
+        const activeApiKeyRepository = manager.getRepository(ActiveApiKeyDAO);
+        const activeLlmRepository = manager.getRepository(ActiveLlmDAO);
+        const existingModels = await llmDetailModelRepository.find({
+          select: { llmName: true },
+          where: { llmName: In(localModelNames) },
+        });
+        const existingNames = new Set(
+          existingModels.flatMap((model) => model.llmName === null
+            ? []
+            : [model.llmName.toLowerCase()]),
+        );
+        const missingModelNames = localModelNames.filter(
+          (modelName) => !existingNames.has(modelName.toLowerCase()),
+        );
+
+        if (missingModelNames.length > 0) {
+          await llmDetailModelRepository.insert(
+            missingModelNames.map((llmName) => ({ llmName })),
+          );
+        }
+
+        const [models, activeApiKeys] = await Promise.all([
+          llmDetailModelRepository.find({
+            select: { llmDetailModelId: true },
+            where: { llmName: In(localModelNames) },
+          }),
+          activeApiKeyRepository.find({
+            select: { activeApiKeyId: true },
+            where: { serviceType: LOCAL_LLM_MODEL },
+          }),
+        ]);
+        if (models.length === 0 || activeApiKeys.length === 0) {
+          return;
+        }
+
+        await activeLlmRepository.upsert(
+          activeApiKeys.flatMap((activeApiKey) => models.map((model) => ({
+            activeApiKeyId: activeApiKey.activeApiKeyId,
+            llmDetailModelId: model.llmDetailModelId,
+          }))),
+          ['activeApiKeyId', 'llmDetailModelId'],
+        );
+      });
+    } catch (error: unknown) {
+      this.throwDeploymentRegistrationError(error);
+    }
+  }
+
+  /**
+   * LPL 상태 변경 후 해당 모델의 부서별 사용 가능 연결을 동기화합니다.
+   * llm_detail_model은 전역 카탈로그이므로 삭제하지 않고 active_llm만 변경합니다.
+   */
+  private async synchronizeUpdatedLocalLlmAvailability(
+    deployment: Readonly<NerLlmDeploymentDetail>,
+  ): Promise<void> {
+    if (deployment.modelName === undefined) {
+      return;
+    }
+
+    const localModelName = toLocalLlmModelName(deployment.modelName);
+    if (
+      localModelName === null
+      || localModelName.length > MAX_LLM_DETAIL_MODEL_NAME_LENGTH
+    ) {
+      throw new AdminException(
+        AdminErrorStatus.INVALID_LOCAL_DEPLOYMENT_CONFIGURATION,
+      );
+    }
+
+    if (deployment.enabled) {
+      await this.syncEnabledLocalLlmModels();
+      return;
+    }
+
+    const enabledLocalModelNames = await this.getEnabledLocalLlmModelNames();
+    const isStillEnabledByAnotherDeployment = enabledLocalModelNames.some(
+      (enabledLocalModelName) => (
+        enabledLocalModelName.toLowerCase() === localModelName.toLowerCase()
+      ),
+    );
+    if (isStillEnabledByAnotherDeployment) {
+      await this.syncEnabledLocalLlmModelsByNames(enabledLocalModelNames);
+      return;
+    }
+
+    await this.deactivateLocalLlmModel(localModelName);
+  }
+
+  private async deactivateLocalLlmModel(
+    localModelName: string,
+  ): Promise<void> {
+    await this.dataSource.transaction(async (manager) => {
+      const llmDetailModelRepository = manager.getRepository(
+        LlmDetailModelDAO,
+      );
+      const activeApiKeyRepository = manager.getRepository(ActiveApiKeyDAO);
+      const activeLlmRepository = manager.getRepository(ActiveLlmDAO);
+      const models = await llmDetailModelRepository.find({
+        select: { llmDetailModelId: true },
+        where: {
+          llmName: Raw(
+            (column) => `LOWER(${column}) = :localModelName`,
+            { localModelName: localModelName.toLowerCase() },
+          ),
+        },
+      });
+      if (models.length === 0) {
+        return;
+      }
+
+      const localLlmActiveApiKeys = await activeApiKeyRepository.find({
+        select: { activeApiKeyId: true },
+        where: { serviceType: LOCAL_LLM_MODEL },
+      });
+      if (localLlmActiveApiKeys.length === 0) {
+        return;
+      }
+
+      await activeLlmRepository.delete({
+        activeApiKeyId: In(
+          localLlmActiveApiKeys.map((activeApiKey) => (
+            activeApiKey.activeApiKeyId
+          )),
+        ),
+        llmDetailModelId: In(models.map((model) => model.llmDetailModelId)),
+      });
+    });
+  }
+
+  /** 새 부서의 Local LLM 키에 현재 활성 local-* 카탈로그 모델을 연결합니다. */
+  private async linkLocalLlmModelsToActiveApiKey(
+    manager: EntityManager,
+    activeApiKeyId: string,
+    localModelNames: readonly string[],
+  ): Promise<void> {
+    if (localModelNames.length === 0) {
+      return;
+    }
+
+    const llmDetailModelRepository = manager.getRepository(LlmDetailModelDAO);
+    const activeLlmRepository = manager.getRepository(ActiveLlmDAO);
+    const localLlmModels = await llmDetailModelRepository.find({
+      select: { llmDetailModelId: true },
+      where: { llmName: In(localModelNames) },
+    });
+    if (localLlmModels.length === 0) {
+      return;
+    }
+
+    await activeLlmRepository.upsert(
+      localLlmModels.map((localLlmModel) => ({
+        activeApiKeyId,
+        llmDetailModelId: localLlmModel.llmDetailModelId,
+      })),
+      ['activeApiKeyId', 'llmDetailModelId'],
+    );
+  }
+
+  private toEnabledLocalLlmModelNames(
+    modelNames: readonly string[],
+  ): readonly string[] {
+    const localModelNames = new Set<string>();
+
+    for (const modelName of modelNames) {
+      const localModelName = toLocalLlmModelName(modelName);
+      if (
+        localModelName === null
+        || localModelName.length > MAX_LLM_DETAIL_MODEL_NAME_LENGTH
+      ) {
+        throw new AdminException(
+          AdminErrorStatus.INVALID_LOCAL_DEPLOYMENT_CONFIGURATION,
+        );
+      }
+      localModelNames.add(localModelName);
+    }
+
+    return [...localModelNames];
+  }
+
+  private getNerClient(): NerClient {
+    if (this.nerClient === undefined) {
+      throw new AdminException(
+        AdminErrorStatus.LOCAL_DEPLOYMENT_PROVIDER_UNAVAILABLE,
+      );
+    }
+
+    return this.nerClient;
+  }
+
+  private async getLocalDeploymentSummaries(
+    findDeployments: () => Promise<readonly NerDeploymentSummary[]>,
+  ): Promise<AdminResDTO.LocalDeployment[]> {
+    try {
+      return (await findDeployments()).map(({ deploymentId, enabled }) => ({
+        deploymentId,
+        enabled,
+      }));
+    } catch (error: unknown) {
+      if (error instanceof NerRequestException) {
+        throw new AdminException(
+          AdminErrorStatus.LOCAL_DEPLOYMENT_PROVIDER_UNAVAILABLE,
+        );
+      }
+      throw error;
+    }
+  }
+
+  private throwDeploymentRegistrationError(error: unknown): never {
+    if (error instanceof NerRequestException) {
+      if (error.status === HttpStatus.CONFLICT) {
+        throw new AdminException(AdminErrorStatus.DUPLICATE_LOCAL_DEPLOYMENT);
+      }
+      if (error.status === HttpStatus.UNPROCESSABLE_ENTITY) {
+        throw new AdminException(
+          AdminErrorStatus.INVALID_LOCAL_DEPLOYMENT_CONFIGURATION,
+        );
+      }
+      throw new AdminException(
+        AdminErrorStatus.LOCAL_DEPLOYMENT_PROVIDER_UNAVAILABLE,
+      );
+    }
+
+    throw error;
+  }
+
+  private throwDeploymentStateUpdateError(error: unknown): never {
+    if (error instanceof NerRequestException) {
+      if (error.status === HttpStatus.NOT_FOUND) {
+        throw new AdminException(AdminErrorStatus.LOCAL_DEPLOYMENT_NOT_FOUND);
+      }
+      if (error.status === HttpStatus.UNPROCESSABLE_ENTITY) {
+        throw new AdminException(
+          AdminErrorStatus.INVALID_LOCAL_DEPLOYMENT_CONFIGURATION,
+        );
+      }
+      throw new AdminException(
+        AdminErrorStatus.LOCAL_DEPLOYMENT_PROVIDER_UNAVAILABLE,
+      );
+    }
+
+    throw error;
+  }
+
   private async findAdministrativeDepartment(
     authentication: Readonly<AuthenticatedUser>,
   ): Promise<DepartmentDAO> {
@@ -2621,6 +3311,14 @@ export class AdminService {
     }
 
     return department;
+  }
+
+  private assertTotalAdministrator(
+    authentication: Readonly<AuthenticatedUser>,
+  ): void {
+    if (authentication.role !== UserRole.TOTAL_ADMIN) {
+      throw new SecurityException(SecurityErrorStatus.FORBIDDEN);
+    }
   }
 
   private async findDepartmentForDepartmentAdmin(
@@ -2916,11 +3614,11 @@ export class AdminService {
   }
 
   private toDateString(value: Date | string): string {
-    return (value instanceof Date ? value.toISOString() : value).slice(0, 10);
+    return toKoreaStandardTimeDateString(value);
   }
 
   private toDateTimeString(value: Date | string): string {
-    return value instanceof Date ? value.toISOString() : value;
+    return toKoreaStandardTimeISOString(value);
   }
 
   private toMemberLimitTotals(
@@ -2999,18 +3697,21 @@ export class AdminService {
       throw new AuthException(AuthErrorStatus.USER_NOT_FOUND);
     }
 
-    const membership = await this.memberDepartmentRepository.findOne({
-      select: { departmentId: true },
-      where: { memberId: String(userId) },
-    });
     const member = await this.memberRepository.findOneBy({
       memberId: String(userId),
     });
-    if (membership === null || member === null) {
+    if (member === null) {
       throw new AuthException(AuthErrorStatus.USER_NOT_FOUND);
     }
 
     if (authentication.role === UserRole.DEPART_ADMIN) {
+      const membership = await this.memberDepartmentRepository.findOne({
+        select: { departmentId: true },
+        where: { memberId: String(userId) },
+      });
+      if (membership === null) {
+        throw new AuthException(AuthErrorStatus.USER_NOT_FOUND);
+      }
       const department = await this.findDepartmentByUserId(authentication.userId);
       if (membership.departmentId !== department.departmentId) {
         throw new AuthException(AuthErrorStatus.USER_NOT_FOUND);

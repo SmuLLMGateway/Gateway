@@ -1,10 +1,9 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { randomUUID } from 'node:crypto';
-import { DataSource, In, Raw, Repository } from 'typeorm';
+import { DataSource, In, Repository } from 'typeorm';
 import { MaskingClass } from '../../admin/dao/policy.dao.js';
 import { ActiveLlmDAO } from '../../admin/dao/active-llm.dao.js';
-import { LlmDetailModelDAO } from '../../admin/dao/llm-detail-model.dao.js';
 import { DepartmentPolicyDAO } from '../../admin/dao/department-policy.dao.js';
 import { DepartmentDAO } from '../../admin/dao/department.dao.js';
 import { MemberDepartmentDAO } from '../../user/dao/member-department.dao.js';
@@ -35,6 +34,7 @@ import { LlmProvider } from '../../../global/llm/enum/llm-provider.enum.js';
 import { ProviderClient } from '../../../global/llm/client/provider.client.js';
 import { ApiKeyEncryptionService } from '../../../global/llm/service/api-key-encryption.service.js';
 import { NerClient } from '../../../global/ner/client/ner.client.js';
+import { NerRequestException } from '../../../global/ner/exception/ner-request.exception.js';
 import type {
   NerAnalyzeRequest,
   NerDetection,
@@ -120,8 +120,6 @@ export class PromptService {
     private readonly departmentPolicyRepository: Repository<DepartmentPolicyDAO>,
     @InjectRepository(ActiveLlmDAO)
     private readonly activeLlmRepository: Repository<ActiveLlmDAO>,
-    @InjectRepository(LlmDetailModelDAO)
-    private readonly llmDetailModelRepository: Repository<LlmDetailModelDAO>,
     private readonly maskingReportRepository: MaskingReportRepository,
     private readonly promptFileRepository: PromptFileRepository,
     private readonly promptLogRepository: PromptLogRepository,
@@ -152,7 +150,7 @@ export class PromptService {
       const departmentId = await this.resolveDepartmentId(authentication.userId);
       const accessibleModel = await this.resolveAccessiblePromptModel(
         departmentId,
-        dto.model,
+        dto.llmModel,
       );
       await this.maskingReportRepository.validateRequestTickets(
         dto.ticket,
@@ -237,6 +235,8 @@ export class PromptService {
       void this.requestNerAnalysis({
         ticket: dto.ticket,
         text: dto.text,
+        llmModel: accessibleModel.modelName,
+        nerDeploymentId: dto.ner ?? null,
         existingDetections,
         policies,
       }).catch(async (error: unknown) => {
@@ -374,6 +374,9 @@ export class PromptService {
       },
     });
     if (activeLlm === null) {
+      this.throwForbiddenModel();
+    }
+    if (activeLlm.activeApiKey.apiKey === null) {
       this.throwForbiddenModel();
     }
     const maskedText = await this.toMaskedPromptText(
@@ -567,35 +570,29 @@ export class PromptService {
     authentication: Readonly<AuthenticatedUser>,
   ): Promise<PromptResDTO.ModelList> {
     const departmentId = await this.resolveDepartmentId(authentication.userId);
-    const [activeLlms, localLlmModels] = await Promise.all([
-      this.activeLlmRepository.find({
-        select: { llmDetailModel: { llmName: true } },
-        relations: { activeApiKey: true, llmDetailModel: true },
-        where: { activeApiKey: { departmentId } },
-        order: { llmDetailModel: { llmName: 'ASC' } },
-      }),
-      this.llmDetailModelRepository.find({
-        select: { llmName: true },
-        where: {
-          llmName: Raw(
-            (columnAlias) => `LOWER(${columnAlias}) LIKE :localLlmPrefix`,
-            { localLlmPrefix: 'local-%' },
-          ),
-        },
-        order: { llmName: 'ASC' },
-      }),
-    ]);
+    const activeLlms = await this.activeLlmRepository.find({
+      select: {
+        activeApiKey: { serviceType: true },
+        llmDetailModel: { llmName: true },
+      },
+      relations: { activeApiKey: true, llmDetailModel: true },
+      where: { activeApiKey: { departmentId } },
+      order: { llmDetailModel: { llmName: 'ASC' } },
+    });
 
     const externalModels = activeLlms.flatMap((activeLlm) => {
       const llmName = activeLlm.llmDetailModel.llmName;
       return llmName === null ? [] : [llmName];
     });
 
-    const localModels = localLlmModels.flatMap((model) => (
-      model.llmName === null || !isLocalLlmModelName(model.llmName)
+    const localModels = activeLlms.flatMap((activeLlm) => {
+      const llmName = activeLlm.llmDetailModel.llmName;
+      return activeLlm.activeApiKey.serviceType !== LOCAL_LLM_MODEL
+        || llmName === null
+        || !isLocalLlmModelName(llmName)
         ? []
-        : [model.llmName]
-    ));
+        : [llmName];
+    });
 
     return [
       ...[...new Set(localModels)].sort((left, right) => left.localeCompare(right)),
@@ -603,6 +600,25 @@ export class PromptService {
         .filter((model) => model !== LOCAL_LLM_MODEL && !isLocalLlmModelName(model))
         .sort((left, right) => left.localeCompare(right)),
     ];
+  }
+
+  async getNerList(): Promise<PromptResDTO.NerList> {
+    try {
+      const deployments = await this.nerClient.getNerDeployments();
+      return {
+        deployments: deployments.map(({ deploymentId, enabled }) => ({
+          deploymentId,
+          enabled,
+        })),
+      };
+    } catch (error: unknown) {
+      if (error instanceof NerRequestException) {
+        throw new PromptException(
+          PromptErrorStatus.NER_DEPLOYMENT_LIST_UNAVAILABLE,
+        );
+      }
+      throw error;
+    }
   }
 
   async getRecentAnalyze(
@@ -740,9 +756,12 @@ export class PromptService {
     model: string,
   ): Promise<AccessiblePromptModel> {
     if (isLocalLlmModelName(model)) {
-      const localLlm = await this.llmDetailModelRepository.findOne({
-        select: { llmDetailModelId: true },
-        where: { llmName: model },
+      const localLlm = await this.activeLlmRepository.findOne({
+        select: { activeLlmId: true },
+        where: {
+          activeApiKey: { departmentId, serviceType: LOCAL_LLM_MODEL },
+          llmDetailModel: { llmName: model },
+        },
       });
       if (localLlm === null) {
         this.throwForbiddenModel();
@@ -878,14 +897,19 @@ export class PromptService {
   private async requestNerAnalysis(data: Readonly<{
     ticket: string;
     text: string;
+    llmModel: string;
+    nerDeploymentId: string | null;
     existingDetections: readonly NerExistingDetection[];
     policies: readonly Readonly<DepartmentMaskingPolicy>[];
   }>): Promise<void> {
-    const config = this.nerClient.getDetectionConfiguration();
+    const [nerDeploymentId, llmDeploymentId] = await Promise.all([
+      data.nerDeploymentId ?? this.nerClient.getFirstNerDeploymentId(),
+      this.resolveNerLlmDeploymentId(data.llmModel),
+    ]);
     const response = await this.nerClient.requestAnalyze({
       text: data.text,
-      nerDeploymentId: config.nerDeploymentId,
-      llmDeploymentId: config.llmDeploymentId,
+      nerDeploymentId,
+      llmDeploymentId,
       existingDetections: data.existingDetections,
     } satisfies NerAnalyzeRequest);
     const detections = this.toNerTextDetections(
@@ -902,6 +926,19 @@ export class PromptService {
       // 사용자가 이미 취소한 요청 등, 완료 권한이 사라진 응답은 저장하지 않습니다.
       return;
     }
+  }
+
+  /** 선택한 로컬 모델과 LPL Deployment를 연결할 수 없으면 기존 기본 배포를 사용합니다. */
+  private async resolveNerLlmDeploymentId(llmModel: string): Promise<string> {
+    if (isLocalLlmModelName(llmModel)) {
+      const deploymentId = await this.nerClient
+        .getEnabledLlmDeploymentIdByModelName(llmModel);
+      if (deploymentId !== null) {
+        return deploymentId;
+      }
+    }
+
+    return this.nerClient.getFirstLlmDeploymentId();
   }
 
   private toNerTextDetections(

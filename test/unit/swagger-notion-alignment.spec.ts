@@ -23,7 +23,9 @@ import { PromptService } from '../../src/domain/prompt/service/prompt.service.js
 import { UserController } from '../../src/domain/user/controller/user.controller.js';
 import { UserService } from '../../src/domain/user/service/user.service.js';
 import { RefreshTokenGuard } from '../../src/global/security/guard/refresh-token.guard.js';
+import { ROLES_KEY } from '../../src/global/security/decorator/roles.decorator.js';
 import { JwtTokenService } from '../../src/global/security/service/jwt-token.service.js';
+import { UserRole } from '../../src/global/security/type/user-role.enum.js';
 import { MinioObjectStorageService } from '../../src/global/storage/service/minio-object-storage.service.js';
 
 type HttpMethod = 'delete' | 'get' | 'patch' | 'post' | 'put';
@@ -116,6 +118,13 @@ const EXPECTED_OPERATIONS: readonly ExpectedOperation[] = [
   },
   {
     method: 'get',
+    path: '/api/v1/ners',
+    summary: '로컬 NER 목록 조회',
+    operationId: 'PromptController_getNerList',
+    tag: '프롬프트',
+  },
+  {
+    method: 'get',
     path: '/api/v1/chat-rooms/{chatRoomId}/recent-analyze',
     summary: '직전 마스킹 요소 탐지 요청 조회',
     operationId: 'PromptController_getRecentMaskingElementDetection',
@@ -168,6 +177,41 @@ const EXPECTED_OPERATIONS: readonly ExpectedOperation[] = [
     path: '/admin/v1/departments/{departmentId}/apis',
     summary: 'LLM API 키 검증 및 등록',
     operationId: 'AdminController_validateAndRegisterLlmApiKey',
+    tag: '관리자',
+  },
+  {
+    method: 'get',
+    path: '/admin/v1/local-llms',
+    summary: '로컬 LLM 목록 조회',
+    operationId: 'AdminController_getLocalLlmList',
+    tag: '관리자',
+  },
+  {
+    method: 'patch',
+    path: '/admin/v1/local-llms/{deploymentId}',
+    summary: '로컬 LLM 활성화 상태 변경',
+    operationId: 'AdminController_updateLocalLlmStatus',
+    tag: '관리자',
+  },
+  {
+    method: 'patch',
+    path: '/admin/v1/local-ners/{deploymentId}',
+    summary: '로컬 NER 활성화 상태 변경',
+    operationId: 'AdminController_updateLocalNerStatus',
+    tag: '관리자',
+  },
+  {
+    method: 'post',
+    path: '/admin/v1/local-llms',
+    summary: '로컬 LLM 등록',
+    operationId: 'AdminController_registerLocalLlm',
+    tag: '관리자',
+  },
+  {
+    method: 'post',
+    path: '/admin/v1/local-ners',
+    summary: '로컬 NER 등록',
+    operationId: 'AdminController_registerLocalNer',
     tag: '관리자',
   },
   {
@@ -890,8 +934,23 @@ describe('Swagger와 Notion API 명세 정합성', () => {
     ]));
   });
 
-  it('마스킹 요청 DTO는 Notion v2의 ticket 관계 필드를 필수로 노출한다', () => {
+  it('마스킹 요청 DTO는 필수 llmModel, 선택 ner 및 ticket 관계 필드를 노출한다', () => {
     const metadataKey = 'swagger/apiModelProperties';
+    const llmModel = Reflect.getMetadata(
+      metadataKey,
+      PromptReqDTO.PrePrompt.prototype,
+      'llmModel',
+    ) as { required?: boolean; nullable?: boolean; type?: unknown };
+    const ner = Reflect.getMetadata(
+      metadataKey,
+      PromptReqDTO.PrePrompt.prototype,
+      'ner',
+    ) as { required?: boolean; nullable?: boolean; type?: unknown };
+    const legacyModel = Reflect.getMetadata(
+      metadataKey,
+      PromptReqDTO.PrePrompt.prototype,
+      'model',
+    );
     const recentTicket = Reflect.getMetadata(
       metadataKey,
       PromptReqDTO.PrePrompt.prototype,
@@ -903,11 +962,34 @@ describe('Swagger와 Notion API 명세 정합성', () => {
       'chatRoomId',
     ) as { required?: boolean; nullable?: boolean; type?: unknown };
 
+    expect(llmModel).toMatchObject({ type: String });
+    expect(llmModel.required).not.toBe(false);
+    expect(ner).toMatchObject({ type: String, required: false, nullable: true });
+    expect(legacyModel).toBeUndefined();
     expect(recentTicket).toMatchObject({ type: String, nullable: true });
     expect(recentTicket.required).not.toBe(false);
     expect(chatRoomId).toMatchObject({ type: String });
     expect(chatRoomId.nullable).toBeUndefined();
     expect(chatRoomId.required).not.toBe(false);
+
+    const requestBody = document.paths['/api/v1/analyze']?.post?.requestBody as {
+      content?: Record<string, {
+        schema?: {
+          properties?: Record<string, {
+            description?: string;
+            example?: string;
+          }>;
+        };
+      }>;
+    } | undefined;
+    const json = requestBody?.content?.['multipart/form-data']?.schema
+      ?.properties?.json;
+
+    expect(json?.description).toContain('llmModel, text, ticket은 필수');
+    expect(json?.description).toContain('ner');
+    expect(json?.example).toContain('"llmModel"');
+    expect(json?.example).toContain('"ner"');
+    expect(json?.example).not.toContain('"model"');
   });
 
   it('분석 결과는 탐지 여부별 v3 응답과 단일 파일 객체를 노출한다', () => {
@@ -943,6 +1025,209 @@ describe('Swagger와 Notion API 명세 정합성', () => {
     };
     expect(masking.properties?.file).toMatchObject({ nullable: true });
     expect(masking.properties?.file?.type).not.toBe('array');
+  });
+
+  it('전역 로컬 LLM·NER 관리 및 사용자 로컬 NER 목록 조회 계약을 Swagger에 노출한다', () => {
+    const llmRequest = document.components?.schemas
+      ?.AdminRegisterLocalLlmRequest as {
+        properties?: Record<string, {
+          enum?: string[];
+          example?: unknown;
+          maxLength?: number;
+        }>;
+        required?: string[];
+      };
+    expect(Object.keys(llmRequest.properties ?? {})).toEqual([
+      'deploymentId',
+      'adapterType',
+      'baseUrl',
+      'modelName',
+      'timeoutMs',
+    ]);
+    expect(llmRequest.required).toEqual([
+      'deploymentId',
+      'adapterType',
+    ]);
+    expect(llmRequest.properties?.adapterType?.enum).toEqual([
+      'mock',
+      'openai_compatible',
+    ]);
+    expect(llmRequest.properties?.deploymentId).toMatchObject({
+      example: 'local-qwen3:8b',
+      maxLength: 50,
+    });
+
+    const nerRequest = document.components?.schemas
+      ?.AdminRegisterLocalNerRequest as {
+        properties?: Record<string, {
+          enum?: string[];
+          example?: unknown;
+        }>;
+        required?: string[];
+      };
+    expect(Object.keys(nerRequest.properties ?? {})).toEqual([
+      'deploymentId',
+      'adapterType',
+      'baseUrl',
+      'timeoutMs',
+    ]);
+    expect(nerRequest.required).toEqual([
+      'deploymentId',
+      'adapterType',
+    ]);
+    expect(nerRequest.properties?.adapterType?.enum).toEqual([
+      'gliner_http',
+      'hf_inference_token_classification',
+      'http_ner',
+      'mock',
+    ]);
+    expect(nerRequest.properties?.deploymentId).toMatchObject({
+      example: 'local-ner-gliner-multi',
+    });
+
+    for (const schemaName of [
+      'AdminRegisterLocalLlmResponse',
+      'AdminRegisterLocalNerResponse',
+    ]) {
+      const response = document.components?.schemas?.[schemaName] as {
+        properties?: Record<string, unknown>;
+        required?: string[];
+      };
+      expect(Object.keys(response.properties ?? {})).toEqual([
+        'deploymentId',
+        'createdAt',
+      ]);
+      expect(response.required).toEqual(['deploymentId', 'createdAt']);
+    }
+
+    const deployment = document.components?.schemas
+      ?.AdminLocalDeploymentSummary as {
+        properties?: Record<string, unknown>;
+        required?: string[];
+      };
+    expect(Object.keys(deployment.properties ?? {})).toEqual([
+      'deploymentId',
+      'enabled',
+    ]);
+    expect(deployment.required).toEqual(['deploymentId', 'enabled']);
+
+    for (const schemaName of [
+      'AdminLocalLlmListResponse',
+      'PromptNerListResponse',
+    ]) {
+      const response = document.components?.schemas?.[schemaName] as {
+        properties?: Record<string, { type?: string }>;
+        required?: string[];
+      };
+      expect(Object.keys(response.properties ?? {})).toEqual(['deployments']);
+      expect(response.properties?.deployments?.type).toBe('array');
+      expect(response.required).toEqual(['deployments']);
+    }
+
+    const updateRequest = document.components?.schemas
+      ?.AdminUpdateLocalDeploymentStatusRequest as {
+        properties?: Record<string, { type?: string }>;
+        required?: string[];
+      };
+    expect(Object.keys(updateRequest.properties ?? {})).toEqual(['enabled']);
+    expect(updateRequest.properties?.enabled).toMatchObject({ type: 'boolean' });
+    expect(updateRequest.required).toEqual(['enabled']);
+
+    const llmStatusResponse = document.components?.schemas
+      ?.AdminUpdateLocalLlmStatusResponse as {
+        properties?: Record<string, { type?: string }>;
+        required?: string[];
+      };
+    expect(Object.keys(llmStatusResponse.properties ?? {})).toEqual([
+      'deploymentId',
+      'enabled',
+      'adapterType',
+      'baseUrl',
+      'modelName',
+      'timeoutMs',
+    ]);
+    expect(llmStatusResponse.required).toEqual([
+      'deploymentId',
+      'enabled',
+      'adapterType',
+    ]);
+
+    const nerStatusResponse = document.components?.schemas
+      ?.AdminUpdateLocalNerStatusResponse as {
+        properties?: Record<string, { type?: string }>;
+        required?: string[];
+      };
+    expect(Object.keys(nerStatusResponse.properties ?? {})).toEqual([
+      'deploymentId',
+      'enabled',
+      'adapterType',
+      'baseUrl',
+      'timeoutMs',
+    ]);
+    expect(nerStatusResponse.required).toEqual([
+      'deploymentId',
+      'enabled',
+      'adapterType',
+    ]);
+
+    for (const path of [
+      '/admin/v1/local-llms/{deploymentId}',
+      '/admin/v1/local-ners/{deploymentId}',
+    ]) {
+      const operation = document.paths[path]?.patch;
+      const deploymentId = (operation?.parameters ?? []).find(
+        (parameter) => !('$ref' in parameter) && parameter.name === 'deploymentId',
+      );
+      expect(deploymentId).toMatchObject({
+        name: 'deploymentId',
+        in: 'path',
+        required: true,
+      });
+    }
+  });
+
+  it('로컬 LLM·NER 관리 API는 총 관리자에게만 허용하고, 로컬 NER 목록은 모든 로그인 사용자에게 허용한다', () => {
+    const llmHandler = Object.getOwnPropertyDescriptor(
+      AdminController.prototype,
+      'registerLocalLlm',
+    )?.value;
+    const nerHandler = Object.getOwnPropertyDescriptor(
+      AdminController.prototype,
+      'registerLocalNer',
+    )?.value;
+    const llmListHandler = Object.getOwnPropertyDescriptor(
+      AdminController.prototype,
+      'getLocalLlmList',
+    )?.value;
+    const promptNerListHandler = Object.getOwnPropertyDescriptor(
+      PromptController.prototype,
+      'getNerList',
+    )?.value;
+    const llmStatusHandler = Object.getOwnPropertyDescriptor(
+      AdminController.prototype,
+      'updateLocalLlmStatus',
+    )?.value;
+    const nerStatusHandler = Object.getOwnPropertyDescriptor(
+      AdminController.prototype,
+      'updateLocalNerStatus',
+    )?.value;
+
+    expect(Reflect.getMetadata(ROLES_KEY, llmHandler)).toEqual([
+      UserRole.TOTAL_ADMIN,
+    ]);
+    expect(Reflect.getMetadata(ROLES_KEY, nerHandler)).toEqual([
+      UserRole.TOTAL_ADMIN,
+    ]);
+    expect(Reflect.getMetadata(ROLES_KEY, llmListHandler)).toEqual([
+      UserRole.TOTAL_ADMIN,
+    ]);
+    expect(Reflect.getMetadata(ROLES_KEY, promptNerListHandler)).toBeUndefined();
+    expect(Reflect.getMetadata(ROLES_KEY, llmStatusHandler)).toEqual([
+      UserRole.TOTAL_ADMIN,
+    ]);
+    expect(Reflect.getMetadata(ROLES_KEY, nerStatusHandler)).toEqual([
+      UserRole.TOTAL_ADMIN,
+    ]);
   });
 
   it('노션에 없는 API를 Swagger에 노출하지 않는다', () => {

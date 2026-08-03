@@ -7,7 +7,6 @@ import { DataSource } from 'typeorm';
 import { Readable } from 'node:stream';
 import request from 'supertest';
 import { ActiveLlmDAO } from '../../src/domain/admin/dao/active-llm.dao.js';
-import { LlmDetailModelDAO } from '../../src/domain/admin/dao/llm-detail-model.dao.js';
 import { DepartmentPolicyDAO } from '../../src/domain/admin/dao/department-policy.dao.js';
 import { MaskingClass } from '../../src/domain/admin/dao/policy.dao.js';
 import { PromptErrorStatus } from '../../src/domain/prompt/code/prompt.status.js';
@@ -58,7 +57,9 @@ import type {
 import { MinioObjectStorageService } from '../../src/global/storage/service/minio-object-storage.service.js';
 import { ProviderClient } from '../../src/global/llm/client/provider.client.js';
 import { ApiKeyEncryptionService } from '../../src/global/llm/service/api-key-encryption.service.js';
+import { LOCAL_LLM_MODEL } from '../../src/global/llm/llm-service.mapping.js';
 import { NerClient } from '../../src/global/ner/client/ner.client.js';
+import { NerRequestException } from '../../src/global/ner/exception/ner-request.exception.js';
 
 const STAGED_UUID = '11111111-1111-4111-8111-111111111111';
 const STAGED_OBJECT_KEY = `incoming/2026/07/21/${STAGED_UUID}.pdf`;
@@ -146,7 +147,7 @@ describe('마스킹 요소 탐지 요청 HTTP API', () => {
     accessToken: true,
   };
   const dto = {
-    model: 'Claude Sonnet 5',
+    llmModel: 'Claude Sonnet 5',
     text: [
       '전화번호 010-1234-5678',
       '주민번호 900101-1234567',
@@ -209,10 +210,6 @@ describe('마스킹 요소 탐지 요청 HTTP API', () => {
     findOne: jest.fn(),
     find: jest.fn(),
   };
-  const llmDetailModelRepository = {
-    find: jest.fn(),
-    findOne: jest.fn(),
-  };
   const departmentPolicyRepository = {
     find: jest.fn(),
   };
@@ -247,7 +244,10 @@ describe('마스킹 요소 탐지 요청 HTTP API', () => {
   };
   const objectStorage = new FakeMinioObjectStorageService();
   const nerClient = {
-    getDetectionConfiguration: jest.fn(),
+    getFirstNerDeploymentId: jest.fn(),
+    getFirstLlmDeploymentId: jest.fn(),
+    getEnabledLlmDeploymentIdByModelName: jest.fn(),
+    getNerDeployments: jest.fn(),
     requestAnalyze: jest.fn(),
   };
 
@@ -297,10 +297,6 @@ describe('마스킹 요소 탐지 요청 HTTP API', () => {
           useValue: activeLlmRepository,
         },
         {
-          provide: getRepositoryToken(LlmDetailModelDAO),
-          useValue: llmDetailModelRepository,
-        },
-        {
           provide: getRepositoryToken(DepartmentPolicyDAO),
           useValue: departmentPolicyRepository,
         },
@@ -334,10 +330,10 @@ describe('마스킹 요소 탐지 요청 HTTP API', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     objectStorage.reset();
-    nerClient.getDetectionConfiguration.mockReturnValue({
-      nerDeploymentId: 'ner-gliner-multi',
-      llmDeploymentId: 'llm-qwen3-14b',
-    });
+    nerClient.getFirstNerDeploymentId.mockResolvedValue('ner-gliner-multi');
+    nerClient.getFirstLlmDeploymentId.mockResolvedValue('llm-qwen3-14b');
+    nerClient.getEnabledLlmDeploymentIdByModelName.mockResolvedValue(null);
+    nerClient.getNerDeployments.mockResolvedValue([]);
     nerClient.requestAnalyze.mockResolvedValue({ detections: [] });
 
     tokenService.verifyAccessToken.mockResolvedValue({
@@ -351,10 +347,6 @@ describe('마스킹 요소 탐지 요청 HTTP API', () => {
       activeLlmId: '100',
     });
     activeLlmRepository.find.mockResolvedValue([]);
-    llmDetailModelRepository.find.mockResolvedValue([]);
-    llmDetailModelRepository.findOne.mockResolvedValue({
-      llmDetailModelId: 'local-1',
-    });
     departmentPolicyRepository.find.mockResolvedValue(
       toDepartmentPolicyEntities(policies.slice(0, 4)),
     );
@@ -396,12 +388,30 @@ describe('마스킹 요소 탐지 요청 HTTP API', () => {
   describe('GET /api/v1/models', () => {
     it('사용자 부서에 활성화된 상세 모델명을 중복 없이 이름순으로 반환한다', async () => {
       activeLlmRepository.find.mockResolvedValueOnce([
-        { llmDetailModel: { llmName: 'gpt-5.5' } },
-        { llmDetailModel: { llmName: 'claude-sonnet-5' } },
-        { llmDetailModel: { llmName: 'gpt-5.5' } },
-      ]);
-      llmDetailModelRepository.find.mockResolvedValueOnce([
-        { llmName: 'local-Qwen2.5-7B-Instruct' },
+        {
+          activeApiKey: { serviceType: 'GPT' },
+          llmDetailModel: { llmName: 'gpt-5.5' },
+        },
+        {
+          activeApiKey: { serviceType: 'Claude' },
+          llmDetailModel: { llmName: 'claude-sonnet-5' },
+        },
+        {
+          activeApiKey: { serviceType: LOCAL_LLM_MODEL },
+          llmDetailModel: { llmName: 'local-Qwen2.5-7B-Instruct' },
+        },
+        {
+          activeApiKey: { serviceType: 'GPT' },
+          llmDetailModel: { llmName: 'gpt-5.5' },
+        },
+        {
+          activeApiKey: { serviceType: 'Claude' },
+          llmDetailModel: { llmName: 'local-Legacy-External-Key' },
+        },
+        {
+          activeApiKey: { serviceType: LOCAL_LLM_MODEL },
+          llmDetailModel: { llmName: 'local-Qwen2.5-7B-Instruct' },
+        },
       ]);
 
       const response = await request(app.getHttpServer())
@@ -416,15 +426,72 @@ describe('마스킹 요소 탐지 요청 HTTP API', () => {
         result: ['local-Qwen2.5-7B-Instruct', 'claude-sonnet-5', 'gpt-5.5'],
       });
       expect(activeLlmRepository.find).toHaveBeenCalledWith({
-        select: { llmDetailModel: { llmName: true } },
+        select: {
+          activeApiKey: { serviceType: true },
+          llmDetailModel: { llmName: true },
+        },
         relations: { activeApiKey: true, llmDetailModel: true },
         where: { activeApiKey: { departmentId } },
         order: { llmDetailModel: { llmName: 'ASC' } },
       });
-      expect(llmDetailModelRepository.find).toHaveBeenCalledWith({
-        select: { llmName: true },
-        where: { llmName: expect.anything() },
-        order: { llmName: 'ASC' },
+    });
+  });
+
+  describe('GET /api/v1/ners', () => {
+    it.each([UserRole.USER, UserRole.DEPART_ADMIN, UserRole.TOTAL_ADMIN])(
+      '%s도 LPL의 로컬 NER 목록을 조회할 수 있다',
+      async (role) => {
+        const deployments = [
+          { deploymentId: 'ner-gliner-multi', enabled: true },
+          { deploymentId: 'ner-disabled', enabled: false },
+        ];
+        principalService.getAuthenticatedUser.mockResolvedValueOnce({
+          ...authentication,
+          role,
+        });
+        nerClient.getNerDeployments.mockResolvedValueOnce(deployments);
+
+        const response = await request(app.getHttpServer())
+          .get('/api/v1/ners')
+          .set('Authorization', 'Bearer access-token')
+          .expect(200);
+
+        expect(response.body).toEqual({
+          isSuccess: true,
+          code: 'PROM200_12',
+          message: '성공적으로 로컬 NER 목록을 조회했습니다.',
+          result: { deployments },
+        });
+      },
+    );
+
+    it('인증 토큰이 없으면 AUTH401_1을 반환한다', async () => {
+      const response = await request(app.getHttpServer())
+        .get('/api/v1/ners')
+        .expect(401);
+
+      expect(nerClient.getNerDeployments).not.toHaveBeenCalled();
+      expect(response.body).toEqual({
+        isSuccess: false,
+        code: 'AUTH401_1',
+        message: '인증 토큰이 필요합니다.',
+      });
+    });
+
+    it('LPL 목록 조회 실패는 PROM502_2로 반환한다', async () => {
+      nerClient.getNerDeployments.mockRejectedValueOnce(
+        new NerRequestException({ status: 502 }),
+      );
+
+      const response = await request(app.getHttpServer())
+        .get('/api/v1/ners')
+        .set('Authorization', 'Bearer access-token')
+        .expect(502);
+
+      expect(response.body).toEqual({
+        isSuccess: false,
+        code: 'PROM502_2',
+        message: '로컬 NER 목록 조회에 실패했습니다.',
       });
     });
   });
@@ -1135,12 +1202,12 @@ describe('마스킹 요소 탐지 요청 HTTP API', () => {
           {
             chatRoomId: '840c66ce-0b5d-4663-bc63-b4c4666cd0f5',
             title: 'A사와 체결 보고서 작성',
-            createdAt: '2026-07-19T17:33:30.000Z',
+          createdAt: '2026-07-20T02:33:30.000+09:00',
           },
           {
             chatRoomId: '57ed5b8b-e77b-49c7-823d-802537d756a3',
             title: '보안 검토',
-            createdAt: '2026-07-18T09:15:00.000Z',
+          createdAt: '2026-07-18T18:15:00.000+09:00',
           },
         ],
       });
@@ -1182,7 +1249,7 @@ describe('마스킹 요소 탐지 요청 HTTP API', () => {
       select: { activeLlmId: true },
       where: {
         activeApiKey: { departmentId, serviceType: 'Claude' },
-        llmDetailModel: { llmName: dto.model },
+        llmDetailModel: { llmName: dto.llmModel },
       },
     });
     expect(reportRepository.validateRequestTickets).toHaveBeenCalledWith(
@@ -1221,7 +1288,7 @@ describe('마스킹 요소 탐지 요청 HTTP API', () => {
       ticket,
       dto.text.slice(0, 50),
       'Claude',
-      dto.model,
+      dto.llmModel,
     );
 
     const savedDetections = reportRepository.saveRegexDetections.mock
@@ -1274,7 +1341,7 @@ describe('마스킹 요소 탐지 요청 HTTP API', () => {
       ticket,
       dto.text.slice(0, 50),
       'Claude',
-      dto.model,
+      dto.llmModel,
     );
     expect(response.body.code).toBe('PROM200_1');
   });
@@ -1282,7 +1349,7 @@ describe('마스킹 요소 탐지 요청 HTTP API', () => {
   it('recentTicket과 chatRoomId를 생략한 최초 요청은 새 채팅방과 null 최근 티켓을 저장한다', async () => {
     const initialText = '  다음 주 01028296642입니다.\n  예정인 미공개 내용입니다.  ';
     const initialDto = {
-      model: 'gpt-5.4-nano',
+      llmModel: 'gpt-5.4-nano',
       text: initialText,
       ticket,
     };
@@ -1446,6 +1513,31 @@ describe('마스킹 요소 탐지 요청 HTTP API', () => {
     });
   });
 
+  it.each([
+    ['llmModel 누락', (() => {
+      const { llmModel: _llmModel, ...requestDto } = dto;
+      return requestDto;
+    })()],
+    ['이전 model 필드', {
+      ...dto,
+      model: dto.llmModel,
+    }],
+    ['비어 있는 ner', {
+      ...dto,
+      ner: '   ',
+    }],
+  ])('%s 요청은 PROM400_3으로 거부한다', async (_description, requestDto) => {
+    const response = await postAnalyze(requestDto).expect(400);
+
+    expect(memberDepartmentRepository.findOne).not.toHaveBeenCalled();
+    expect(reportRepository.create).not.toHaveBeenCalled();
+    expect(response.body).toEqual({
+      isSuccess: false,
+      code: 'PROM400_3',
+      message: '마스킹 요소 분석 요청 형식이 올바르지 않습니다.',
+    });
+  });
+
   it('NER 호출 전에 NER PENDING 리포트를 만들고 정규식 결과를 전달한다', async () => {
     const response = await postAnalyzeWithFile(file).expect(200);
 
@@ -1461,8 +1553,13 @@ describe('마스킹 요소 탐지 요청 HTTP API', () => {
       null,
       true,
     );
+    expect(nerClient.getEnabledLlmDeploymentIdByModelName).not.toHaveBeenCalled();
+    expect(nerClient.getFirstNerDeploymentId).toHaveBeenCalledTimes(1);
+    expect(nerClient.getFirstLlmDeploymentId).toHaveBeenCalledTimes(1);
     expect(nerClient.requestAnalyze).toHaveBeenCalledWith(expect.objectContaining({
       text: dto.text,
+      nerDeploymentId: 'ner-gliner-multi',
+      llmDeploymentId: 'llm-qwen3-14b',
       existingDetections: expect.any(Array),
     }));
     expect(promptFileRepository.create).toHaveBeenCalledWith(
@@ -1479,6 +1576,30 @@ describe('마스킹 요소 탐지 요청 HTTP API', () => {
       message: '성공적으로 마스킹 요소 분석을 요청했습니다.',
       result: { chatRoomId: dto.chatRoomId },
     });
+  });
+
+  it('요청의 ner와 매칭된 local-* LLM Deployment를 LPL 탐지 요청에 사용한다', async () => {
+    const localLlmDeploymentId = 'ollama-qwen3-8b';
+    const localLlmModel = 'local-qwen3:8b';
+    nerClient.getEnabledLlmDeploymentIdByModelName.mockResolvedValueOnce(
+      localLlmDeploymentId,
+    );
+
+    await postAnalyze({
+      ...dto,
+      llmModel: localLlmModel,
+      ner: 'ner-custom',
+    }).expect(200);
+    await waitForCall(() => nerClient.requestAnalyze.mock.calls.length > 0);
+
+    expect(nerClient.getEnabledLlmDeploymentIdByModelName)
+      .toHaveBeenCalledWith(localLlmModel);
+    expect(nerClient.getFirstNerDeploymentId).not.toHaveBeenCalled();
+    expect(nerClient.getFirstLlmDeploymentId).not.toHaveBeenCalled();
+    expect(nerClient.requestAnalyze).toHaveBeenCalledWith(expect.objectContaining({
+      nerDeploymentId: 'ner-custom',
+      llmDeploymentId: localLlmDeploymentId,
+    }));
   });
 
   it('부서 정책에 포함되지 않은 마스킹 항목은 탐지하지 않는다', async () => {
@@ -1615,13 +1736,38 @@ describe('마스킹 요소 탐지 요청 HTTP API', () => {
       select: { activeLlmId: true },
       where: {
         activeApiKey: { departmentId, serviceType: 'Claude' },
-        llmDetailModel: { llmName: dto.model },
+        llmDetailModel: { llmName: dto.llmModel },
       },
     });
     expect(reportRepository.validateRequestTickets).not.toHaveBeenCalled();
     expect(reportRepository.create).not.toHaveBeenCalled();
     expect(objectStorage.copyObject).not.toHaveBeenCalled();
     expect(objectStorage.objects.has(STAGED_OBJECT_KEY)).toBe(false);
+    expect(response.body).toEqual({
+      isSuccess: false,
+      code: 'PROM403_1',
+      message: '해당 부서에선 사용이 제한된 모델입니다.',
+    });
+  });
+
+  it('비활성화된 local-* LLM mapping은 PROM403_1로 거부한다', async () => {
+    activeLlmRepository.findOne.mockResolvedValueOnce(null);
+    const localModel = 'local-Qwen2.5-7B-Instruct';
+
+    const response = await postAnalyze({
+      ...dto,
+      llmModel: localModel,
+    }).expect(403);
+
+    expect(activeLlmRepository.findOne).toHaveBeenCalledWith({
+      select: { activeLlmId: true },
+      where: {
+        activeApiKey: { departmentId, serviceType: LOCAL_LLM_MODEL },
+        llmDetailModel: { llmName: localModel },
+      },
+    });
+    expect(reportRepository.validateRequestTickets).not.toHaveBeenCalled();
+    expect(reportRepository.create).not.toHaveBeenCalled();
     expect(response.body).toEqual({
       isSuccess: false,
       code: 'PROM403_1',

@@ -85,7 +85,7 @@ describe('AdminService 부서 정책 동기화', () => {
 
     await expect(service.syncPolicies(
       4,
-      { policyName: '기본 정책', policies: ['PHONE', 'CARD'] },
+      { policies: ['PHONE', 'CARD'] },
       { userId: 1, expiredAt: '', accessToken: true, role: UserRole.TOTAL_ADMIN },
     )).resolves.toEqual({
       targetDepartment: '정책기획팀',
@@ -107,7 +107,7 @@ describe('AdminService 부서 정책 동기화', () => {
 
     await expect(service.syncPolicies(
       4,
-      { policyName: '기본 정책', policies: ['CARD'] },
+      { policies: ['CARD'] },
       { userId: 1, expiredAt: '', accessToken: true, role: UserRole.TOTAL_ADMIN },
     )).resolves.toMatchObject({ policies: [] });
     expect(departmentPolicyRepository.upsert).not.toHaveBeenCalled();

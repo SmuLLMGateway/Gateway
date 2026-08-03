@@ -99,7 +99,7 @@ describe('AdminService 프롬프트 상세 조회', () => {
       limit: 200000,
       usage: 12400,
       usagePercent: 6.2,
-      promptedAt: '2026-08-02T15:57:23.000Z',
+      promptedAt: '2026-08-03T00:57:23.000+09:00',
       detectCnt: 2,
       maskingCnt: 2,
       originalText: 'API키와 01012345678',
@@ -154,7 +154,7 @@ describe('AdminService 프롬프트 상세 조회', () => {
     await expect(service.getPromptDetail('102')).resolves.toMatchObject({
       usage: 0,
       usagePercent: 0,
-      promptedAt: '2026-08-02T15:55:00.000Z',
+      promptedAt: '2026-08-03T00:55:00.000+09:00',
     });
 
     promptLogRepository.findOne.mockResolvedValueOnce(null);

@@ -43,6 +43,22 @@ const userIdParam = () =>
 const departmentIdParam = () =>
   ApiParam({ name: 'departmentId', type: Number, example: 1, description: '부서 ID' });
 
+const localLlmDeploymentIdParam = () =>
+  ApiParam({
+    name: 'deploymentId',
+    type: String,
+    example: 'local-qwen3:8b',
+    description: 'LPL Registry local-* LLM Deployment ID',
+  });
+
+const localNerDeploymentIdParam = () =>
+  ApiParam({
+    name: 'deploymentId',
+    type: String,
+    example: 'local-ner-gliner-multi',
+    description: 'LPL Registry local-* NER Deployment ID',
+  });
+
 const promptIdParam = () =>
   ApiParam({
     name: 'promptId',
@@ -65,6 +81,15 @@ export const AdminControllerDocs = () =>
       AdminResDTO.CreateUser,
       AdminResDTO.CreateDepartment,
       AdminResDTO.RegisterApiKey,
+      AdminReqDTO.RegisterLocalLlm,
+      AdminReqDTO.RegisterLocalNer,
+      AdminReqDTO.UpdateLocalDeploymentStatus,
+      AdminResDTO.RegisterLocalLlm,
+      AdminResDTO.RegisterLocalNer,
+      AdminResDTO.LocalDeployment,
+      AdminResDTO.LocalLlmList,
+      AdminResDTO.UpdateLocalLlmStatus,
+      AdminResDTO.UpdateLocalNerStatus,
       AdminResDTO.DepartmentApiKey,
       AdminReqDTO.LinkDepartmentUsers,
       AdminResDTO.LinkDepartmentUsers,
@@ -127,7 +152,7 @@ export const CreateDepartmentDocs = () =>
     adminTag(),
     ApiOperation({
       summary: '부서 생성',
-      description: '부서 기본 설정을 생성합니다. LLM API 키와 보안 정책은 별도 API로 설정합니다.',
+      description: '부서 기본 설정과 지정한 부서 관리자를 생성합니다. 부서별 Local LLM 연결(api_key는 NULL)은 자동 생성되며, 외부 LLM API 키와 보안 정책은 별도 API로 설정합니다.',
     }),
     ApiBody({
       required: true,
@@ -135,11 +160,14 @@ export const CreateDepartmentDocs = () =>
     }),
     ApiSuccessResponse(
       AdminSuccessStatus.CREATE_DEPARTMENT,
-      SwaggerResultSchema.unknown(),
+      SwaggerResultSchema.model(getSchemaPath(AdminResDTO.CreateDepartment)),
     ),
     ...ApiErrorResponses([
       AdminErrorStatus.DUPLICATE_DEPARTMENT,
       AdminErrorStatus.INVALID_DEPARTMENT_NAME,
+      AdminErrorStatus.INVALID_DEPARTMENT_ADMIN,
+      AdminErrorStatus.LOCAL_DEPLOYMENT_PROVIDER_UNAVAILABLE,
+      AuthErrorStatus.USER_NOT_FOUND,
       AuthErrorStatus.TOKEN_EXPIRED,
       AuthErrorStatus.FORBIDDEN,
       ErrorStatus.INTERNAL_SERVER_ERROR,
@@ -180,6 +208,121 @@ export const RegisterApiKeyDocs = () =>
     ...ApiErrorResponses([
       AdminErrorStatus.INVALID_API_KEY,
       AdminErrorStatus.DEPARTMENT_NOT_FOUND,
+      AuthErrorStatus.TOKEN_EXPIRED,
+      AuthErrorStatus.FORBIDDEN,
+      ErrorStatus.INTERNAL_SERVER_ERROR,
+    ]),
+  );
+
+export const RegisterLocalLlmDocs = () =>
+  applyDecorators(
+    adminTag(),
+    ApiOperation({
+      summary: '로컬 LLM 등록',
+      description: '총 관리자가 전역 LPL Provider에 로컬 LLM Deployment를 활성 상태로 등록합니다. Deployment ID는 local-* 형식이며, openai_compatible은 modelName을 정규화한 llm_detail_model.llm_name과 정확히 같아야 합니다. adapterType은 mock 또는 openai_compatible을 지원하며, openai_compatible에는 baseUrl·modelName·timeoutMs가 필요합니다. 등록 후 LPL의 활성 Deployment 상세 modelName을 동기화하여 모든 부서에서 로컬 모델을 사용할 수 있게 합니다. 비활성화는 상태 변경 API를 사용합니다.',
+    }),
+    ApiBody({ required: true, type: AdminReqDTO.RegisterLocalLlm }),
+    ApiSuccessResponse(
+      AdminSuccessStatus.REGISTER_LOCAL_LLM,
+      SwaggerResultSchema.model(getSchemaPath(AdminResDTO.RegisterLocalLlm)),
+    ),
+    ...ApiErrorResponses([
+      AdminErrorStatus.INVALID_LOCAL_DEPLOYMENT,
+      AdminErrorStatus.DUPLICATE_LOCAL_DEPLOYMENT,
+      AdminErrorStatus.INVALID_LOCAL_DEPLOYMENT_CONFIGURATION,
+      AdminErrorStatus.LOCAL_DEPLOYMENT_PROVIDER_UNAVAILABLE,
+      AuthErrorStatus.TOKEN_EXPIRED,
+      AuthErrorStatus.FORBIDDEN,
+      ErrorStatus.INTERNAL_SERVER_ERROR,
+    ]),
+  );
+
+export const RegisterLocalNerDocs = () =>
+  applyDecorators(
+    adminTag(),
+    ApiOperation({
+      summary: '로컬 NER 등록',
+      description: '총 관리자가 전역 LPL Provider에 local-* 형식의 NER Deployment를 활성 상태로 등록합니다. adapterType은 gliner_http, hf_inference_token_classification, http_ner, mock을 지원하며 mock 외 어댑터에는 baseUrl·timeoutMs가 필요합니다. 등록된 NER Deployment는 전 부서의 분석 흐름에서 공통으로 사용됩니다. 비활성화는 상태 변경 API를 사용합니다.',
+    }),
+    ApiBody({ required: true, type: AdminReqDTO.RegisterLocalNer }),
+    ApiSuccessResponse(
+      AdminSuccessStatus.REGISTER_LOCAL_NER,
+      SwaggerResultSchema.model(getSchemaPath(AdminResDTO.RegisterLocalNer)),
+    ),
+    ...ApiErrorResponses([
+      AdminErrorStatus.INVALID_LOCAL_DEPLOYMENT,
+      AdminErrorStatus.DUPLICATE_LOCAL_DEPLOYMENT,
+      AdminErrorStatus.INVALID_LOCAL_DEPLOYMENT_CONFIGURATION,
+      AdminErrorStatus.LOCAL_DEPLOYMENT_PROVIDER_UNAVAILABLE,
+      AuthErrorStatus.TOKEN_EXPIRED,
+      AuthErrorStatus.FORBIDDEN,
+      ErrorStatus.INTERNAL_SERVER_ERROR,
+    ]),
+  );
+
+export const LocalLlmListDocs = () =>
+  applyDecorators(
+    adminTag(),
+    ApiOperation({
+      summary: '로컬 LLM 목록 조회',
+      description: '총 관리자가 LPL Provider의 GET /deployments/llm 결과를 조회합니다. LPL 목록의 deployments 배열을 상세 설정 조회나 활성화 여부 필터링 없이 그대로 반환합니다.',
+    }),
+    ApiSuccessResponse(
+      AdminSuccessStatus.LOCAL_LLM_LIST,
+      SwaggerResultSchema.model(getSchemaPath(AdminResDTO.LocalLlmList)),
+    ),
+    ...ApiErrorResponses([
+      AdminErrorStatus.LOCAL_DEPLOYMENT_PROVIDER_UNAVAILABLE,
+      AuthErrorStatus.TOKEN_EXPIRED,
+      AuthErrorStatus.FORBIDDEN,
+      ErrorStatus.INTERNAL_SERVER_ERROR,
+    ]),
+  );
+
+export const UpdateLocalLlmStatusDocs = () =>
+  applyDecorators(
+    adminTag(),
+    ApiOperation({
+      summary: '로컬 LLM 활성화 상태 변경',
+      description: '총 관리자가 전역 LPL Provider의 로컬 LLM Deployment를 활성화 또는 비활성화합니다. 비활성화하면 llm_detail_model 카탈로그는 보존하고 Local LLM 전용 active_llm 연결만 제거해 전 부서에서 사용할 수 없게 합니다. 다시 활성화하면 부서별 Local LLM 연결을 복구합니다.',
+    }),
+    localLlmDeploymentIdParam(),
+    ApiBody({ required: true, type: AdminReqDTO.UpdateLocalDeploymentStatus }),
+    ApiSuccessResponse(
+      AdminSuccessStatus.UPDATE_LOCAL_LLM_STATUS,
+      SwaggerResultSchema.model(getSchemaPath(AdminResDTO.UpdateLocalLlmStatus)),
+    ),
+    ...ApiErrorResponses([
+      AdminErrorStatus.INVALID_LOCAL_DEPLOYMENT,
+      AdminErrorStatus.INVALID_LOCAL_DEPLOYMENT_STATE,
+      AdminErrorStatus.LOCAL_DEPLOYMENT_NOT_FOUND,
+      AdminErrorStatus.INVALID_LOCAL_DEPLOYMENT_CONFIGURATION,
+      AdminErrorStatus.LOCAL_DEPLOYMENT_PROVIDER_UNAVAILABLE,
+      AuthErrorStatus.TOKEN_EXPIRED,
+      AuthErrorStatus.FORBIDDEN,
+      ErrorStatus.INTERNAL_SERVER_ERROR,
+    ]),
+  );
+
+export const UpdateLocalNerStatusDocs = () =>
+  applyDecorators(
+    adminTag(),
+    ApiOperation({
+      summary: '로컬 NER 활성화 상태 변경',
+      description: '총 관리자가 전역 LPL Provider의 NER Deployment를 활성화 또는 비활성화합니다. 성공 시 LPL Provider가 반환한 변경된 Deployment 상세를 반환합니다.',
+    }),
+    localNerDeploymentIdParam(),
+    ApiBody({ required: true, type: AdminReqDTO.UpdateLocalDeploymentStatus }),
+    ApiSuccessResponse(
+      AdminSuccessStatus.UPDATE_LOCAL_NER_STATUS,
+      SwaggerResultSchema.model(getSchemaPath(AdminResDTO.UpdateLocalNerStatus)),
+    ),
+    ...ApiErrorResponses([
+      AdminErrorStatus.INVALID_LOCAL_DEPLOYMENT,
+      AdminErrorStatus.INVALID_LOCAL_DEPLOYMENT_STATE,
+      AdminErrorStatus.LOCAL_DEPLOYMENT_NOT_FOUND,
+      AdminErrorStatus.INVALID_LOCAL_DEPLOYMENT_CONFIGURATION,
+      AdminErrorStatus.LOCAL_DEPLOYMENT_PROVIDER_UNAVAILABLE,
       AuthErrorStatus.TOKEN_EXPIRED,
       AuthErrorStatus.FORBIDDEN,
       ErrorStatus.INTERNAL_SERVER_ERROR,
@@ -252,7 +395,7 @@ export const PolicyCatalogDocs = () =>
     adminTag(),
     ApiOperation({
       summary: '보안 정책 목록 조회',
-      description: '저장된 모든 보안 정책 프리셋별 이름과 포함된 보안 정책 한글 표시명 목록을 조회합니다. 저장된 프리셋이 없으면 result는 null입니다.',
+      description: '저장된 모든 보안 정책 프리셋별 이름, 활성 여부와 포함된 보안 정책 한글 표시명 목록을 조회합니다. 저장된 프리셋이 없으면 result는 null입니다.',
     }),
     ApiSuccessResponse(
       AdminSuccessStatus.POLICY_CATALOG,
@@ -327,7 +470,7 @@ export const LlmHealthDocs = () =>
     adminTag(),
     ApiOperation({
       summary: '모델 상태 조회',
-      description: 'GPT·Gemini·Claude·Local LLM의 최신 상태, 최근 25개 상태 이력 기준 가용률, P95 지연시간과 차트용 이력을 조회합니다. P95가 1초 이상이면 최신 정상을 지연으로 표시합니다.',
+      description: 'GPT·Gemini·Claude·Local LLM의 최신 상태, 최근 25개 상태 이력 기준 가용률, P95 지연시간과 차트용 이력을 조회합니다. currentStatus는 가장 최근 health_history 상태를 그대로 반환합니다.',
     }),
     ApiSuccessResponse(
       AdminSuccessStatus.LLM_HEALTH,
@@ -344,6 +487,7 @@ export const SyncPoliciesDocs = () =>
       description: '총괄 관리자가 활성 프리셋에 포함된 전역 활성 정책만 부서에 적용합니다. 요청 목록에 있어도 전역/프리셋에서 비활성인 정책은 무시하며, 요청에서 빠진 기존 부서 정책은 비활성화합니다.',
     }),
     departmentIdParam(),
+    ApiBody({ required: true, type: AdminReqDTO.SyncPolicies }),
     ApiSuccessResponse(
       AdminSuccessStatus.SYNC_POLICIES,
       SwaggerResultSchema.model(getSchemaPath(AdminResDTO.SyncPolicies)),

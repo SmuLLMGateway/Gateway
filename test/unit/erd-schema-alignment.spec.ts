@@ -142,6 +142,21 @@ describe('ERD schema alignment', () => {
     }
   });
 
+  it('Local LLM 권한 연결을 위해 active_api_key.api_key는 NULL을 허용한다', () => {
+    const apiKeyColumn = metadata.columns.find(
+      (candidate) =>
+        candidate.target === ActiveApiKeyDAO
+        && candidate.propertyName === 'apiKey',
+    );
+
+    expect(apiKeyColumn?.options).toMatchObject({
+      name: 'api_key',
+      type: 'varchar',
+      length: 1_024,
+      nullable: true,
+    });
+  });
+
   it('member_limit에 API 키별 한도와 사용량 컬럼을 둔다', () => {
     const limitColumn = metadata.columns.find(
       (candidate) =>

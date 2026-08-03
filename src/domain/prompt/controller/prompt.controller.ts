@@ -41,6 +41,7 @@ import {
   LlmSendDocs,
   MaskingElementDetectionRequestDocs,
   ModelListDocs,
+  NerListDocs,
   PromptListDocs,
   PromptControllerDocs,
   RecentMaskingElementDetectionDocs,
@@ -155,6 +156,13 @@ export class PromptController {
   ): Promise<GeneralResponse<PromptResDTO.ModelList>> {
     const result = await this.promptService.getModels(authentication);
     return GeneralResponse.onSuccess(PromptSuccessStatus.MODEL_LIST, result);
+  }
+
+  @NerListDocs()
+  @Get('/api/v1/ners')
+  async getNerList(): Promise<GeneralResponse<PromptResDTO.NerList>> {
+    const result = await this.promptService.getNerList();
+    return GeneralResponse.onSuccess(PromptSuccessStatus.NER_LIST, result);
   }
 
   @RecentMaskingElementDetectionDocs()

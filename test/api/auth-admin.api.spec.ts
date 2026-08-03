@@ -51,6 +51,10 @@ import { LlmApiKeyValidationResult } from '../../src/global/llm/enum/llm-api-key
 import { LlmProvider } from '../../src/global/llm/enum/llm-provider.enum.js';
 import { ApiKeyEncryptionService } from '../../src/global/llm/service/api-key-encryption.service.js';
 import { MinioObjectStorageService } from '../../src/global/storage/service/minio-object-storage.service.js';
+import { NerConfig } from '../../src/global/ner/config/ner.config.js';
+import { ProviderConfig } from '../../src/global/llm/config/provider.config.js';
+import { LOCAL_LLM_MODEL } from '../../src/global/llm/llm-service.mapping.js';
+import { NerClient } from '../../src/global/ner/client/ner.client.js';
 
 describe('로그인/회원 생성 HTTP API', () => {
   const department: DepartmentDAO = {
@@ -202,6 +206,7 @@ describe('로그인/회원 생성 HTTP API', () => {
     save: jest.fn(),
   };
   const objectStorage = { isHealthy: jest.fn() };
+  const nerClient = { getEnabledLlmModelNames: jest.fn() };
   const departmentPolicyRepository = {
     createQueryBuilder: jest.fn(),
     create: jest.fn(),
@@ -235,6 +240,7 @@ describe('로그인/회원 생성 HTTP API', () => {
   const adminMapper = {
     toDepartmentDAO: jest.fn(),
     toActiveApiKeyDAO: jest.fn(),
+    toLocalLlmActiveApiKeyDAO: jest.fn(),
   };
   const entityManager = {
     getRepository: jest.fn(),
@@ -325,6 +331,9 @@ describe('로그인/회원 생성 HTTP API', () => {
         { provide: UserMapper, useValue: userMapper },
         { provide: AdminMapper, useValue: adminMapper },
         { provide: MinioObjectStorageService, useValue: objectStorage },
+        { provide: NerConfig, useValue: {} },
+        { provide: ProviderConfig, useValue: {} },
+        { provide: NerClient, useValue: nerClient },
       ],
     }).compile();
 
@@ -485,6 +494,14 @@ describe('로그인/회원 생성 HTTP API', () => {
         ...data,
       }),
     );
+    adminMapper.toLocalLlmActiveApiKeyDAO.mockImplementation(
+      (departmentId: string): ActiveApiKeyDAO => ({
+        activeApiKeyId: '',
+        apiKey: null,
+        serviceType: LOCAL_LLM_MODEL,
+        departmentId,
+      } as ActiveApiKeyDAO),
+    );
     activeApiKeyRepository.findOneBy.mockResolvedValue(null);
     activeApiKeyRepository.find.mockResolvedValue([]);
     activeApiKeyRepository.save.mockImplementation(
@@ -498,6 +515,7 @@ describe('로그인/회원 생성 HTTP API', () => {
       { llmDetailModelId: '301', llmName: 'gpt-4.1' },
       { llmDetailModelId: '302', llmName: 'GPT-4o' },
     ]);
+    nerClient.getEnabledLlmModelNames.mockResolvedValue([]);
     apiKeyValidationClient.validate.mockResolvedValue(
       LlmApiKeyValidationResult.VALID,
     );
@@ -1023,12 +1041,25 @@ describe('로그인/회원 생성 HTTP API', () => {
     const createDepartmentDto = {
       name: '신규 보안팀',
       code: 'NEWSEC',
+      departmentAdminId: 2,
       activeLocalLLM: true,
       mustFiltering: true,
       departmentLimit: 0,
     };
+    const departmentAdmin = createMember({
+      memberId: '2',
+      memberName: '부서관리자',
+      authorize: UserRole.DEPART_ADMIN,
+    });
 
-    it('TOTAL_ADMIN은 중복을 확인하고 부서를 저장한다', async () => {
+    it('TOTAL_ADMIN은 부서 관리자와 함께 부서를 생성한다', async () => {
+      memberRepository.findOne.mockResolvedValue(departmentAdmin);
+      memberDepartmentRepository.findOneBy.mockResolvedValue(null);
+      nerClient.getEnabledLlmModelNames.mockResolvedValue(['qwen3:8b']);
+      llmDetailModelRepository.find.mockResolvedValueOnce([
+        { llmDetailModelId: '303', llmName: 'local-qwen3:8b' },
+      ]);
+
       const response = await request(app.getHttpServer())
         .post('/admin/v1/departments')
         .set('Authorization', 'Bearer total-token')
@@ -1054,12 +1085,27 @@ describe('로그인/회원 생성 HTTP API', () => {
         recentUsePercent: '0',
         mustFiltering: createDepartmentDto.mustFiltering,
       });
+      expect(memberDepartmentRepository.save).toHaveBeenCalledWith({
+        memberId: departmentAdmin.memberId,
+        departmentId: '11',
+      });
+      expect(adminMapper.toLocalLlmActiveApiKeyDAO).toHaveBeenCalledWith('11');
+      expect(activeApiKeyRepository.save).toHaveBeenCalledWith({
+        activeApiKeyId: '71',
+        apiKey: null,
+        serviceType: LOCAL_LLM_MODEL,
+        departmentId: '11',
+      });
+      expect(activeLlmRepository.upsert).toHaveBeenCalledWith([
+        { activeApiKeyId: '71', llmDetailModelId: '303' },
+      ], ['activeApiKeyId', 'llmDetailModelId']);
       expect(response.body).toEqual({
         isSuccess: true,
         code: 'ADMIN201_2',
         message: '성공적으로 부서를 생성했습니다.',
         result: {
-          name: createDepartmentDto.name,
+          departmentId: 11,
+          departmentName: createDepartmentDto.name,
           createdAt: expect.any(String),
         },
       });
@@ -1087,6 +1133,8 @@ describe('로그인/회원 생성 HTTP API', () => {
     });
 
     it('동시 요청으로 DB 유니크 제약에 걸려도 DUPLICATE_DEPARTMENT를 반환한다', async () => {
+      memberRepository.findOne.mockResolvedValue(departmentAdmin);
+      memberDepartmentRepository.findOneBy.mockResolvedValue(null);
       departmentRepository.save.mockRejectedValueOnce(
         new QueryFailedError(
           'INSERT INTO department',
@@ -1108,6 +1156,27 @@ describe('로그인/회원 생성 HTTP API', () => {
         isSuccess: false,
         code: 'ADMIN400_2',
         message: '이미 생성된 부서입니다.',
+      });
+    });
+
+    it('부서 관리자가 아니거나 이미 다른 부서에 소속되었으면 생성하지 않는다', async () => {
+      memberRepository.findOne.mockResolvedValue({
+        ...departmentAdmin,
+        authorize: UserRole.USER,
+      });
+
+      const response = await request(app.getHttpServer())
+        .post('/admin/v1/departments')
+        .set('Authorization', 'Bearer total-token')
+        .send(createDepartmentDto)
+        .expect(400);
+
+      expect(departmentRepository.save).not.toHaveBeenCalled();
+      expect(memberDepartmentRepository.save).not.toHaveBeenCalled();
+      expect(response.body).toEqual({
+        isSuccess: false,
+        code: 'ADMIN400_14',
+        message: '부서 관리자 지정이 올바르지 않습니다.',
       });
     });
 
@@ -2420,6 +2489,7 @@ describe('로그인/회원 생성 HTTP API', () => {
       activeApiKeyRepository.save,
       activeLlmRepository.upsert,
       llmDetailModelRepository.find,
+      nerClient.getEnabledLlmModelNames,
       departmentPolicyRepository.create,
       departmentPolicyRepository.createQueryBuilder,
       departmentPolicyRepository.delete,
@@ -2456,6 +2526,7 @@ describe('로그인/회원 생성 HTTP API', () => {
       userMapper.toMemberDepartmentDAO,
       adminMapper.toDepartmentDAO,
       adminMapper.toActiveApiKeyDAO,
+      adminMapper.toLocalLlmActiveApiKeyDAO,
       entityManager.getRepository,
       dataSource.transaction,
       dataSource.getRepository,

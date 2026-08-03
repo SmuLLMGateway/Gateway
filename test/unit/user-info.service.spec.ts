@@ -188,14 +188,14 @@ describe('UserService.getUserInfo', () => {
         {
           promptId: 'report-1',
           promptSummary: '계약서 검토 요청',
-          promptedAt: '2026-07-27T01:00:00.000Z',
+          promptedAt: '2026-07-27T10:00:00.000+09:00',
           llmModel: 'GPT',
           detectCnt: 2,
         },
         {
           promptId: 'report-2',
           promptSummary: '로컬 요약 요청',
-          promptedAt: '2026-07-26T01:00:00.000Z',
+          promptedAt: '2026-07-26T10:00:00.000+09:00',
           llmModel: 'Local LLM',
           detectCnt: 1,
         },

@@ -52,6 +52,11 @@ export const PromptSuccessStatus = {
         code: 'PROM200_11',
         message: '성공적으로 해당 마스킹 요소 탐지 요청을 취소했습니다.'
     },
+    NER_LIST: {
+        httpStatus: HttpStatus.OK,
+        code: 'PROM200_12',
+        message: '성공적으로 로컬 NER 목록을 조회했습니다.'
+    },
 
     BEFORE_ANALYZE: {
         httpStatus: HttpStatus.OK,
@@ -137,6 +142,11 @@ export const PromptErrorStatus = {
         httpStatus: HttpStatus.BAD_GATEWAY,
         code: 'PROM502_1',
         message: '파일 분석 서버 요청에 실패했습니다.'
+    },
+    NER_DEPLOYMENT_LIST_UNAVAILABLE: {
+        httpStatus: HttpStatus.BAD_GATEWAY,
+        code: 'PROM502_2',
+        message: '로컬 NER 목록 조회에 실패했습니다.'
     },
     ANALYZE_SERVICE_UNAVAILABLE: {
         httpStatus: HttpStatus.SERVICE_UNAVAILABLE,

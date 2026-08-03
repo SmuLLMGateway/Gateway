@@ -7,7 +7,16 @@ export namespace PromptReqDTO {
             description: '사용할 LLM 모델',
             maxLength: 100
         })
-        model!: string;
+        llmModel!: string;
+
+        @ApiPropertyOptional({
+            type: String,
+            example: 'local-ner-gliner-multi',
+            nullable: true,
+            description: 'NER 탐지에 사용할 LPL Provider NER Deployment ID. 생략하면 활성 Deployment 중 첫 번째를 사용합니다.',
+            maxLength: 255,
+        })
+        ner?: string | null;
 
         @ApiProperty({
             example: '다음 주 A사와 체결 예정인 미공개...',

@@ -1,3 +1,4 @@
+import { Logger } from '@nestjs/common';
 import { NerClient } from '../../src/global/ner/client/ner.client.js';
 import { NerConfig } from '../../src/global/ner/config/ner.config.js';
 import { NerRequestException } from '../../src/global/ner/exception/ner-request.exception.js';
@@ -6,8 +7,6 @@ import type { NerAnalyzeRequest } from '../../src/global/ner/type/ner-analyze-re
 describe('NerConfig', () => {
   const originalServerIp = process.env.NER_SERVER_IP;
   const originalServerPort = process.env.NER_SERVER_PORT;
-  const originalNerDeploymentId = process.env.NER_DEPLOYMENT_ID;
-  const originalLlmDeploymentId = process.env.NER_LLM_DEPLOYMENT_ID;
 
   afterEach(() => {
     if (originalServerIp === undefined) {
@@ -19,16 +18,6 @@ describe('NerConfig', () => {
       delete process.env.NER_SERVER_PORT;
     } else {
       process.env.NER_SERVER_PORT = originalServerPort;
-    }
-    if (originalNerDeploymentId === undefined) {
-      delete process.env.NER_DEPLOYMENT_ID;
-    } else {
-      process.env.NER_DEPLOYMENT_ID = originalNerDeploymentId;
-    }
-    if (originalLlmDeploymentId === undefined) {
-      delete process.env.NER_LLM_DEPLOYMENT_ID;
-    } else {
-      process.env.NER_LLM_DEPLOYMENT_ID = originalLlmDeploymentId;
     }
   });
 
@@ -93,12 +82,36 @@ describe('NerClient', () => {
       score: 1,
     }],
   };
+  const nerDeployment = {
+    deploymentId: 'ner-gliner-multi',
+    adapterType: 'gliner_http' as const,
+    baseUrl: 'http://ner-server:8008/ner',
+    timeoutMs: 30_000,
+    enabled: true,
+  };
+  const llmDeployment = {
+    deploymentId: 'ollama-qwen3-8b',
+    adapterType: 'openai_compatible' as const,
+    baseUrl: 'http://ollama:11434/v1',
+    modelName: 'qwen3:8b',
+    timeoutMs: 300_000,
+    enabled: true,
+  };
+  const mockNerDeployment = {
+    deploymentId: 'ner-mock',
+    adapterType: 'mock' as const,
+    enabled: true,
+  };
+  const mockLlmDeployment = {
+    deploymentId: 'llm-mock',
+    adapterType: 'mock' as const,
+    enabled: true,
+  };
   const config = {
     analyzeUrl: 'http://127.0.0.1:8000/detect',
+    nerDeploymentsUrl: 'http://127.0.0.1:8000/deployments/ner',
     llmDeploymentsUrl: 'http://127.0.0.1:8000/deployments/llm',
     requestTimeoutMs: 5_000,
-    nerDeploymentId: 'ner-gliner-multi',
-    llmDeploymentId: 'llm-qwen3-14b',
   } as NerConfig;
 
   let client: NerClient;
@@ -149,12 +162,211 @@ describe('NerClient', () => {
     });
   });
 
-  it('NER 서버가 비-2xx로 응답하면 연동 오류를 발생시킨다', async () => {
-    fetchSpy.mockResolvedValueOnce(new Response(null, { status: 500 }));
+  it('LPL에 NER·로컬 LLM Deployment 등록 요청을 각각 201 계약으로 전송한다', async () => {
+    fetchSpy
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        ...nerDeployment,
+      }), { status: 201 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        ...llmDeployment,
+      }), { status: 201 }));
 
-    await expect(client.requestAnalyze(request)).rejects.toBeInstanceOf(
-      NerRequestException,
+    await expect(client.createNerDeployment(nerDeployment)).resolves.toEqual({
+      deploymentId: nerDeployment.deploymentId,
+    });
+    await expect(client.createLlmDeployment(llmDeployment)).resolves.toEqual({
+      deploymentId: llmDeployment.deploymentId,
+    });
+
+    expect(fetchSpy).toHaveBeenNthCalledWith(1, config.nerDeploymentsUrl, {
+      method: 'POST',
+      headers: {
+        accept: 'application/json',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify(nerDeployment),
+      signal: expect.any(AbortSignal),
+    });
+    expect(fetchSpy).toHaveBeenNthCalledWith(2, config.llmDeploymentsUrl, {
+      method: 'POST',
+      headers: {
+        accept: 'application/json',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify(llmDeployment),
+      signal: expect.any(AbortSignal),
+    });
+  });
+
+  it('mock Deployment에는 연결 설정 필드 없이 등록 요청을 전송한다', async () => {
+    fetchSpy
+      .mockResolvedValueOnce(new Response(JSON.stringify(mockNerDeployment), {
+        status: 201,
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(mockLlmDeployment), {
+        status: 201,
+      }));
+
+    await expect(client.createNerDeployment(mockNerDeployment)).resolves
+      .toEqual({ deploymentId: mockNerDeployment.deploymentId });
+    await expect(client.createLlmDeployment(mockLlmDeployment)).resolves
+      .toEqual({ deploymentId: mockLlmDeployment.deploymentId });
+
+    expect(fetchSpy).toHaveBeenNthCalledWith(1, config.nerDeploymentsUrl, {
+      method: 'POST',
+      headers: {
+        accept: 'application/json',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify(mockNerDeployment),
+      signal: expect.any(AbortSignal),
+    });
+    expect(fetchSpy).toHaveBeenNthCalledWith(2, config.llmDeploymentsUrl, {
+      method: 'POST',
+      headers: {
+        accept: 'application/json',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify(mockLlmDeployment),
+      signal: expect.any(AbortSignal),
+    });
+  });
+
+  it.each([409, 422])('등록 요청의 LPL %i 오류 상태를 보존한다', async (status) => {
+    fetchSpy.mockResolvedValueOnce(new Response(null, { status }));
+
+    await expect(client.createLlmDeployment(llmDeployment)).rejects
+      .toMatchObject({ status });
+  });
+
+  it('등록 응답이 201이 아니거나 deploymentId가 없으면 연동 오류를 반환한다', async () => {
+    fetchSpy
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        deploymentId: nerDeployment.deploymentId,
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({}), { status: 201 }));
+
+    await expect(client.createNerDeployment(nerDeployment)).rejects
+      .toMatchObject({ status: 200 });
+    await expect(client.createNerDeployment(nerDeployment)).rejects
+      .toBeInstanceOf(NerRequestException);
+  });
+
+  it('LPL에 LLM·NER Deployment 활성 상태 변경 PATCH를 전송하고 200 상세 응답을 반환한다', async () => {
+    const updatedLlmDeployment = {
+      ...llmDeployment,
+      enabled: false,
+    };
+    const updatedNerDeployment = {
+      ...nerDeployment,
+      enabled: true,
+    };
+    fetchSpy
+      .mockResolvedValueOnce(new Response(JSON.stringify(updatedLlmDeployment), {
+        status: 200,
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(updatedNerDeployment), {
+        status: 200,
+      }));
+
+    await expect(
+      client.updateLlmDeploymentEnabled(llmDeployment.deploymentId, false),
+    ).resolves.toEqual(updatedLlmDeployment);
+    await expect(
+      client.updateNerDeploymentEnabled(nerDeployment.deploymentId, true),
+    ).resolves.toEqual(updatedNerDeployment);
+
+    expect(fetchSpy).toHaveBeenNthCalledWith(
+      1,
+      `${config.llmDeploymentsUrl}/${llmDeployment.deploymentId}/enabled`,
+      {
+        method: 'PATCH',
+        headers: {
+          accept: 'application/json',
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ enabled: false }),
+        signal: expect.any(AbortSignal),
+      },
     );
+    expect(fetchSpy).toHaveBeenNthCalledWith(
+      2,
+      `${config.nerDeploymentsUrl}/${nerDeployment.deploymentId}/enabled`,
+      {
+        method: 'PATCH',
+        headers: {
+          accept: 'application/json',
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ enabled: true }),
+        signal: expect.any(AbortSignal),
+      },
+    );
+  });
+
+  it.each([404, 422, 503])(
+    'LLM·NER 활성 상태 변경의 LPL %i 오류 상태를 보존한다',
+    async (status) => {
+      fetchSpy
+        .mockResolvedValueOnce(new Response(null, { status }))
+        .mockResolvedValueOnce(new Response(null, { status }));
+
+      await expect(
+        client.updateLlmDeploymentEnabled(llmDeployment.deploymentId, false),
+      ).rejects.toMatchObject({ status });
+      await expect(
+        client.updateNerDeploymentEnabled(nerDeployment.deploymentId, false),
+      ).rejects.toMatchObject({ status });
+    },
+  );
+
+  it('활성 상태 변경 Deployment ID를 LPL 경로 세그먼트로 URL 인코딩한다', async () => {
+    const llmDeploymentId = 'llm/qwen 3:8b';
+    const nerDeploymentId = 'ner/gliner multi';
+    fetchSpy
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        ...llmDeployment,
+        deploymentId: llmDeploymentId,
+        enabled: true,
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        ...nerDeployment,
+        deploymentId: nerDeploymentId,
+        enabled: false,
+      }), { status: 200 }));
+
+    await client.updateLlmDeploymentEnabled(llmDeploymentId, true);
+    await client.updateNerDeploymentEnabled(nerDeploymentId, false);
+
+    expect(fetchSpy).toHaveBeenNthCalledWith(
+      1,
+      `${config.llmDeploymentsUrl}/${encodeURIComponent(llmDeploymentId)}/enabled`,
+      expect.any(Object),
+    );
+    expect(fetchSpy).toHaveBeenNthCalledWith(
+      2,
+      `${config.nerDeploymentsUrl}/${encodeURIComponent(nerDeploymentId)}/enabled`,
+      expect.any(Object),
+    );
+  });
+
+  it('NER 서버가 비-2xx로 응답하면 응답 본문을 로그에 남기고 연동 오류를 발생시킨다', async () => {
+    const loggerErrorSpy = jest.spyOn(Logger.prototype, 'error')
+      .mockImplementation();
+    fetchSpy.mockResolvedValueOnce(new Response(JSON.stringify({
+      detail: 'GLiNER adapter timed out',
+    }), { status: 502 }));
+
+    try {
+      await expect(client.requestAnalyze(request)).rejects.toMatchObject({
+        status: 502,
+      });
+      expect(loggerErrorSpy).toHaveBeenCalledWith(
+        'event=ner_analyze_request_failed endpoint=/detect status=502 response_body={"detail":"GLiNER adapter timed out"}',
+      );
+    } finally {
+      loggerErrorSpy.mockRestore();
+    }
   });
 
   it('마스킹 문자열 없이 반환된 탐지 결과도 Provider 기본 응답으로 파싱한다', async () => {
@@ -181,32 +393,56 @@ describe('NerClient', () => {
     });
   });
 
-  it('NER·LLM 배포 ID가 없으면 요청 직전에 설정 오류를 반환한다', () => {
-    const disabledConfig = {
-      ...config,
-      nerDeploymentId: null,
-      llmDeploymentId: null,
-    } as NerConfig;
-    const disabledClient = new NerClient(disabledConfig);
+  it('NER·LLM 목록에서 활성화된 첫 Deployment ID를 탐지 요청용으로 반환한다', async () => {
+    fetchSpy
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        deployments: [
+          { deploymentId: 'ner-first', enabled: false },
+          { deploymentId: 'ner-second', enabled: true },
+        ],
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        deployments: [{ deploymentId: 'llm-first', enabled: true }],
+      }), { status: 200 }));
 
-    expect(() => disabledClient.getDetectionConfiguration())
-      .toThrow(NerRequestException);
+    await expect(client.getFirstNerDeploymentId()).resolves.toBe('ner-second');
+    await expect(client.getFirstLlmDeploymentId()).resolves.toBe('llm-first');
+    expect(fetchSpy).toHaveBeenNthCalledWith(1, config.nerDeploymentsUrl, {
+      headers: { accept: 'application/json' },
+      signal: expect.any(AbortSignal),
+    });
+    expect(fetchSpy).toHaveBeenNthCalledWith(2, config.llmDeploymentsUrl, {
+      headers: { accept: 'application/json' },
+      signal: expect.any(AbortSignal),
+    });
   });
 
-  it('NER 서버에서 로컬 LLM 배포 목록을 조회한다', async () => {
+  it('Deployment 목록이 비어 있으면 연동 오류를 반환한다', async () => {
+    fetchSpy.mockResolvedValueOnce(new Response(JSON.stringify({ deployments: [] }), {
+      status: 200,
+    }));
+
+    await expect(client.getFirstNerDeploymentId()).rejects
+      .toBeInstanceOf(NerRequestException);
+  });
+
+  it('Deployment 목록이 null이면 연동 오류를 반환한다', async () => {
+    fetchSpy.mockResolvedValueOnce(new Response('null', { status: 200 }));
+
+    await expect(client.getFirstLlmDeploymentId()).rejects
+      .toBeInstanceOf(NerRequestException);
+  });
+
+  it('LPL에서 로컬 LLM 배포 요약 목록을 조회한다', async () => {
     fetchSpy.mockResolvedValueOnce(new Response(JSON.stringify({
       deployments: [{
         deploymentId: 'local-qwen',
-        displayName: 'Qwen 배포',
-        modelId: 'Qwen2.5-7B-Instruct',
         enabled: true,
       }],
     }), { status: 200 }));
 
     await expect(client.getLlmDeployments()).resolves.toEqual([{
       deploymentId: 'local-qwen',
-      displayName: 'Qwen 배포',
-      modelId: 'Qwen2.5-7B-Instruct',
       enabled: true,
     }]);
     expect(fetchSpy).toHaveBeenCalledWith(config.llmDeploymentsUrl, {
@@ -215,7 +451,184 @@ describe('NerClient', () => {
     });
   });
 
-  it('NER 서버의 잘못된 LLM 배포 응답은 연동 오류로 처리한다', async () => {
+  it('local-* 모델명과 같은 활성 Deployment ID를 상세 조회 없이 우선 사용한다', async () => {
+    fetchSpy.mockResolvedValueOnce(new Response(JSON.stringify({
+      deployments: [
+        { deploymentId: 'local-qwen3:8b', enabled: true },
+        { deploymentId: 'ollama-qwen3-legacy', enabled: true },
+      ],
+    }), { status: 200 }));
+
+    await expect(
+      client.getEnabledLlmDeploymentIdByModelName('local-qwen3:8b'),
+    ).resolves.toBe('local-qwen3:8b');
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(fetchSpy).toHaveBeenCalledWith(config.llmDeploymentsUrl, {
+      headers: { accept: 'application/json' },
+      signal: expect.any(AbortSignal),
+    });
+  });
+
+  it('활성 로컬 모델명에 일치하는 첫 LLM Deployment ID를 상세 설정에서 찾는다', async () => {
+    fetchSpy
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        deployments: [
+          { deploymentId: 'disabled-qwen', enabled: false },
+          { deploymentId: 'ollama-non-matching', enabled: true },
+          { deploymentId: 'ollama-qwen-first', enabled: true },
+          { deploymentId: 'ollama-qwen-second', enabled: true },
+        ],
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        deploymentId: 'ollama-non-matching',
+        enabled: true,
+        adapterType: 'openai_compatible',
+        baseUrl: 'http://ollama:11434/v1',
+        modelName: 'qwen2.5:7b',
+        timeoutMs: 300_000,
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        deploymentId: 'ollama-qwen-first',
+        enabled: true,
+        adapterType: 'openai_compatible',
+        baseUrl: 'http://ollama:11434/v1',
+        modelName: 'qwen3:8b',
+        timeoutMs: 300_000,
+      }), { status: 200 }));
+
+    await expect(
+      client.getEnabledLlmDeploymentIdByModelName('local-qwen3:8b'),
+    ).resolves.toBe('ollama-qwen-first');
+
+    expect(fetchSpy).toHaveBeenNthCalledWith(1, config.llmDeploymentsUrl, {
+      headers: { accept: 'application/json' },
+      signal: expect.any(AbortSignal),
+    });
+    expect(fetchSpy).toHaveBeenNthCalledWith(
+      2,
+      'http://127.0.0.1:8000/deployments/llm/ollama-non-matching',
+      {
+        headers: { accept: 'application/json' },
+        signal: expect.any(AbortSignal),
+      },
+    );
+    expect(fetchSpy).toHaveBeenNthCalledWith(
+      3,
+      'http://127.0.0.1:8000/deployments/llm/ollama-qwen-first',
+      {
+        headers: { accept: 'application/json' },
+        signal: expect.any(AbortSignal),
+      },
+    );
+    expect(fetchSpy).toHaveBeenCalledTimes(3);
+  });
+
+  it('활성 LLM Deployment 상세에 일치하는 로컬 모델명이 없으면 null을 반환한다', async () => {
+    fetchSpy
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        deployments: [
+          { deploymentId: 'ollama-qwen', enabled: true },
+          { deploymentId: 'ollama-llama', enabled: true },
+          { deploymentId: 'disabled-matching', enabled: false },
+        ],
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        deploymentId: 'ollama-qwen',
+        enabled: true,
+        adapterType: 'openai_compatible',
+        baseUrl: 'http://ollama:11434/v1',
+        modelName: 'qwen3:8b',
+        timeoutMs: 300_000,
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        deploymentId: 'ollama-llama',
+        enabled: true,
+        adapterType: 'openai_compatible',
+        baseUrl: 'http://ollama:11434/v1',
+        modelName: 'llama3.2:3b',
+        timeoutMs: 300_000,
+      }), { status: 200 }));
+
+    await expect(
+      client.getEnabledLlmDeploymentIdByModelName('local-mistral:7b'),
+    ).resolves.toBeNull();
+
+    expect(fetchSpy).toHaveBeenCalledTimes(3);
+    expect(fetchSpy).not.toHaveBeenCalledWith(
+      'http://127.0.0.1:8000/deployments/llm/disabled-matching',
+      expect.anything(),
+    );
+  });
+
+  it('LPL에서 NER 배포 요약 목록을 비활성 항목까지 그대로 조회한다', async () => {
+    fetchSpy.mockResolvedValueOnce(new Response(JSON.stringify({
+      deployments: [
+        { deploymentId: 'ner-gliner', enabled: true },
+        { deploymentId: 'ner-disabled', enabled: false },
+      ],
+    }), { status: 200 }));
+
+    await expect(client.getNerDeployments()).resolves.toEqual([
+      { deploymentId: 'ner-gliner', enabled: true },
+      { deploymentId: 'ner-disabled', enabled: false },
+    ]);
+    expect(fetchSpy).toHaveBeenCalledWith(config.nerDeploymentsUrl, {
+      headers: { accept: 'application/json' },
+      signal: expect.any(AbortSignal),
+    });
+  });
+
+  it('활성 LLM 목록의 상세 API에서 modelName만 수집한다', async () => {
+    fetchSpy
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        deployments: [
+          { deploymentId: 'ollama-qwen', enabled: true },
+          { deploymentId: 'mock', enabled: true },
+          { deploymentId: 'disabled', enabled: false },
+        ],
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        deploymentId: 'ollama-qwen',
+        enabled: true,
+        adapterType: 'openai_compatible',
+        baseUrl: 'http://ollama:11434/v1',
+        modelName: 'qwen3:8b',
+        timeoutMs: 300_000,
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        deploymentId: 'mock',
+        enabled: true,
+        adapterType: 'mock',
+      }), { status: 200 }));
+
+    await expect(client.getEnabledLlmModelNames()).resolves.toEqual([
+      'qwen3:8b',
+    ]);
+    expect(fetchSpy).toHaveBeenNthCalledWith(1, config.llmDeploymentsUrl, {
+      headers: { accept: 'application/json' },
+      signal: expect.any(AbortSignal),
+    });
+    expect(fetchSpy).toHaveBeenNthCalledWith(
+      2,
+      'http://127.0.0.1:8000/deployments/llm/ollama-qwen',
+      {
+        headers: { accept: 'application/json' },
+        signal: expect.any(AbortSignal),
+      },
+    );
+    expect(fetchSpy).toHaveBeenNthCalledWith(
+      3,
+      'http://127.0.0.1:8000/deployments/llm/mock',
+      {
+        headers: { accept: 'application/json' },
+        signal: expect.any(AbortSignal),
+      },
+    );
+    expect(fetchSpy).toHaveBeenCalledTimes(3);
+  });
+
+  it('LPL의 잘못된 LLM 배포 응답은 연동 오류로 처리한다', async () => {
     fetchSpy.mockResolvedValueOnce(new Response(JSON.stringify({ deployments: [{}] }), {
       status: 200,
     }));

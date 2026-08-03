@@ -117,6 +117,21 @@ export const AdminSuccessStatus = {
         code: 'ADMIN200_24',
         message: '성공적으로 모델 상태를 조회했습니다.'
     },
+    LOCAL_LLM_LIST: {
+        httpStatus: HttpStatus.OK,
+        code: 'ADMIN200_25',
+        message: '성공적으로 로컬 LLM 목록을 조회했습니다.'
+    },
+    UPDATE_LOCAL_LLM_STATUS: {
+        httpStatus: HttpStatus.OK,
+        code: 'ADMIN200_27',
+        message: '성공적으로 로컬 LLM 활성화 상태를 변경했습니다.'
+    },
+    UPDATE_LOCAL_NER_STATUS: {
+        httpStatus: HttpStatus.OK,
+        code: 'ADMIN200_28',
+        message: '성공적으로 로컬 NER 활성화 상태를 변경했습니다.'
+    },
     CREATE_USER: {
         httpStatus: HttpStatus.CREATED,
         code: 'ADMIN201_1',
@@ -141,6 +156,16 @@ export const AdminSuccessStatus = {
         httpStatus: HttpStatus.CREATED,
         code: 'ADMIN201_5',
         message: '성공적으로 부서에 사용자를 연동했습니다.'
+    },
+    REGISTER_LOCAL_LLM: {
+        httpStatus: HttpStatus.CREATED,
+        code: 'ADMIN201_6',
+        message: '성공적으로 로컬 LLM을 등록했습니다.'
+    },
+    REGISTER_LOCAL_NER: {
+        httpStatus: HttpStatus.CREATED,
+        code: 'ADMIN201_7',
+        message: '성공적으로 로컬 NER를 등록했습니다.'
     }
 } as const satisfies Record<string, BaseStatus>;
 
@@ -215,6 +240,11 @@ export const AdminErrorStatus = {
         code: 'ADMIN404_4',
         message: '해당 부서의 API 키가 존재하지 않습니다.'
     },
+    LOCAL_DEPLOYMENT_NOT_FOUND: {
+        httpStatus: HttpStatus.NOT_FOUND,
+        code: 'ADMIN404_5',
+        message: '로컬 Deployment를 찾을 수 없습니다.'
+    },
     NOT_IMPLEMENTED: {
         httpStatus: HttpStatus.NOT_IMPLEMENTED,
         code: 'ADMIN501_1',
@@ -229,5 +259,35 @@ export const AdminErrorStatus = {
         httpStatus: HttpStatus.BAD_REQUEST,
         code: 'ADMIN400_13',
         message: '연동 가능한 사용자가 없습니다.'
+    },
+    INVALID_DEPARTMENT_ADMIN: {
+        httpStatus: HttpStatus.BAD_REQUEST,
+        code: 'ADMIN400_14',
+        message: '부서 관리자 지정이 올바르지 않습니다.'
+    },
+    INVALID_LOCAL_DEPLOYMENT: {
+        httpStatus: HttpStatus.BAD_REQUEST,
+        code: 'ADMIN400_15',
+        message: '로컬 Deployment 등록 정보가 올바르지 않습니다.'
+    },
+    INVALID_LOCAL_DEPLOYMENT_STATE: {
+        httpStatus: HttpStatus.BAD_REQUEST,
+        code: 'ADMIN400_16',
+        message: '로컬 Deployment 활성화 상태가 올바르지 않습니다.'
+    },
+    DUPLICATE_LOCAL_DEPLOYMENT: {
+        httpStatus: HttpStatus.CONFLICT,
+        code: 'ADMIN409_1',
+        message: '이미 등록된 로컬 Deployment ID입니다.'
+    },
+    INVALID_LOCAL_DEPLOYMENT_CONFIGURATION: {
+        httpStatus: HttpStatus.UNPROCESSABLE_ENTITY,
+        code: 'ADMIN422_1',
+        message: '로컬 Deployment 설정을 처리할 수 없습니다.'
+    },
+    LOCAL_DEPLOYMENT_PROVIDER_UNAVAILABLE: {
+        httpStatus: HttpStatus.BAD_GATEWAY,
+        code: 'ADMIN502_1',
+        message: '로컬 Deployment Provider 요청에 실패했습니다.'
     }
 } as const satisfies Record<string, BaseStatus>;

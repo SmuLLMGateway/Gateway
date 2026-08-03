@@ -52,6 +52,7 @@ describe('AdminService 보안 정책 목록 조회', () => {
     presetRepository.find.mockResolvedValue([
       {
         name: '기본 보안 정책',
+        isActive: true,
         presetPolicies: [
           { policy: { maskingContent: 'API_KEY' } },
           { policy: { maskingContent: 'EMAIL' } },
@@ -59,6 +60,7 @@ describe('AdminService 보안 정책 목록 조회', () => {
       },
       {
         name: '이전 보안 정책',
+        isActive: false,
         presetPolicies: [
           { policy: { maskingContent: 'PHONE' } },
         ],
@@ -68,10 +70,12 @@ describe('AdminService 보안 정책 목록 조회', () => {
     await expect(service.getPolicyCatalog()).resolves.toEqual([
       {
         presetName: '기본 보안 정책',
+        isActive: true,
         policies: ['API 키', '이메일'],
       },
       {
         presetName: '이전 보안 정책',
+        isActive: false,
         policies: ['전화번호'],
       },
     ]);
@@ -79,6 +83,7 @@ describe('AdminService 보안 정책 목록 조회', () => {
       select: {
         policyPresetId: true,
         name: true,
+        isActive: true,
         presetPolicies: {
           presetPolicyId: true,
           policy: { policyId: true, maskingContent: true },

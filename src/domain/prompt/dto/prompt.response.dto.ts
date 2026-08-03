@@ -205,6 +205,24 @@ export namespace PromptResDTO {
         nextCursor!: string;
     }
 
+    @ApiSchema({ name: 'PromptNerDeploymentSummary' })
+    export class NerDeployment {
+        @ApiProperty({ example: 'local-ner-gliner-multi', description: 'LPL Provider Deployment ID' })
+        deploymentId!: string;
+
+        @ApiProperty({ example: true, description: 'LPL Registry 활성화 여부. 비활성 Deployment도 목록에 포함됩니다.' })
+        enabled!: boolean;
+    }
+
+    @ApiSchema({ name: 'PromptNerListResponse' })
+    export class NerList {
+        @ApiProperty({
+            type: () => [NerDeployment],
+            description: 'LPL Provider GET /deployments/ner 응답의 deployments 배열',
+        })
+        deployments!: NerDeployment[];
+    }
+
     export type Empty = null;
     export type AnalyzeResult = Analyze | AnalyzeWithoutDetection;
     export type LlmResponse = string | null;

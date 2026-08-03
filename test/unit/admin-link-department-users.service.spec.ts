@@ -17,6 +17,7 @@ import type { ApiKeyEncryptionService } from '../../src/global/llm/service/api-k
 import type { MinioObjectStorageService } from '../../src/global/storage/service/minio-object-storage.service.js';
 import type { PasswordEncoderService } from '../../src/global/security/service/password-encoder.service.js';
 import { UserRole } from '../../src/global/security/type/user-role.enum.js';
+import { LOCAL_LLM_MODEL } from '../../src/global/llm/llm-service.mapping.js';
 
 describe('AdminService 부서-사용자 연동', () => {
   const departmentRepository = { findOne: jest.fn() };
@@ -122,6 +123,15 @@ describe('AdminService 부서-사용자 연동', () => {
       select: { departmentId: true, departmentName: true, limit: true },
       where: { departmentId: '4' },
       lock: { mode: 'pessimistic_write' },
+    });
+    expect(activeApiKeyRepository.find).toHaveBeenCalledWith({
+      select: { activeApiKeyId: true },
+      where: {
+        departmentId: '4',
+        serviceType: expect.objectContaining({
+          value: LOCAL_LLM_MODEL,
+        }),
+      },
     });
     expect(adminLogRepository.save).toHaveBeenCalledWith({
       logContent: '정책기획팀 부서에 사용자 2명을 연동했습니다.',

@@ -13,6 +13,7 @@ import { MemberDepartmentDAO } from '../../src/domain/user/dao/member-department
 import { MemberLimitDAO } from '../../src/domain/user/dao/member-limit.dao.js';
 import { PromptLogDAO } from '../../src/domain/prompt/dao/prompt-log.dao.js';
 import { MaskingDetailDAO } from '../../src/domain/prompt/dao/masking-detail.dao.js';
+import { PromptLogStatus } from '../../src/domain/prompt/type/prompt-log-status.enum.js';
 import type { UserMapper } from '../../src/domain/user/mapper/user.mapper.js';
 import type { LlmApiKeyValidationClient } from '../../src/global/llm/client/llm-api-key-validation.client.js';
 import type { ApiKeyEncryptionService } from '../../src/global/llm/service/api-key-encryption.service.js';
@@ -367,7 +368,7 @@ describe('AdminService 사용자 목록 조회', () => {
       expiredAt: '2026-07-25T00:00:00.000Z',
       accessToken: true,
     })).resolves.toEqual({
-      updatedAt: '2026-07-24T03:00:00.000Z',
+      updatedAt: '2026-07-24T12:00:00.000+09:00',
       totalUserCnt: 132,
       activateUserCnt: 128,
       disabledUserCnt: 4,
@@ -423,7 +424,7 @@ describe('AdminService 사용자 목록 조회', () => {
     });
 
     await expect(service.getDashboard()).resolves.toEqual({
-      updatedAt: '2026-07-26T00:00:00.000Z',
+      updatedAt: '2026-07-26T09:00:00.000+09:00',
       userCnt: 120,
       userRate: 9,
       chatCnt: 400,
@@ -447,7 +448,12 @@ describe('AdminService 사용자 목록 조회', () => {
     expect(dashboardQueryBuilder.setParameters).toHaveBeenCalledWith({
       recentSince: new Date('2026-06-26T00:00:00.000Z'),
       previousSince: new Date('2026-05-27T00:00:00.000Z'),
+      errorStatus: PromptLogStatus.ERROR,
     });
+    expect(dashboardQueryBuilder.addSelect).toHaveBeenCalledWith(
+      "COUNT(DISTINCT CASE WHEN maskingDetail.maskingDetailId IS NOT NULL AND promptLog.status != :errorStatus AND LOWER(promptLog.modelType) LIKE 'gpt%' THEN promptLog.promptLogId END)",
+      'maskingToGpt',
+    );
     jest.useRealTimers();
   });
 
@@ -464,7 +470,7 @@ describe('AdminService 사용자 목록 조회', () => {
     await expect(service.getAdminLogs()).resolves.toEqual([
       {
         title: '정책기획팀 보안 정책을 수정했습니다.',
-        activityAt: '2026-07-26T01:02:03.000Z',
+        activityAt: '2026-07-26T10:02:03.000+09:00',
         adminName: '총괄관리자',
       },
     ]);
@@ -548,7 +554,7 @@ describe('AdminService 사용자 목록 조회', () => {
       email: 'seoyun@example.com',
       department: '정책기획팀',
       role: '일반 사용자',
-      createdAt: '2026-07-19T12:34:56.000Z',
+      createdAt: '2026-07-19T21:34:56.000+09:00',
       createdBy: '신정보',
       limit: 0,
       usage: 42,
@@ -597,13 +603,11 @@ describe('AdminService 사용자 목록 조회', () => {
     );
   });
 
-  it('총괄 관리자가 활성 사용자 계정을 비활성화하고 세션을 해제한다', async () => {
+  it('총괄 관리자가 부서 미소속 활성 사용자 계정을 비활성화하고 세션을 해제한다', async () => {
     jest.useFakeTimers().setSystemTime(
       new Date('2026-07-24T04:00:00.000Z'),
     );
-    memberDepartmentRepository.findOne.mockResolvedValue({
-      departmentId: '10',
-    });
+    memberDepartmentRepository.findOne.mockResolvedValue(null);
     memberRepository.findOneBy.mockResolvedValue({
       memberId: '12',
       memberName: '김서윤',
@@ -619,7 +623,7 @@ describe('AdminService 사용자 목록 조회', () => {
       accessToken: true,
     })).resolves.toEqual({
       name: '김서윤',
-      disabledAt: '2026-07-24T04:00:00.000Z',
+      disabledAt: '2026-07-24T13:00:00.000+09:00',
     });
     expect(memberRepository.update).toHaveBeenCalledWith(
       expect.objectContaining({ memberId: '12' }),
@@ -628,6 +632,7 @@ describe('AdminService 사용자 목록 조회', () => {
         refreshToken: null,
       },
     );
+    expect(memberDepartmentRepository.findOne).not.toHaveBeenCalled();
 
     jest.useRealTimers();
   });
@@ -651,7 +656,7 @@ describe('AdminService 사용자 목록 조회', () => {
       accessToken: true,
     })).resolves.toEqual({
       name: '김서윤',
-      disabledAt: disabledAt.toISOString(),
+      disabledAt: '2026-07-20T13:00:00.000+09:00',
     });
     expect(memberRepository.update).not.toHaveBeenCalled();
   });
@@ -678,7 +683,7 @@ describe('AdminService 사용자 목록 조회', () => {
       accessToken: true,
     })).resolves.toEqual({
       name: '김서윤',
-      restoredAt: '2026-07-24T05:00:00.000Z',
+      restoredAt: '2026-07-24T14:00:00.000+09:00',
     });
     expect(memberRepository.update).toHaveBeenCalledWith(
       expect.objectContaining({ memberId: '12' }),

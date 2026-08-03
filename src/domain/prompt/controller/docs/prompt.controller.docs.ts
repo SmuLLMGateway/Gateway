@@ -55,10 +55,12 @@ const maskingAnalysisMultipartBody = () =>
         json: {
           type: 'string',
           description:
-            '마스킹 요소 탐지 요청 JSON 문자열. model, text, ticket은 필수이고 '
-            + 'recentTicket과 chatRoomId는 생략하거나 null로 보낼 수 있습니다.',
+            '마스킹 요소 탐지 요청 JSON 문자열. llmModel, text, ticket은 필수이고 '
+            + 'ner, recentTicket, chatRoomId는 생략하거나 null로 보낼 수 있습니다. '
+            + 'ner를 생략하면 LPL의 첫 활성 NER Deployment를 사용합니다.',
           example:
-            '{"model":"Claude Sonnet 5",'
+            '{"llmModel":"Claude Sonnet 5",'
+            + '"ner":"local-ner-gliner-multi",'
             + '"text":"다음 주 A사와 체결 예정인 미공개...",'
             + '"ticket":"a81cc17e-e10a-46ae-8113-dceffb932d6c"}',
         },
@@ -252,6 +254,8 @@ export const PromptControllerDocs = () =>
       PromptResDTO.PromptListPage,
       PromptResDTO.RecentPrompt,
       PromptResDTO.RecentAnalyze,
+      PromptResDTO.NerDeployment,
+      PromptResDTO.NerList,
     ),
   );
 
@@ -264,7 +268,8 @@ export const MaskingElementDetectionRequestDocs = () =>
         + '사용합니다. recentTicket은 생략하거나 null로 보내면 이전 분석 요청 없이 '
         + '시작합니다. chatRoomId는 생략하거나 null로 보내면 새 채팅방을 생성하고, '
         + '응답 result.chatRoomId를 후속 요청에 사용합니다. 기존 채팅방을 사용할 때만 '
-        + '소유한 chatRoomId(UUID)를 보냅니다. 현재 NER 서버 실제 호출은 비활성화되어 있습니다.',
+        + '소유한 chatRoomId(UUID)를 보냅니다. ner를 생략하면 첫 활성 NER Deployment를 사용합니다. '
+        + 'llmModel이 활성 로컬 LLM과 연결되면 해당 Deployment를, 그렇지 않으면 첫 활성 로컬 LLM Deployment를 NER 서버에 전달합니다.',
     }),
     ApiConsumes('multipart/form-data'),
     maskingAnalysisMultipartBody(),
@@ -405,8 +410,8 @@ export const ModelListDocs = () =>
     ApiOperation({
       summary: '모델 목록 조회',
       description: '사용자의 부서에서 사용할 수 있는 외부 LLM 모델과, '
-        + 'NER 서버에서 동기화된 local-* 로컬 LLM 모델 목록을 조회합니다. '
-        + '로컬 모델은 API 키 등록 없이 사용할 수 있습니다.',
+        + 'LPL의 활성 Deployment에서 동기화된 local-* 로컬 LLM 모델 목록을 조회합니다. '
+        + '동기화된 로컬 모델은 모든 부서에서 사용할 수 있습니다.',
     }),
     ApiSuccessResponse(
       PromptSuccessStatus.MODEL_LIST,
@@ -419,6 +424,25 @@ export const ModelListDocs = () =>
       },
     ),
     ...ApiErrorResponses([
+      tokenExpiredStatus,
+      ErrorStatus.INTERNAL_SERVER_ERROR,
+    ]),
+  );
+
+export const NerListDocs = () =>
+  applyDecorators(
+    ApiOperation({
+      summary: '로컬 NER 목록 조회',
+      description:
+        '로그인한 모든 사용자가 LPL Provider의 GET /deployments/ner 결과를 조회합니다. '
+        + 'LPL 목록의 deployments 배열을 활성화 여부 필터링 없이 그대로 반환합니다.',
+    }),
+    ApiSuccessResponse(
+      PromptSuccessStatus.NER_LIST,
+      SwaggerResultSchema.model(getSchemaPath(PromptResDTO.NerList)),
+    ),
+    ...ApiErrorResponses([
+      PromptErrorStatus.NER_DEPLOYMENT_LIST_UNAVAILABLE,
       tokenExpiredStatus,
       ErrorStatus.INTERNAL_SERVER_ERROR,
     ]),

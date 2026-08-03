@@ -13,6 +13,7 @@ import type { AuthenticatedUser } from '../../../global/security/type/jwt-payloa
 import { AuthException } from '../../auth/exception/auth.exception.js';
 import { AuthErrorStatus } from '../../auth/code/auth.status.js';
 import { UserRole } from '../../../global/security/type/user-role.enum.js';
+import { toKoreaStandardTimeISOString } from '../../../global/time/korea-standard-time.js';
 import { MemberLimitDAO } from '../dao/member-limit.dao.js';
 import { UserErrorStatus } from '../code/user.status.js';
 import { UserException } from '../exception/user.exception.js';
@@ -138,7 +139,7 @@ export class UserService {
     const local = Number(dashboard?.local ?? 0);
 
     return UserMapper.toMessageSummary(
-      new Date().toISOString(),
+      toKoreaStandardTimeISOString(new Date()),
       totalChatCnt,
       filter,
       this.toRatioPercent(filter, totalChatCnt),
@@ -261,7 +262,7 @@ export class UserService {
       return '';
     }
 
-    return value.toISOString();
+    return toKoreaStandardTimeISOString(value);
   }
 
   private toRoleName(role: UserRole): string {

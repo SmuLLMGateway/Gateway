@@ -1,4 +1,4 @@
-import { ApiProperty, ApiSchema } from "@nestjs/swagger";
+import { ApiProperty, ApiPropertyOptional, ApiSchema } from "@nestjs/swagger";
 
 export namespace AdminResDTO {
     @ApiSchema({ name: 'AdminCreateUserResponse' })
@@ -12,8 +12,11 @@ export namespace AdminResDTO {
 
     @ApiSchema({ name: 'AdminCreateDepartmentResponse' })
     export class CreateDepartment {
-        @ApiProperty({ example: '정책기획팀' })
-        name!: string;
+        @ApiProperty({ example: 4, description: '생성된 부서 ID' })
+        departmentId!: number;
+
+        @ApiProperty({ example: '정책기획팀', description: '생성된 부서명' })
+        departmentName!: string;
 
         @ApiProperty({ example: '2026-07-20T15:18:39Z', format: 'date-time' })
         createdAt!: string;
@@ -105,6 +108,81 @@ export namespace AdminResDTO {
         createdAt!: string;
     }
 
+    @ApiSchema({ name: 'AdminRegisterLocalLlmResponse' })
+    export class RegisterLocalLlm {
+        @ApiProperty({ example: 'local-qwen3:8b', description: 'LPL Provider에 등록된 Deployment ID. llm_detail_model.llm_name과 동일한 local-* 값입니다.' })
+        deploymentId!: string;
+
+        @ApiProperty({ example: '2026-08-03T10:30:00+09:00', format: 'date-time', description: 'Gateway가 등록을 완료한 시각(KST)' })
+        createdAt!: string;
+    }
+
+    @ApiSchema({ name: 'AdminRegisterLocalNerResponse' })
+    export class RegisterLocalNer {
+        @ApiProperty({ example: 'local-ner-gliner-multi', description: 'LPL Provider에 등록된 local-* Deployment ID' })
+        deploymentId!: string;
+
+        @ApiProperty({ example: '2026-08-03T10:30:00+09:00', format: 'date-time', description: 'Gateway가 등록을 완료한 시각(KST)' })
+        createdAt!: string;
+    }
+
+    @ApiSchema({ name: 'AdminLocalDeploymentSummary' })
+    export class LocalDeployment {
+        @ApiProperty({ example: 'local-qwen3:8b', description: 'LPL Provider Deployment ID' })
+        deploymentId!: string;
+
+        @ApiProperty({ example: true, description: 'LPL Registry 활성화 여부. 비활성 Deployment도 목록에 포함됩니다.' })
+        enabled!: boolean;
+    }
+
+    @ApiSchema({ name: 'AdminLocalLlmListResponse' })
+    export class LocalLlmList {
+        @ApiProperty({
+            type: () => [LocalDeployment],
+            description: 'LPL Provider GET /deployments/llm 응답의 deployments 배열',
+        })
+        deployments!: LocalDeployment[];
+    }
+
+    @ApiSchema({ name: 'AdminUpdateLocalLlmStatusResponse' })
+    export class UpdateLocalLlmStatus {
+        @ApiProperty({ example: 'local-qwen3:8b', description: 'LPL Provider Deployment ID' })
+        deploymentId!: string;
+
+        @ApiProperty({ example: false, description: 'LPL에서 변경된 활성화 상태' })
+        enabled!: boolean;
+
+        @ApiProperty({ example: 'openai_compatible', description: 'LPL Deployment 어댑터 타입' })
+        adapterType!: string;
+
+        @ApiPropertyOptional({ example: 'http://ollama:11434/v1', format: 'uri' })
+        baseUrl?: string;
+
+        @ApiPropertyOptional({ example: 'qwen3:8b', description: '로컬 LLM 모델명' })
+        modelName?: string;
+
+        @ApiPropertyOptional({ example: 300000, type: Number, minimum: 1 })
+        timeoutMs?: number;
+    }
+
+    @ApiSchema({ name: 'AdminUpdateLocalNerStatusResponse' })
+    export class UpdateLocalNerStatus {
+        @ApiProperty({ example: 'local-ner-gliner-multi', description: 'LPL Provider Deployment ID' })
+        deploymentId!: string;
+
+        @ApiProperty({ example: false, description: 'LPL에서 변경된 활성화 상태' })
+        enabled!: boolean;
+
+        @ApiProperty({ example: 'gliner_http', description: 'LPL Deployment 어댑터 타입' })
+        adapterType!: string;
+
+        @ApiPropertyOptional({ example: 'http://ner-server:8008/ner', format: 'uri' })
+        baseUrl?: string;
+
+        @ApiPropertyOptional({ example: 30000, type: Number, minimum: 1 })
+        timeoutMs?: number;
+    }
+
     @ApiSchema({ name: 'AdminDepartmentApiKeyResponse' })
     export class DepartmentApiKey {
         @ApiProperty({
@@ -173,7 +251,7 @@ export namespace AdminResDTO {
         @ApiProperty({
             example: 'OK',
             enum: ['OK', 'DELAY', 'ERROR', 'CHECK'],
-            description: '최신 모델 상태. P95 지연시간이 1,000ms 이상이면 DELAY로 표시'
+            description: '가장 최근 health_history에 기록된 모델 상태'
         })
         currentStatus!: 'OK' | 'DELAY' | 'ERROR' | 'CHECK';
 
@@ -238,6 +316,12 @@ export namespace AdminResDTO {
         presetName!: string;
 
         @ApiProperty({
+            example: true,
+            description: '현재 전역으로 활성화된 보안 정책 프리셋 여부'
+        })
+        isActive!: boolean;
+
+        @ApiProperty({
             type: [String],
             example: ['보안 인프라 정보', '행정 운영 정보'],
             description: '프리셋에 포함된 보안 정책 한글 표시명 목록',
@@ -280,7 +364,7 @@ export namespace AdminResDTO {
         @ApiProperty({ example: 200, description: '최근 30일 내 필터가 감지된 전송 프롬프트 수' })
         filterDetectRate!: number;
 
-        @ApiProperty({ example: 241 })
+        @ApiProperty({ example: 241, description: '마스킹 후 GPT로 전송한 횟수. ERROR 상태는 제외' })
         maskingToGpt!: number;
 
         @ApiProperty({ example: 201 })

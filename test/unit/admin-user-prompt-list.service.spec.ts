@@ -77,14 +77,14 @@ describe('AdminService 사용자 프롬프트 목록 조회', () => {
         {
           promptId: 'masking-report-2',
           promptSummary: '내부 LLM 질문',
-          promptedAt: '2026-08-02T12:00:00.000Z',
+          promptedAt: '2026-08-02T21:00:00.000+09:00',
           model: 'Local LLM',
           usage: 0,
         },
         {
           promptId: 'masking-report-1',
           promptSummary: '외부 LLM 질문',
-          promptedAt: '2026-08-02T11:00:00.000Z',
+          promptedAt: '2026-08-02T20:00:00.000+09:00',
           model: 'GPT',
           usage: 4800,
         },

@@ -23,8 +23,13 @@ export class ActiveApiKeyDAO {
     @PrimaryGeneratedColumn({ name: 'active_api_key_id', type: 'bigint' })
     activeApiKeyId!: string;
 
-    @Column({ name: 'api_key', type: 'varchar', length: 1024 })
-    apiKey!: string;
+    /**
+     * 외부 Provider는 암호화된 API 키를 저장하고, Local LLM 연결은 API 키를
+     * 사용하지 않으므로 NULL을 저장합니다. Local LLM 여부는 serviceType으로
+     * 구분합니다.
+     */
+    @Column({ name: 'api_key', type: 'varchar', length: 1024, nullable: true })
+    apiKey!: string | null;
 
     @Column({ name: 'service_type', type: 'varchar', length: 255 })
     serviceType!: string;

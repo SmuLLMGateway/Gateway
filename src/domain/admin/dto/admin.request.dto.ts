@@ -1,6 +1,12 @@
 import { ApiProperty, ApiPropertyOptional, ApiSchema } from "@nestjs/swagger";
 import { UserRole } from "../../../global/security/type/user-role.enum.js";
 import { SECURITY_POLICY_CONTENTS } from '../policy/security-policy.catalog.js';
+import {
+    LLM_ADAPTER_TYPES,
+    NER_ADAPTER_TYPES,
+    type LlmAdapterType,
+    type NerAdapterType,
+} from '../../../global/ner/type/ner-deployment-registration.type.js';
 
 export namespace AdminReqDTO {
     @ApiSchema({ name: 'AdminCreateUserRequest' })
@@ -47,14 +53,20 @@ export namespace AdminReqDTO {
         })
         code!: string;
 
-        @ApiPropertyOptional({
+        @ApiProperty({
+            example: 42,
+            type: Number,
+            minimum: 1,
+            description: '생성할 부서에 소속시킬 활성 부서 관리자(DEPART_ADMIN)의 사용자 ID'
+        })
+        departmentAdminId!: number;
+
+        @ApiProperty({
             example: true,
             type: Boolean,
-            default: true,
-            deprecated: true,
-            description: '로컬 LLM은 모든 부서에서 항상 활성화됩니다. 전달값은 무시됩니다.'
+            description: '부서 생성 시 Local LLM 연결은 자동 생성됩니다. 전달값은 형식만 검증하며 사용하지 않습니다.'
         })
-        activeLocalLLM?: boolean;
+        activeLocalLLM!: boolean;
 
         @ApiProperty({
             example: true,
@@ -97,6 +109,92 @@ export namespace AdminReqDTO {
         service!: string;
     }
 
+    @ApiSchema({ name: 'AdminRegisterLocalLlmRequest' })
+    export class RegisterLocalLlm {
+        @ApiProperty({
+            example: 'local-qwen3:8b',
+            minLength: 1,
+            maxLength: 50,
+            description: 'LPL Registry에 등록할 local-* Deployment ID. openai_compatible은 modelName을 local-* 형식으로 정규화한 값 및 llm_detail_model.llm_name과 정확히 같아야 합니다.'
+        })
+        deploymentId!: string;
+
+        @ApiProperty({
+            example: 'openai_compatible',
+            enum: LLM_ADAPTER_TYPES,
+            description: '로컬 LLM 어댑터: mock, openai_compatible'
+        })
+        adapterType!: LlmAdapterType;
+
+        @ApiPropertyOptional({
+            example: 'http://ollama:11434/v1',
+            format: 'uri',
+            description: 'OpenAI 호환 로컬 LLM API의 base URL. adapterType이 openai_compatible이면 필수이고 mock이면 생략합니다.'
+        })
+        baseUrl?: string;
+
+        @ApiPropertyOptional({
+            example: 'qwen3:8b',
+            minLength: 1,
+            maxLength: 255,
+            description: '로컬 LLM에서 사용할 모델명. adapterType이 openai_compatible이면 필수이고 mock이면 생략합니다. 이 값으로 만든 local-* 모델명이 deploymentId와 같아야 합니다.'
+        })
+        modelName?: string;
+
+        @ApiPropertyOptional({
+            example: 300000,
+            type: Number,
+            minimum: 1,
+            description: 'LPL Provider가 로컬 LLM 호출에 사용할 제한 시간(ms). adapterType이 openai_compatible이면 필수이고 mock이면 생략합니다.'
+        })
+        timeoutMs?: number;
+
+    }
+
+    @ApiSchema({ name: 'AdminRegisterLocalNerRequest' })
+    export class RegisterLocalNer {
+        @ApiProperty({
+            example: 'local-ner-gliner-multi',
+            minLength: 1,
+            maxLength: 255,
+            description: 'LPL Registry에 등록할 고유 local-* Deployment ID'
+        })
+        deploymentId!: string;
+
+        @ApiProperty({
+            example: 'gliner_http',
+            enum: NER_ADAPTER_TYPES,
+            description: '로컬 NER 어댑터: gliner_http, hf_inference_token_classification, http_ner, mock'
+        })
+        adapterType!: NerAdapterType;
+
+        @ApiPropertyOptional({
+            example: 'http://ner-server:8008/ner',
+            format: 'uri',
+            description: 'NER 서버의 HTTP(S) base URL. adapterType이 mock이 아니면 필수이고 mock이면 생략합니다.'
+        })
+        baseUrl?: string;
+
+        @ApiPropertyOptional({
+            example: 30000,
+            type: Number,
+            minimum: 1,
+            description: 'LPL Provider가 NER 호출에 사용할 제한 시간(ms). adapterType이 mock이 아니면 필수이고 mock이면 생략합니다.'
+        })
+        timeoutMs?: number;
+
+    }
+
+    @ApiSchema({ name: 'AdminUpdateLocalDeploymentStatusRequest' })
+    export class UpdateLocalDeploymentStatus {
+        @ApiProperty({
+            example: false,
+            type: Boolean,
+            description: '변경할 Deployment 활성화 여부. enabled 외의 요청 필드는 허용하지 않습니다.'
+        })
+        enabled!: boolean;
+    }
+
     export class DepartmentApiKey {
         @ApiProperty({
             example: 'GPT',
@@ -119,14 +217,6 @@ export namespace AdminReqDTO {
 
     @ApiSchema({ name: 'AdminSyncPoliciesRequest' })
     export class SyncPolicies {
-        @ApiProperty({
-            example: '기본 보안 정책',
-            minLength: 1,
-            maxLength: 255,
-            description: '동기화할 기업 보안 정책 이름'
-        })
-        policyName!: string;
-
         @ApiProperty({
             type: [String],
             enum: SECURITY_POLICY_CONTENTS,

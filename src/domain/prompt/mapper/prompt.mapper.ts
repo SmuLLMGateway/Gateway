@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { PromptResDTO } from '../dto/prompt.response.dto.js';
+import { toKoreaStandardTimeISOString } from '../../../global/time/korea-standard-time.js';
 import { PromptData } from '../data/prompt.data.js';
 import { PromptLogDAO } from '../dao/prompt-log.dao.js';
 import { PromptRoomDAO } from '../dao/prompt-room.dao.js';
@@ -191,9 +192,7 @@ export class PromptMapper {
     return {
       chatRoomId: data.chatRoomId,
       title: data.title,
-      createdAt: data.createdAt instanceof Date
-        ? data.createdAt.toISOString()
-        : data.createdAt,
+      createdAt: toKoreaStandardTimeISOString(data.createdAt),
     };
   }
 

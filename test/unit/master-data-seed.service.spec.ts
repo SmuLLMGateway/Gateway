@@ -72,7 +72,7 @@ describe('MasterDataSeedService', () => {
     update: jest.fn(),
   };
   const nerClient = {
-    getLlmDeployments: jest.fn(),
+    getEnabledLlmModelNames: jest.fn(),
   };
 
   let llmDetailModels: StoredLlmDetailModel[];
@@ -82,7 +82,7 @@ describe('MasterDataSeedService', () => {
   beforeEach(() => {
     llmDetailModels = [];
     policies = [];
-    nerClient.getLlmDeployments.mockResolvedValue([]);
+    nerClient.getEnabledLlmModelNames.mockResolvedValue([]);
 
     dataSource.transaction.mockImplementation(async (
       work: (manager: EntityManager) => Promise<unknown>,
@@ -207,26 +207,11 @@ describe('MasterDataSeedService', () => {
       .toEqual([legacyApiKeyPolicy]);
   });
 
-  it('NER 서버의 로컬 LLM 모델을 중복 없이 함께 시드한다', async () => {
-    nerClient.getLlmDeployments.mockResolvedValue([
-      {
-        deploymentId: 'local-qwen',
-        displayName: 'Qwen 배포',
-        modelId: 'Qwen2.5-7B-Instruct',
-        enabled: true,
-      },
-      {
-        deploymentId: 'local-qwen-copy',
-        displayName: 'Qwen 복제 배포',
-        modelId: 'Qwen2.5-7B-Instruct',
-        enabled: false,
-      },
-      {
-        deploymentId: 'local-custom',
-        displayName: 'Custom Local Model',
-        modelId: null,
-        enabled: true,
-      },
+  it('LPL의 활성 로컬 LLM 모델을 중복 없이 함께 시드한다', async () => {
+    nerClient.getEnabledLlmModelNames.mockResolvedValue([
+      'Qwen2.5-7B-Instruct',
+      'Qwen2.5-7B-Instruct',
+      'Custom Local Model',
     ]);
 
     await service.onApplicationBootstrap();
@@ -239,7 +224,9 @@ describe('MasterDataSeedService', () => {
   });
 
   it('NER 조회에 실패해도 기존 마스터 데이터 시드는 계속한다', async () => {
-    nerClient.getLlmDeployments.mockRejectedValue(new Error('connection refused'));
+    nerClient.getEnabledLlmModelNames.mockRejectedValue(
+      new Error('connection refused'),
+    );
 
     await expect(service.onApplicationBootstrap()).resolves.toBeUndefined();
 

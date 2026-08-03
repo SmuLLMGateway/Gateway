@@ -2,7 +2,6 @@ import { Test } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { DataSource } from 'typeorm';
 import { ActiveLlmDAO } from '../../src/domain/admin/dao/active-llm.dao.js';
-import { LlmDetailModelDAO } from '../../src/domain/admin/dao/llm-detail-model.dao.js';
 import {
   MaskingClass,
 } from '../../src/domain/admin/dao/policy.dao.js';
@@ -22,7 +21,9 @@ import { UserRole } from '../../src/global/security/type/user-role.enum.js';
 import { MinioObjectStorageService } from '../../src/global/storage/service/minio-object-storage.service.js';
 import { ProviderClient } from '../../src/global/llm/client/provider.client.js';
 import { ApiKeyEncryptionService } from '../../src/global/llm/service/api-key-encryption.service.js';
+import { LOCAL_LLM_MODEL } from '../../src/global/llm/llm-service.mapping.js';
 import { NerClient } from '../../src/global/ner/client/ner.client.js';
+import { NerRequestException } from '../../src/global/ner/exception/ner-request.exception.js';
 
 describe('PromptService 부서 접근 및 정책 조회', () => {
   const ticket = 'a81cc17e-e10a-46ae-8113-dceffb932d6c';
@@ -40,10 +41,6 @@ describe('PromptService 부서 접근 및 정책 조회', () => {
   const activeLlmRepository = {
     findOne: jest.fn(),
     find: jest.fn(),
-  };
-  const llmDetailModelRepository = {
-    find: jest.fn(),
-    findOne: jest.fn(),
   };
   const departmentPolicyRepository = {
     find: jest.fn(),
@@ -69,7 +66,10 @@ describe('PromptService 부서 접근 및 정책 조회', () => {
     find: jest.fn(),
   };
   const nerClient = {
-    getDetectionConfiguration: jest.fn(),
+    getFirstNerDeploymentId: jest.fn(),
+    getFirstLlmDeploymentId: jest.fn(),
+    getEnabledLlmDeploymentIdByModelName: jest.fn(),
+    getNerDeployments: jest.fn(),
     requestAnalyze: jest.fn(),
   };
   const dataSource = {
@@ -90,10 +90,6 @@ describe('PromptService 부서 접근 및 정책 조회', () => {
         {
           provide: getRepositoryToken(ActiveLlmDAO),
           useValue: activeLlmRepository,
-        },
-        {
-          provide: getRepositoryToken(LlmDetailModelDAO),
-          useValue: llmDetailModelRepository,
         },
         {
           provide: getRepositoryToken(DepartmentPolicyDAO),
@@ -132,8 +128,6 @@ describe('PromptService 부서 접근 및 정책 조회', () => {
       activeLlmId: '100',
     });
     activeLlmRepository.find.mockResolvedValue([]);
-    llmDetailModelRepository.find.mockResolvedValue([]);
-    llmDetailModelRepository.findOne.mockResolvedValue({ llmDetailModelId: 'local-1' });
     maskingReportRepository.validateRequestTickets.mockResolvedValue(undefined);
     promptRoomRepository.create.mockResolvedValue(undefined);
     promptRoomRepository.deleteByIdAndMemberId.mockResolvedValue(undefined);
@@ -146,10 +140,10 @@ describe('PromptService 부서 접근 및 정책 조회', () => {
     maskingReportRepository.saveNerTextDetections.mockResolvedValue(true);
     maskingReportRepository.cancelRegex.mockResolvedValue(true);
     maskingReportRepository.cancelNer.mockResolvedValue(true);
-    nerClient.getDetectionConfiguration.mockReturnValue({
-      nerDeploymentId: 'ner-gliner-multi',
-      llmDeploymentId: 'llm-qwen3-14b',
-    });
+    nerClient.getFirstNerDeploymentId.mockResolvedValue('ner-gliner-multi');
+    nerClient.getFirstLlmDeploymentId.mockResolvedValue('llm-qwen3-14b');
+    nerClient.getEnabledLlmDeploymentIdByModelName.mockResolvedValue(null);
+    nerClient.getNerDeployments.mockResolvedValue([]);
     nerClient.requestAnalyze.mockResolvedValue({ detections: [] });
     dataSource.getRepository.mockReturnValue(maskingDetailRepository);
     maskingDetailRepository.find.mockResolvedValue([]);
@@ -204,7 +198,7 @@ describe('PromptService 부서 접근 및 정책 조회', () => {
 
     const result = await service.requestAnalyze(
       {
-        model: 'GPT-5.4-nano',
+        llmModel: 'GPT-5.4-nano',
         text,
         ticket,
         recentTicket: null,
@@ -261,16 +255,36 @@ describe('PromptService 부서 접근 및 정책 조회', () => {
     },
   );
 
-  it('부서 외부 모델과 DB의 local-* 모델을 함께 조회한다', async () => {
+  it('부서의 Local LLM 활성 키에 연결된 local-* 모델과 외부 모델을 함께 조회한다', async () => {
     activeLlmRepository.find.mockResolvedValueOnce([
-      { llmDetailModel: { llmName: 'Claude Sonnet 5' } },
-      { llmDetailModel: { llmName: null } },
-      { llmDetailModel: { llmName: 'GPT-4o' } },
-    ]);
-
-    llmDetailModelRepository.find.mockResolvedValueOnce([
-      { llmName: 'local-Qwen2.5-7B-Instruct' },
-      { llmName: 'local-Llama-3.1' },
+      {
+        activeApiKey: { serviceType: 'Claude' },
+        llmDetailModel: { llmName: 'Claude Sonnet 5' },
+      },
+      {
+        activeApiKey: { serviceType: LOCAL_LLM_MODEL },
+        llmDetailModel: { llmName: 'local-Qwen2.5-7B-Instruct' },
+      },
+      {
+        activeApiKey: { serviceType: 'GPT' },
+        llmDetailModel: { llmName: null },
+      },
+      {
+        activeApiKey: { serviceType: 'GPT' },
+        llmDetailModel: { llmName: 'GPT-4o' },
+      },
+      {
+        activeApiKey: { serviceType: LOCAL_LLM_MODEL },
+        llmDetailModel: { llmName: 'local-Llama-3.1' },
+      },
+      {
+        activeApiKey: { serviceType: 'Claude' },
+        llmDetailModel: { llmName: 'local-Legacy-External-Key' },
+      },
+      {
+        activeApiKey: { serviceType: LOCAL_LLM_MODEL },
+        llmDetailModel: { llmName: 'local-Qwen2.5-7B-Instruct' },
+      },
     ]);
 
     await expect(service.getModels(authentication)).resolves.toEqual([
@@ -285,28 +299,69 @@ describe('PromptService 부서 접근 및 정책 조회', () => {
       where: { memberId: '42' },
     });
     expect(activeLlmRepository.find).toHaveBeenCalledWith({
-      select: { llmDetailModel: { llmName: true } },
+      select: {
+        activeApiKey: { serviceType: true },
+        llmDetailModel: { llmName: true },
+      },
       relations: { activeApiKey: true, llmDetailModel: true },
       where: { activeApiKey: { departmentId: '10' } },
       order: { llmDetailModel: { llmName: 'ASC' } },
     });
-    expect(llmDetailModelRepository.find).toHaveBeenCalledWith({
-      select: { llmName: true },
-      where: {
-        llmName: expect.anything(),
-      },
-      order: { llmName: 'ASC' },
+  });
+
+  it('모든 로그인 사용자가 부서 조회 없이 LPL의 로컬 NER 목록을 조회할 수 있다', async () => {
+    const deployments = [
+      { deploymentId: 'ner-gliner-multi', enabled: true },
+      { deploymentId: 'ner-disabled', enabled: false },
+    ];
+    nerClient.getNerDeployments.mockResolvedValueOnce(deployments);
+
+    await expect(service.getNerList()).resolves.toEqual({ deployments });
+
+    expect(nerClient.getNerDeployments).toHaveBeenCalledTimes(1);
+    expect(memberDepartmentRepository.findOne).not.toHaveBeenCalled();
+    expect(activeLlmRepository.find).not.toHaveBeenCalled();
+  });
+
+  it('LPL 로컬 NER 목록 조회 실패는 프롬프트 도메인 오류로 변환한다', async () => {
+    nerClient.getNerDeployments.mockRejectedValueOnce(
+      new NerRequestException({ status: 502 }),
+    );
+
+    await expect(service.getNerList()).rejects.toMatchObject({
+      baseStatus: PromptErrorStatus.NER_DEPLOYMENT_LIST_UNAVAILABLE,
     });
   });
 
-  it('DB에 등록된 local-* LLM은 API 키 등록 없이도 부서에서 사용할 수 있다', async () => {
+  it('부서에 활성화된 local-* LLM mapping을 통해 로컬 모델을 사용할 수 있다', async () => {
     await expect(requestAnalyze('local-Qwen2.5-7B-Instruct')).resolves.toEqual({ chatRoomId });
 
-    expect(activeLlmRepository.findOne).not.toHaveBeenCalled();
-    expect(llmDetailModelRepository.findOne).toHaveBeenCalledWith({
-      select: { llmDetailModelId: true },
-      where: { llmName: 'local-Qwen2.5-7B-Instruct' },
+    expect(activeLlmRepository.findOne).toHaveBeenCalledWith({
+      select: { activeLlmId: true },
+      where: {
+        activeApiKey: { departmentId: '10', serviceType: LOCAL_LLM_MODEL },
+        llmDetailModel: { llmName: 'local-Qwen2.5-7B-Instruct' },
+      },
     });
+  });
+
+  it('비활성화된 local-* LLM mapping은 PROM403_1로 거부하고 리포트를 생성하지 않는다', async () => {
+    activeLlmRepository.findOne.mockResolvedValueOnce(null);
+
+    await expect(requestAnalyze('local-Qwen2.5-7B-Instruct')).rejects.toMatchObject({
+      baseStatus: PromptErrorStatus.FORBIDDEN_LLM_MODEL,
+    });
+
+    expect(activeLlmRepository.findOne).toHaveBeenCalledWith({
+      select: { activeLlmId: true },
+      where: {
+        activeApiKey: { departmentId: '10', serviceType: LOCAL_LLM_MODEL },
+        llmDetailModel: { llmName: 'local-Qwen2.5-7B-Instruct' },
+      },
+    });
+    expect(maskingReportRepository.validateRequestTickets).not.toHaveBeenCalled();
+    expect(promptRoomRepository.existsByIdAndMemberId).not.toHaveBeenCalled();
+    expect(maskingReportRepository.create).not.toHaveBeenCalled();
   });
 
   it('미지원 모델 prefix는 PROM403_1을 반환하고 리포트를 생성하지 않는다', async () => {
@@ -446,10 +501,8 @@ describe('PromptService 부서 접근 및 정책 조회', () => {
       createDepartmentPolicy('5', 'PHONE', MaskingClass.PRIVATE),
       createDepartmentPolicy('9', 'API_KEY', MaskingClass.PRIVATE),
     ]);
-    nerClient.getDetectionConfiguration.mockReturnValue({
-      nerDeploymentId: 'ner-gliner-multi',
-      llmDeploymentId: 'llm-qwen3-14b',
-    });
+    nerClient.getFirstNerDeploymentId.mockResolvedValue('ner-gliner-multi');
+    nerClient.getFirstLlmDeploymentId.mockResolvedValue('llm-qwen3-14b');
     nerClient.requestAnalyze.mockResolvedValue({
       detections: [{
         start: 16,
@@ -485,6 +538,9 @@ describe('PromptService 부서 접근 및 정책 조회', () => {
         score: 1,
       }],
     });
+    expect(nerClient.getEnabledLlmDeploymentIdByModelName).not.toHaveBeenCalled();
+    expect(nerClient.getFirstNerDeploymentId).toHaveBeenCalledTimes(1);
+    expect(nerClient.getFirstLlmDeploymentId).toHaveBeenCalledTimes(1);
     expect(maskingReportRepository.saveNerTextDetections).toHaveBeenCalledWith(
       ticket,
       [{
@@ -494,6 +550,59 @@ describe('PromptService 부서 접근 및 정책 조회', () => {
         departmentPolicyId: '9',
       }],
     );
+  });
+
+  it('요청 ner와 매칭된 local-* LLM Deployment를 LPL 탐지 요청에 전달한다', async () => {
+    const localLlmModel = 'local-qwen3:8b';
+    nerClient.getEnabledLlmDeploymentIdByModelName.mockResolvedValueOnce(
+      'ollama-qwen3-8b',
+    );
+
+    await requestAnalyze(
+      localLlmModel,
+      '선택한 NER과 LLM으로 탐지합니다.',
+      null,
+      'ner-gliner-custom',
+    );
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    expect(nerClient.getEnabledLlmDeploymentIdByModelName)
+      .toHaveBeenCalledWith(localLlmModel);
+    expect(nerClient.getFirstNerDeploymentId).not.toHaveBeenCalled();
+    expect(nerClient.getFirstLlmDeploymentId).not.toHaveBeenCalled();
+    expect(nerClient.requestAnalyze).toHaveBeenCalledWith(expect.objectContaining({
+      nerDeploymentId: 'ner-gliner-custom',
+      llmDeploymentId: 'ollama-qwen3-8b',
+    }));
+  });
+
+  it('매칭되지 않은 local-* LLM은 첫 활성 LLM Deployment로 대체한다', async () => {
+    const localLlmModel = 'local-no-deployment';
+    nerClient.getEnabledLlmDeploymentIdByModelName.mockResolvedValueOnce(null);
+
+    await requestAnalyze(localLlmModel);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    expect(nerClient.getEnabledLlmDeploymentIdByModelName)
+      .toHaveBeenCalledWith(localLlmModel);
+    expect(nerClient.getFirstLlmDeploymentId).toHaveBeenCalledTimes(1);
+    expect(nerClient.requestAnalyze).toHaveBeenCalledWith(expect.objectContaining({
+      nerDeploymentId: 'ner-gliner-multi',
+      llmDeploymentId: 'llm-qwen3-14b',
+    }));
+  });
+
+  it('NER Deployment 목록 조회가 실패하면 NER 상태를 CANCEL로 전이한다', async () => {
+    nerClient.getFirstNerDeploymentId.mockRejectedValueOnce(
+      new Error('empty deployments'),
+    );
+
+    await expect(requestAnalyze('Claude Sonnet 5')).resolves.toEqual({
+      chatRoomId,
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    expect(maskingReportRepository.cancelNer).toHaveBeenCalledWith(ticket);
   });
 
   it('LLM 전송 본문은 저장된 텍스트 탐지 항목을 뒤에서부터 마스킹한다', async () => {
@@ -556,17 +665,19 @@ describe('PromptService 부서 접근 및 정책 조회', () => {
   });
 
   function requestAnalyze(
-    model: string,
+    llmModel: string,
     text = '',
     requestRecentTicket: string | null = null,
+    ner?: string,
   ) {
     return service.requestAnalyze(
       {
-        model,
+        llmModel,
         text,
         ticket,
         recentTicket: requestRecentTicket,
         chatRoomId,
+        ...(ner === undefined ? {} : { ner }),
       },
       undefined,
       authentication,

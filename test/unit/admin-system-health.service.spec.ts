@@ -236,7 +236,7 @@ describe('AdminService 시스템 상태 요약 조회', () => {
     await expect(service.getLlmHealth()).resolves.toEqual([
       expect.objectContaining({
         service: HealthServiceName.GPT,
-        currentStatus: HealthStatus.DELAY,
+        currentStatus: HealthStatus.OK,
         availability: 50,
         averageResponse: 1100,
         history: expect.arrayContaining([]),

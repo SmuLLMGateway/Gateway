@@ -46,7 +46,7 @@ services:
       - gateway-network
 
   gateway:
-    image: rlawngjs0313/ll-gateway:latest
+    image: rlawngjs0313/llm-gateway:latest
     pull_policy: always
     restart: unless-stopped
     init: true
@@ -86,7 +86,6 @@ services:
       NER_SERVER_PORT: ${NER_SERVER_PORT:?NER_SERVER_PORT is required}
       PROVIDER_SERVER_IP: ${PROVIDER_SERVER_IP:?PROVIDER_SERVER_IP is required}
       PROVIDER_SERVER_PORT: ${PROVIDER_SERVER_PORT:?PROVIDER_SERVER_PORT is required}
-      NER_CALLBACK_SECRET: ${NER_CALLBACK_SECRET:?NER_CALLBACK_SECRET is required}
     # 컨테이너에서 EC2 호스트의 MySQL과 NER에 접속하기 위한 Linux Docker 매핑입니다.
     extra_hosts:
       - "host.docker.internal:host-gateway"

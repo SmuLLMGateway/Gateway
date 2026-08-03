@@ -33,16 +33,21 @@ import {
   DisableUserDocs,
   LogsSummaryDocs,
   LinkDepartmentUsersDocs,
+  LocalLlmListDocs,
   LlmHealthDocs,
   PolicyCatalogDocs,
   PolicyDetectDocs,
   PromptDetailDocs,
   RegisterApiKeyDocs,
+  RegisterLocalLlmDocs,
+  RegisterLocalNerDocs,
   SyncPoliciesDocs,
   SyncGlobalPoliciesDocs,
   SystemHealthDocs,
   RestoreUserDocs,
   UpdateUserDocs,
+  UpdateLocalLlmStatusDocs,
+  UpdateLocalNerStatusDocs,
   UserDetailDocs,
   UserListDocs,
   UserPromptListDocs,
@@ -166,6 +171,93 @@ export class AdminController {
     );
     return GeneralResponse.onSuccess(
       AdminSuccessStatus.REGISTER_API_KEY,
+      result,
+    );
+  }
+
+  @LocalLlmListDocs()
+  @Roles(UserRole.TOTAL_ADMIN)
+  @Get('/admin/v1/local-llms')
+  async getLocalLlmList(
+    @CurrentUser() authentication: AuthenticatedUser,
+  ): Promise<GeneralResponse<AdminResDTO.LocalLlmList>> {
+    const result = await this.adminService.getLocalLlmList(authentication);
+    return GeneralResponse.onSuccess(
+      AdminSuccessStatus.LOCAL_LLM_LIST,
+      result,
+    );
+  }
+
+  @UpdateLocalLlmStatusDocs()
+  @Roles(UserRole.TOTAL_ADMIN)
+  @Patch('/admin/v1/local-llms/:deploymentId')
+  async updateLocalLlmStatus(
+    @Param('deploymentId') deploymentId: string,
+    @Body() dto: AdminReqDTO.UpdateLocalDeploymentStatus,
+    @CurrentUser() authentication: AuthenticatedUser,
+  ): Promise<GeneralResponse<AdminResDTO.UpdateLocalLlmStatus>> {
+    const result = await this.adminService.updateLocalLlmStatus(
+      deploymentId,
+      dto,
+      authentication,
+    );
+    return GeneralResponse.onSuccess(
+      AdminSuccessStatus.UPDATE_LOCAL_LLM_STATUS,
+      result,
+    );
+  }
+
+  @UpdateLocalNerStatusDocs()
+  @Roles(UserRole.TOTAL_ADMIN)
+  @Patch('/admin/v1/local-ners/:deploymentId')
+  async updateLocalNerStatus(
+    @Param('deploymentId') deploymentId: string,
+    @Body() dto: AdminReqDTO.UpdateLocalDeploymentStatus,
+    @CurrentUser() authentication: AuthenticatedUser,
+  ): Promise<GeneralResponse<AdminResDTO.UpdateLocalNerStatus>> {
+    const result = await this.adminService.updateLocalNerStatus(
+      deploymentId,
+      dto,
+      authentication,
+    );
+    return GeneralResponse.onSuccess(
+      AdminSuccessStatus.UPDATE_LOCAL_NER_STATUS,
+      result,
+    );
+  }
+
+  @RegisterLocalLlmDocs()
+  @Roles(UserRole.TOTAL_ADMIN)
+  @Post('/admin/v1/local-llms')
+  @HttpCode(HttpStatus.CREATED)
+  async registerLocalLlm(
+    @Body() dto: AdminReqDTO.RegisterLocalLlm,
+    @CurrentUser() authentication: AuthenticatedUser,
+  ): Promise<GeneralResponse<AdminResDTO.RegisterLocalLlm>> {
+    const result = await this.adminService.registerLocalLlm(
+      dto,
+      authentication,
+    );
+    return GeneralResponse.onSuccess(
+      AdminSuccessStatus.REGISTER_LOCAL_LLM,
+      result,
+    );
+  }
+
+  @RegisterLocalNerDocs()
+  @Roles(UserRole.TOTAL_ADMIN)
+  @Post('/admin/v1/local-ners')
+  @HttpCode(HttpStatus.CREATED)
+  async registerLocalNer(
+    @Body() dto: AdminReqDTO.RegisterLocalNer,
+    @CurrentUser() authentication: AuthenticatedUser,
+  ): Promise<GeneralResponse<AdminResDTO.RegisterLocalNer>> {
+    const result = await this.adminService.registerLocalNer(
+      dto,
+      authentication,
+    );
+    return GeneralResponse.onSuccess(
+      AdminSuccessStatus.REGISTER_LOCAL_NER,
       result,
     );
   }
