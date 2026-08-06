@@ -14,6 +14,7 @@ import { MaskingReportRepository } from '../../src/domain/prompt/repository/mask
 import { PromptFileRepository } from '../../src/domain/prompt/repository/prompt-file.repository.js';
 import { PromptRoomRepository } from '../../src/domain/prompt/repository/prompt-room.repository.js';
 import { PromptLogRepository } from '../../src/domain/prompt/repository/prompt-log.repository.js';
+import { PromptFileOcrService } from '../../src/domain/prompt/service/prompt-file-ocr.service.js';
 import { PromptService } from '../../src/domain/prompt/service/prompt.service.js';
 import { MemberDepartmentDAO } from '../../src/domain/user/dao/member-department.dao.js';
 import type { AuthenticatedUser } from '../../src/global/security/type/jwt-payload.type.js';
@@ -50,6 +51,7 @@ describe('PromptService 부서 접근 및 정책 조회', () => {
     create: jest.fn(),
     saveRegexDetections: jest.fn(),
     saveNerTextDetections: jest.fn(),
+    saveNerTextAndFileDetections: jest.fn(),
     cancelRegex: jest.fn(),
     cancelNer: jest.fn(),
   };
@@ -71,6 +73,9 @@ describe('PromptService 부서 접근 및 정책 조회', () => {
     getEnabledLlmDeploymentIdByModelName: jest.fn(),
     getNerDeployments: jest.fn(),
     requestAnalyze: jest.fn(),
+  };
+  const promptFileOcrService = {
+    extractText: jest.fn(),
   };
   const dataSource = {
     getRepository: jest.fn(),
@@ -112,6 +117,7 @@ describe('PromptService 부서 접근 및 정책 조회', () => {
           useValue: promptLogRepository,
         },
         { provide: MinioObjectStorageService, useValue: {} },
+        { provide: PromptFileOcrService, useValue: promptFileOcrService },
         { provide: ProviderClient, useValue: {} },
         { provide: ApiKeyEncryptionService, useValue: {} },
         { provide: NerClient, useValue: nerClient },
@@ -138,6 +144,7 @@ describe('PromptService 부서 접근 및 정책 조회', () => {
     maskingReportRepository.create.mockResolvedValue(undefined);
     maskingReportRepository.saveRegexDetections.mockResolvedValue(true);
     maskingReportRepository.saveNerTextDetections.mockResolvedValue(true);
+    maskingReportRepository.saveNerTextAndFileDetections.mockResolvedValue(true);
     maskingReportRepository.cancelRegex.mockResolvedValue(true);
     maskingReportRepository.cancelNer.mockResolvedValue(true);
     nerClient.getFirstNerDeploymentId.mockResolvedValue('ner-gliner-multi');
@@ -145,6 +152,7 @@ describe('PromptService 부서 접근 및 정책 조회', () => {
     nerClient.getEnabledLlmDeploymentIdByModelName.mockResolvedValue(null);
     nerClient.getNerDeployments.mockResolvedValue([]);
     nerClient.requestAnalyze.mockResolvedValue({ detections: [] });
+    promptFileOcrService.extractText.mockResolvedValue('OCR 추출 텍스트');
     dataSource.getRepository.mockReturnValue(maskingDetailRepository);
     maskingDetailRepository.find.mockResolvedValue([]);
   });
@@ -179,7 +187,7 @@ describe('PromptService 부서 접근 및 정책 조회', () => {
       authentication.userId,
       '',
       null,
-      true,
+      false,
     );
 
     const validationOrder = [
@@ -232,7 +240,7 @@ describe('PromptService 부서 접근 및 정책 조회', () => {
       authentication.userId,
       text,
       null,
-      true,
+      false,
     );
   });
 
@@ -252,6 +260,13 @@ describe('PromptService 부서 접근 및 정책 조회', () => {
           llmDetailModel: { llmName: model },
         },
       });
+      expect(promptLogRepository.replaceMasking).toHaveBeenCalledWith(
+        chatRoomId,
+        ticket,
+        '',
+        model,
+        model,
+      );
     },
   );
 
@@ -495,25 +510,12 @@ describe('PromptService 부서 접근 및 정책 조회', () => {
     ]);
   });
 
-  it('정규식 탐지를 existingDetections로 전달하고 NER 치환 문자열을 별도 저장한다', async () => {
+  it('NER 탐지가 중지된 동안에는 NER 서버 요청과 NER 상태 전이를 수행하지 않는다', async () => {
     const text = '010-1234-5678 / ner-secret';
     departmentPolicyRepository.find.mockResolvedValue([
       createDepartmentPolicy('5', 'PHONE', MaskingClass.PRIVATE),
       createDepartmentPolicy('9', 'API_KEY', MaskingClass.PRIVATE),
     ]);
-    nerClient.getFirstNerDeploymentId.mockResolvedValue('ner-gliner-multi');
-    nerClient.getFirstLlmDeploymentId.mockResolvedValue('llm-qwen3-14b');
-    nerClient.requestAnalyze.mockResolvedValue({
-      detections: [{
-        start: 16,
-        end: 26,
-        text: 'ner-secret',
-        type: 'API_KEY',
-        source: 'ner',
-        score: 0.91,
-        maskingText: '[ API 키 ]',
-      }],
-    });
 
     await requestAnalyze('Claude Sonnet 5', text);
     await new Promise<void>((resolve) => setImmediate(resolve));
@@ -523,86 +525,15 @@ describe('PromptService 부서 접근 및 정책 조회', () => {
       authentication.userId,
       text,
       null,
-      true,
+      false,
     );
-    expect(nerClient.requestAnalyze).toHaveBeenCalledWith({
-      text,
-      nerDeploymentId: 'ner-gliner-multi',
-      llmDeploymentId: 'llm-qwen3-14b',
-      existingDetections: [{
-        start: 0,
-        end: 13,
-        text: '010-1234-5678',
-        type: 'PHONE_NUMBER',
-        source: 'regex',
-        score: 1,
-      }],
-    });
+    expect(nerClient.requestAnalyze).not.toHaveBeenCalled();
     expect(nerClient.getEnabledLlmDeploymentIdByModelName).not.toHaveBeenCalled();
-    expect(nerClient.getFirstNerDeploymentId).toHaveBeenCalledTimes(1);
-    expect(nerClient.getFirstLlmDeploymentId).toHaveBeenCalledTimes(1);
-    expect(maskingReportRepository.saveNerTextDetections).toHaveBeenCalledWith(
-      ticket,
-      [{
-        originalText: 'ner-secret',
-        startIdx: 16,
-        maskingText: '[ API 키 ]',
-        departmentPolicyId: '9',
-      }],
-    );
-  });
-
-  it('요청 ner와 매칭된 local-* LLM Deployment를 LPL 탐지 요청에 전달한다', async () => {
-    const localLlmModel = 'local-qwen3:8b';
-    nerClient.getEnabledLlmDeploymentIdByModelName.mockResolvedValueOnce(
-      'ollama-qwen3-8b',
-    );
-
-    await requestAnalyze(
-      localLlmModel,
-      '선택한 NER과 LLM으로 탐지합니다.',
-      null,
-      'ner-gliner-custom',
-    );
-    await new Promise<void>((resolve) => setImmediate(resolve));
-
-    expect(nerClient.getEnabledLlmDeploymentIdByModelName)
-      .toHaveBeenCalledWith(localLlmModel);
     expect(nerClient.getFirstNerDeploymentId).not.toHaveBeenCalled();
     expect(nerClient.getFirstLlmDeploymentId).not.toHaveBeenCalled();
-    expect(nerClient.requestAnalyze).toHaveBeenCalledWith(expect.objectContaining({
-      nerDeploymentId: 'ner-gliner-custom',
-      llmDeploymentId: 'ollama-qwen3-8b',
-    }));
-  });
-
-  it('매칭되지 않은 local-* LLM은 첫 활성 LLM Deployment로 대체한다', async () => {
-    const localLlmModel = 'local-no-deployment';
-    nerClient.getEnabledLlmDeploymentIdByModelName.mockResolvedValueOnce(null);
-
-    await requestAnalyze(localLlmModel);
-    await new Promise<void>((resolve) => setImmediate(resolve));
-
-    expect(nerClient.getEnabledLlmDeploymentIdByModelName)
-      .toHaveBeenCalledWith(localLlmModel);
-    expect(nerClient.getFirstLlmDeploymentId).toHaveBeenCalledTimes(1);
-    expect(nerClient.requestAnalyze).toHaveBeenCalledWith(expect.objectContaining({
-      nerDeploymentId: 'ner-gliner-multi',
-      llmDeploymentId: 'llm-qwen3-14b',
-    }));
-  });
-
-  it('NER Deployment 목록 조회가 실패하면 NER 상태를 CANCEL로 전이한다', async () => {
-    nerClient.getFirstNerDeploymentId.mockRejectedValueOnce(
-      new Error('empty deployments'),
-    );
-
-    await expect(requestAnalyze('Claude Sonnet 5')).resolves.toEqual({
-      chatRoomId,
-    });
-    await new Promise<void>((resolve) => setImmediate(resolve));
-
-    expect(maskingReportRepository.cancelNer).toHaveBeenCalledWith(ticket);
+    expect(maskingReportRepository.saveNerTextDetections).not.toHaveBeenCalled();
+    expect(maskingReportRepository.saveNerTextAndFileDetections).not.toHaveBeenCalled();
+    expect(maskingReportRepository.cancelNer).not.toHaveBeenCalled();
   });
 
   it('LLM 전송 본문은 저장된 텍스트 탐지 항목을 뒤에서부터 마스킹한다', async () => {

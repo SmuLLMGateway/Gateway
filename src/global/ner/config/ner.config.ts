@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { readHttpServerBaseUrl } from '../../config/http-server-endpoint.config.js';
 
-const DEFAULT_NER_REQUEST_TIMEOUT_MS = 5_000;
+const DEFAULT_NER_REQUEST_TIMEOUT_MS = 90_000;
 const NER_ANALYZE_PATH = '/detect';
 
 @Injectable()

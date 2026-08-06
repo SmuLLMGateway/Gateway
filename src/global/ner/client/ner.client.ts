@@ -22,7 +22,7 @@ import type {
 } from '../type/ner-deployment-registration.type.js';
 import { toLocalLlmModelName } from '../../llm/llm-service.mapping.js';
 
-const MAX_NER_ERROR_RESPONSE_BODY_LOG_LENGTH = 4_096;
+const MAX_NER_ANALYZE_LOG_BODY_LENGTH = 4_096;
 
 @Injectable()
 export class NerClient {
@@ -89,6 +89,9 @@ export class NerClient {
   async requestAnalyze(
     request: Readonly<NerAnalyzeRequest>,
   ): Promise<NerAnalyzeResponse> {
+    const endpoint = new URL(this.config.analyzeUrl).pathname;
+    const requestBody = JSON.stringify(request);
+    const loggableRequestBody = this.toLoggableAnalyzeRequestBody(request);
     let response: Response;
 
     try {
@@ -98,44 +101,112 @@ export class NerClient {
           accept: 'application/json',
           'content-type': 'application/json',
         },
-        body: JSON.stringify(request),
+        body: requestBody,
         signal: AbortSignal.timeout(this.config.requestTimeoutMs),
       });
     } catch (error: unknown) {
+      this.logAnalyzeRequestFailure({
+        endpoint,
+        status: 'NETWORK_ERROR',
+        request,
+        requestBody: loggableRequestBody,
+        responseBody: '<not_received>',
+        error,
+      });
       throw new NerRequestException({ cause: error });
     }
 
     if (!response.ok) {
-      const responseBody = await this.toLoggableErrorResponseBody(response);
-      this.logger.error(
-        `event=ner_analyze_request_failed endpoint=${new URL(this.config.analyzeUrl).pathname} status=${response.status} response_body=${responseBody}`,
-      );
+      const responseBody = await this.toLoggableResponseBody(response);
+      this.logAnalyzeRequestFailure({
+        endpoint,
+        status: String(response.status),
+        request,
+        requestBody: loggableRequestBody,
+        responseBody,
+      });
       throw new NerRequestException({ status: response.status });
     }
 
+    let responseBody: string | undefined;
     try {
-      return this.toAnalyzeResponse(await response.json());
+      responseBody = await response.text();
+      return this.toAnalyzeResponse(JSON.parse(responseBody));
     } catch (error: unknown) {
+      this.logAnalyzeRequestFailure({
+        endpoint,
+        status: String(response.status),
+        request,
+        requestBody: loggableRequestBody,
+        responseBody: responseBody === undefined
+          ? '<unavailable>'
+          : this.toLoggableBody(responseBody),
+        error,
+      });
       throw new NerRequestException({ cause: error });
     }
   }
 
-  /** 실패 응답은 원문을 보존하되 로그 주입과 과도한 로그 적재를 막습니다. */
-  private async toLoggableErrorResponseBody(response: Response): Promise<string> {
+  /** 요청·응답 원문은 실패 시에만, 로그 주입·과도한 적재를 막아 남깁니다. */
+  private toLoggableAnalyzeRequestBody(
+    request: Readonly<NerAnalyzeRequest>,
+  ): string {
+    return this.toLoggableBody(JSON.stringify({
+      nerDeploymentId: request.nerDeploymentId,
+      llmDeploymentId: request.llmDeploymentId,
+      existingDetections: request.existingDetections,
+      text: request.text,
+    }) ?? '<unserializable>');
+  }
+
+  private async toLoggableResponseBody(response: Response): Promise<string> {
     try {
-      const body = (await response.text())
-        .replace(/[\r\n\t]+/g, ' ')
-        .trim();
-      if (body === '') {
-        return '<empty>';
-      }
-      if (body.length <= MAX_NER_ERROR_RESPONSE_BODY_LOG_LENGTH) {
-        return body;
-      }
-      return `${body.slice(0, MAX_NER_ERROR_RESPONSE_BODY_LOG_LENGTH)}…[truncated]`;
+      return this.toLoggableBody(await response.text());
     } catch {
       return '<unavailable>';
     }
+  }
+
+  private toLoggableBody(body: string): string {
+    const normalized = body.replace(/[\r\n\t]+/g, ' ').trim();
+    if (normalized === '') {
+      return '<empty>';
+    }
+    if (normalized.length <= MAX_NER_ANALYZE_LOG_BODY_LENGTH) {
+      return normalized;
+    }
+    return `${normalized.slice(0, MAX_NER_ANALYZE_LOG_BODY_LENGTH)}…[truncated]`;
+  }
+
+  private logAnalyzeRequestFailure(input: Readonly<{
+    endpoint: string;
+    status: string;
+    request: NerAnalyzeRequest;
+    requestBody: string;
+    responseBody: string;
+    error?: unknown;
+  }>): void {
+    const reason = input.error === undefined
+      ? ''
+      : ` reason=${this.toLoggableErrorReason(input.error)}`;
+    this.logger.error(
+      `event=ner_analyze_request_failed method=POST endpoint=${input.endpoint} status=${input.status} text_chars=${input.request.text.length} existing_detection_count=${input.request.existingDetections.length} request_body=${input.requestBody} response_body=${input.responseBody}${reason}`,
+    );
+  }
+
+  private toLoggableErrorReason(error: unknown): string {
+    if (!(error instanceof Error)) {
+      return this.toLoggableBody(String(error));
+    }
+
+    const cause = error.cause;
+    const causeMessage = cause instanceof Error
+      ? ` cause=${cause.name}: ${cause.message}`
+      : cause === undefined
+        ? ''
+        : ` cause=${String(cause)}`;
+
+    return this.toLoggableBody(`${error.name}: ${error.message}${causeMessage}`);
   }
 
   private async createDeployment(

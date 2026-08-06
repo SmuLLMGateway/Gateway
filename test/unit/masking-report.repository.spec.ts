@@ -443,6 +443,52 @@ describe('MaskingReportRepository', () => {
       .toBeLessThan(transactionReportRepository.update.mock.invocationCallOrder[0]!);
   });
 
+  it('텍스트·파일 NER 상세를 한 트랜잭션에서 저장한다', async () => {
+    transactionReportRepository.findOne.mockResolvedValueOnce(createReport({
+      regexStatus: MaskingReportStatus.DONE,
+    }));
+
+    await expect(repository.saveNerTextAndFileDetections(
+      ticket,
+      [{
+        originalText: 'ner-secret',
+        startIdx: 12,
+        maskingText: '[ API 키 ]',
+        departmentPolicyId: '505',
+      }],
+      fileUrl,
+      [{ departmentPolicyId: '501' }],
+    )).resolves.toBe(true);
+
+    expect(promptMapper.toMaskingDetailDAO.mock.calls.map(([detail]) => detail))
+      .toEqual([
+        {
+          originalText: 'ner-secret',
+          startIdx: 12,
+          fileUrl: null,
+          maskingText: '[ API 키 ]',
+          maskingReportId: ticket,
+          departmentPolicyId: '505',
+        },
+        {
+          originalText: null,
+          startIdx: null,
+          fileUrl,
+          maskingText: null,
+          maskingReportId: ticket,
+          departmentPolicyId: '501',
+        },
+      ]);
+    expect(transactionDetailRepository.insert).toHaveBeenCalledTimes(1);
+    expect(transactionReportRepository.update).toHaveBeenCalledWith(
+      { maskingReportId: ticket },
+      {
+        nerStatus: MaskingReportStatus.DONE,
+        status: MaskingReportStatus.DONE,
+      },
+    );
+  });
+
   it('NER 상세 저장이 실패하면 NER와 전체 상태를 DONE으로 변경하지 않는다', async () => {
     transactionReportRepository.findOne.mockResolvedValueOnce(createReport({
       regexStatus: MaskingReportStatus.DONE,

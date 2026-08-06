@@ -25,5 +25,6 @@ describe('ProviderConfig', () => {
 
     expect(config.baseUrl).toBe('http://127.0.0.1:8001/');
     expect(config.healthUrl).toBe('http://127.0.0.1:8001/health');
+    expect(config.requestTimeoutMs).toBe(90_000);
   });
 });

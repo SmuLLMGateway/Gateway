@@ -12,6 +12,7 @@ import { RemoveDuplicateApiKeyPolicies2026080200006 } from '../migration/remove-
 import { AddPromptLogActiveApiKey2026080200007 } from '../migration/add-prompt-log-active-api-key.migration.js';
 import { AddPromptLogModelName2026080200008 } from '../migration/add-prompt-log-model-name.migration.js';
 import { AddLocalLlmActiveApiKeys2026080400000 } from '../migration/add-local-llm-active-api-keys.migration.js';
+import { ChangeMaskingReportNerStatusDefaultToDone2026080600000 } from '../migration/change-masking-report-ner-status-default-to-done.migration.js';
 
 export function createDatabaseConfig(): TypeOrmModuleOptions {
     return {
@@ -40,7 +41,8 @@ export function createDatabaseConfig(): TypeOrmModuleOptions {
             RemoveDuplicateApiKeyPolicies2026080200006,
             AddPromptLogActiveApiKey2026080200007,
             AddPromptLogModelName2026080200008,
-            AddLocalLlmActiveApiKeys2026080400000
+            AddLocalLlmActiveApiKeys2026080400000,
+            ChangeMaskingReportNerStatusDefaultToDone2026080600000
         ],
         migrationsRun: true,
         migrationsTransactionMode: 'each',

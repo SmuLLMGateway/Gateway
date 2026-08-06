@@ -263,6 +263,37 @@ export class MaskingReportRepository {
     );
   }
 
+  /** 텍스트·파일 NER 결과를 하나의 NER 완료 트랜잭션으로 저장합니다. */
+  async saveNerTextAndFileDetections(
+    ticket: string,
+    textDetections: readonly Readonly<PromptData.NerTextDetection>[],
+    fileUrl: string,
+    fileDetections: readonly Readonly<PromptData.NerDetection>[],
+  ): Promise<boolean> {
+    return this.completeBranch(
+      ticket,
+      'nerStatus',
+      [
+        ...textDetections.map((detection) => ({
+          originalText: detection.originalText,
+          startIdx: detection.startIdx,
+          fileUrl: null,
+          maskingText: detection.maskingText,
+          maskingReportId: ticket,
+          departmentPolicyId: detection.departmentPolicyId,
+        })),
+        ...fileDetections.map((detection) => ({
+          originalText: null,
+          startIdx: null,
+          fileUrl,
+          maskingText: null,
+          maskingReportId: ticket,
+          departmentPolicyId: detection.departmentPolicyId,
+        })),
+      ],
+    );
+  }
+
   async cancelNer(ticket: string): Promise<boolean> {
     return this.cancelBranch(ticket, 'nerStatus');
   }

@@ -2,6 +2,9 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Readable } from 'node:stream';
 import { ProviderConfig } from '../config/provider.config.js';
 
+const MAX_PROVIDER_LOG_BODY_LENGTH = 4_096;
+const REDACTED_API_KEY = '[REDACTED]';
+
 export interface ProviderFile {
   readonly stream: Readable;
   readonly fileName: string;
@@ -31,8 +34,9 @@ export class ProviderClient {
   async request(request: Readonly<ProviderRequest>): Promise<ProviderResponse> {
     const endpoint = new URL('/api/v1/request', this.config.baseUrl);
     const requestMode = request.files.length === 0 ? 'json' : 'multipart';
+    const requestBody = this.toLoggableRequestBody(request);
     this.logger.log(
-      `event=provider_request_started ticket=${request.ticket} endpoint=${endpoint.origin}${endpoint.pathname} method=POST mode=${requestMode} model=${request.model} text_chars=${request.text.length} file_count=${request.files.length}`,
+      `event=provider_request_started ticket=${request.ticket} endpoint=${endpoint.origin}${endpoint.pathname} method=POST mode=${requestMode} model=${request.model} text_chars=${request.text.length} file_count=${request.files.length} request_body=${requestBody}`,
     );
     let response: Response;
     try {
@@ -40,24 +44,79 @@ export class ProviderClient {
         endpoint,
         request.files.length === 0 ? this.jsonRequest(request) : this.multipartRequest(request),
       );
-    } catch {
-      this.logger.error(
-        `event=provider_request_failed ticket=${request.ticket} endpoint=${endpoint.origin}${endpoint.pathname} result=network_error`,
-      );
+    } catch (error: unknown) {
+      this.logRequestFailure({
+        ticket: request.ticket,
+        endpoint,
+        requestMode,
+        requestBody,
+        responseBody: '<not_received>',
+        result: 'network_error',
+        error,
+      });
       throw new Error('Provider 네트워크 요청에 실패했습니다.');
     }
+
+    let responseBody: string | undefined;
+    try {
+      responseBody = await response.text();
+    } catch (error: unknown) {
+      this.logRequestFailure({
+        ticket: request.ticket,
+        endpoint,
+        requestMode,
+        requestBody,
+        responseBody: '<unavailable>',
+        result: 'response_body_unavailable',
+        error,
+        status: response.status,
+      });
+      throw new Error('Provider 응답 본문을 읽을 수 없습니다.');
+    }
+
     if (!response.ok) {
-      this.logger.error(
-        `event=provider_request_failed ticket=${request.ticket} endpoint=${endpoint.origin}${endpoint.pathname} status=${response.status} result=http_error`,
-      );
+      this.logRequestFailure({
+        ticket: request.ticket,
+        endpoint,
+        requestMode,
+        requestBody,
+        responseBody: this.toLoggableBody(responseBody),
+        result: 'http_error',
+        status: response.status,
+      });
       throw new Error(`Provider 요청이 실패했습니다. status=${response.status}`);
     }
-    const payload: unknown = await response.json();
+
+    let payload: unknown;
+    try {
+      payload = JSON.parse(responseBody);
+    } catch (error: unknown) {
+      this.logRequestFailure({
+        ticket: request.ticket,
+        endpoint,
+        requestMode,
+        requestBody,
+        responseBody: this.toLoggableBody(responseBody),
+        result: 'invalid_response',
+        status: response.status,
+        error,
+      });
+      throw new Error('Provider 응답 형식이 올바르지 않습니다.');
+    }
     if (!this.isResponse(payload)) {
+      this.logRequestFailure({
+        ticket: request.ticket,
+        endpoint,
+        requestMode,
+        requestBody,
+        responseBody: this.toLoggableBody(responseBody),
+        result: 'invalid_response',
+        status: response.status,
+      });
       throw new Error('Provider 응답 형식이 올바르지 않습니다.');
     }
     this.logger.log(
-      `event=provider_response_received ticket=${request.ticket} status=${response.status} provider=${payload.provider} model=${payload.model} response_id=${payload.response_id} output_chars=${payload.output_text.length} total_usd=${payload.total_usd}`,
+      `event=provider_response_received ticket=${request.ticket} status=${response.status} provider=${payload.provider} model=${payload.model} response_id=${payload.response_id} output_chars=${payload.output_text.length} total_usd=${payload.total_usd} response_body=${this.toLoggableBody(responseBody)}`,
     );
     return {
       outputText: payload.output_text,
@@ -102,6 +161,63 @@ export class ProviderClient {
       // Node fetch에서 요청 본문을 스트리밍하기 위한 옵션입니다.
       duplex: 'half',
     } as RequestInit;
+  }
+
+  /** API 키·첨부 원문을 제외한 실제 Provider 요청의 안전한 로그 표현입니다. */
+  private toLoggableRequestBody(request: Readonly<ProviderRequest>): string {
+    return this.toLoggableBody(JSON.stringify({
+      model: request.model,
+      api_key: REDACTED_API_KEY,
+      text: request.text,
+      files: request.files.map((file) => ({
+        fileName: file.fileName.replace(/[\r\n"]/g, '_'),
+      })),
+    }) ?? '<unserializable>');
+  }
+
+  private logRequestFailure(input: Readonly<{
+    ticket: string;
+    endpoint: URL;
+    requestMode: 'json' | 'multipart';
+    requestBody: string;
+    responseBody: string;
+    result: 'network_error' | 'http_error' | 'response_body_unavailable' | 'invalid_response';
+    status?: number;
+    error?: unknown;
+  }>): void {
+    const status = input.status === undefined ? '' : ` status=${input.status}`;
+    const reason = input.error === undefined
+      ? ''
+      : ` reason=${this.toLoggableErrorReason(input.error)}`;
+    this.logger.error(
+      `event=provider_request_failed ticket=${input.ticket} endpoint=${input.endpoint.origin}${input.endpoint.pathname} method=POST mode=${input.requestMode}${status} result=${input.result} request_body=${input.requestBody} response_body=${input.responseBody}${reason}`,
+    );
+  }
+
+  private toLoggableBody(body: string): string {
+    const normalized = body.replace(/[\r\n\t]+/g, ' ').trim();
+    if (normalized === '') {
+      return '<empty>';
+    }
+    if (normalized.length <= MAX_PROVIDER_LOG_BODY_LENGTH) {
+      return normalized;
+    }
+    return `${normalized.slice(0, MAX_PROVIDER_LOG_BODY_LENGTH)}…[truncated]`;
+  }
+
+  private toLoggableErrorReason(error: unknown): string {
+    if (!(error instanceof Error)) {
+      return this.toLoggableBody(String(error));
+    }
+
+    const cause = error.cause;
+    const causeMessage = cause instanceof Error
+      ? ` cause=${cause.name}: ${cause.message}`
+      : cause === undefined
+        ? ''
+        : ` cause=${String(cause)}`;
+
+    return this.toLoggableBody(`${error.name}: ${error.message}${causeMessage}`);
   }
 
   private isResponse(value: unknown): value is {

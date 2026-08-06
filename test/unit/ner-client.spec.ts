@@ -25,7 +25,9 @@ describe('NerConfig', () => {
     process.env.NER_SERVER_IP = ' 127.0.0.1 ';
     process.env.NER_SERVER_PORT = '8000';
 
-    expect(new NerConfig().analyzeUrl).toBe('http://127.0.0.1:8000/detect');
+    const config = new NerConfig();
+    expect(config.analyzeUrl).toBe('http://127.0.0.1:8000/detect');
+    expect(config.requestTimeoutMs).toBe(90_000);
   });
 
   it('Docker 호스트명과 포트도 사용할 수 있다', () => {
@@ -111,7 +113,7 @@ describe('NerClient', () => {
     analyzeUrl: 'http://127.0.0.1:8000/detect',
     nerDeploymentsUrl: 'http://127.0.0.1:8000/deployments/ner',
     llmDeploymentsUrl: 'http://127.0.0.1:8000/deployments/llm',
-    requestTimeoutMs: 5_000,
+    requestTimeoutMs: 90_000,
   } as NerConfig;
 
   let client: NerClient;
@@ -350,7 +352,7 @@ describe('NerClient', () => {
     );
   });
 
-  it('NER 서버가 비-2xx로 응답하면 응답 본문을 로그에 남기고 연동 오류를 발생시킨다', async () => {
+  it('NER 서버가 비-2xx로 응답하면 요청·응답 본문을 로그에 남기고 연동 오류를 발생시킨다', async () => {
     const loggerErrorSpy = jest.spyOn(Logger.prototype, 'error')
       .mockImplementation();
     fetchSpy.mockResolvedValueOnce(new Response(JSON.stringify({
@@ -361,9 +363,15 @@ describe('NerClient', () => {
       await expect(client.requestAnalyze(request)).rejects.toMatchObject({
         status: 502,
       });
-      expect(loggerErrorSpy).toHaveBeenCalledWith(
-        'event=ner_analyze_request_failed endpoint=/detect status=502 response_body={"detail":"GLiNER adapter timed out"}',
-      );
+      expect(loggerErrorSpy).toHaveBeenCalledWith(expect.stringContaining(
+        'event=ner_analyze_request_failed method=POST endpoint=/detect status=502',
+      ));
+      expect(loggerErrorSpy).toHaveBeenCalledWith(expect.stringContaining(
+        'request_body={"nerDeploymentId":"ner-gliner-multi","llmDeploymentId":"llm-qwen3-14b","existingDetections":[{"start":0,"end":4,"text":"민감정보","type":"PHONE_NUMBER","source":"regex","score":1}],"text":"민감정보가 포함된 원문"}',
+      ));
+      expect(loggerErrorSpy).toHaveBeenCalledWith(expect.stringContaining(
+        'response_body={"detail":"GLiNER adapter timed out"}',
+      ));
     } finally {
       loggerErrorSpy.mockRestore();
     }
@@ -391,6 +399,31 @@ describe('NerClient', () => {
         score: 0.95,
       }],
     });
+  });
+
+  it('성공 상태라도 잘못된 응답 본문이면 요청·응답 본문을 로그에 남긴다', async () => {
+    const loggerErrorSpy = jest.spyOn(Logger.prototype, 'error')
+      .mockImplementation();
+    fetchSpy.mockResolvedValueOnce(new Response('not-json-response', {
+      status: 200,
+    }));
+
+    try {
+      await expect(client.requestAnalyze(request)).rejects.toBeInstanceOf(
+        NerRequestException,
+      );
+      expect(loggerErrorSpy).toHaveBeenCalledWith(expect.stringContaining(
+        'event=ner_analyze_request_failed method=POST endpoint=/detect status=200',
+      ));
+      expect(loggerErrorSpy).toHaveBeenCalledWith(expect.stringContaining(
+        'request_body={"nerDeploymentId":"ner-gliner-multi","llmDeploymentId":"llm-qwen3-14b"',
+      ));
+      expect(loggerErrorSpy).toHaveBeenCalledWith(expect.stringContaining(
+        'response_body=not-json-response reason=SyntaxError:',
+      ));
+    } finally {
+      loggerErrorSpy.mockRestore();
+    }
   });
 
   it('NER·LLM 목록에서 활성화된 첫 Deployment ID를 탐지 요청용으로 반환한다', async () => {
@@ -638,11 +671,28 @@ describe('NerClient', () => {
     );
   });
 
-  it('네트워크 요청이 실패하면 연동 오류로 변환한다', async () => {
-    fetchSpy.mockRejectedValueOnce(new TypeError('fetch failed'));
+  it('네트워크 요청 실패 시 보낸 본문과 응답 미수신 원인을 로그에 남긴다', async () => {
+    const loggerErrorSpy = jest.spyOn(Logger.prototype, 'error')
+      .mockImplementation();
+    fetchSpy.mockRejectedValueOnce(new TypeError('fetch failed', {
+      cause: new Error('connect ECONNREFUSED 172.17.0.2:8000'),
+    }));
 
-    await expect(client.requestAnalyze(request)).rejects.toBeInstanceOf(
-      NerRequestException,
-    );
+    try {
+      await expect(client.requestAnalyze(request)).rejects.toBeInstanceOf(
+        NerRequestException,
+      );
+      expect(loggerErrorSpy).toHaveBeenCalledWith(expect.stringContaining(
+        'event=ner_analyze_request_failed method=POST endpoint=/detect status=NETWORK_ERROR',
+      ));
+      expect(loggerErrorSpy).toHaveBeenCalledWith(expect.stringContaining(
+        'request_body={"nerDeploymentId":"ner-gliner-multi","llmDeploymentId":"llm-qwen3-14b"',
+      ));
+      expect(loggerErrorSpy).toHaveBeenCalledWith(expect.stringContaining(
+        'response_body=<not_received> reason=TypeError: fetch failed cause=Error: connect ECONNREFUSED 172.17.0.2:8000',
+      ));
+    } finally {
+      loggerErrorSpy.mockRestore();
+    }
   });
 });

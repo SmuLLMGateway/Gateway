@@ -24,6 +24,7 @@ import { MaskingReportRepository } from '../../src/domain/prompt/repository/mask
 import { PromptFileRepository } from '../../src/domain/prompt/repository/prompt-file.repository.js';
 import { PromptLogRepository } from '../../src/domain/prompt/repository/prompt-log.repository.js';
 import { PromptRoomRepository } from '../../src/domain/prompt/repository/prompt-room.repository.js';
+import { PromptFileOcrService } from '../../src/domain/prompt/service/prompt-file-ocr.service.js';
 import { PromptService } from '../../src/domain/prompt/service/prompt.service.js';
 import { PromptMinioStorage } from '../../src/domain/prompt/storage/prompt-minio.storage.js';
 import {
@@ -221,6 +222,7 @@ describe('마스킹 요소 탐지 요청 HTTP API', () => {
     saveRegexDetections: jest.fn(),
     saveNerDetections: jest.fn(),
     saveNerTextDetections: jest.fn(),
+    saveNerTextAndFileDetections: jest.fn(),
     cancelRegex: jest.fn(),
     cancelNer: jest.fn(),
     cancelForMember: jest.fn(),
@@ -249,6 +251,9 @@ describe('마스킹 요소 탐지 요청 HTTP API', () => {
     getEnabledLlmDeploymentIdByModelName: jest.fn(),
     getNerDeployments: jest.fn(),
     requestAnalyze: jest.fn(),
+  };
+  const promptFileOcrService = {
+    extractText: jest.fn(),
   };
 
   let app: INestApplication;
@@ -305,6 +310,7 @@ describe('마스킹 요소 탐지 요청 HTTP API', () => {
         { provide: PromptLogRepository, useValue: promptLogRepository },
         { provide: PromptRoomRepository, useValue: promptRoomRepository },
         { provide: MinioObjectStorageService, useValue: objectStorage },
+        { provide: PromptFileOcrService, useValue: promptFileOcrService },
         { provide: ProviderClient, useValue: {} },
         { provide: ApiKeyEncryptionService, useValue: {} },
         { provide: NerClient, useValue: nerClient },
@@ -357,6 +363,7 @@ describe('마스킹 요소 탐지 요청 HTTP API', () => {
     reportRepository.saveRegexDetections.mockResolvedValue(true);
     reportRepository.saveNerDetections.mockResolvedValue(true);
     reportRepository.saveNerTextDetections.mockResolvedValue(true);
+    reportRepository.saveNerTextAndFileDetections.mockResolvedValue(true);
     reportRepository.cancelRegex.mockResolvedValue(true);
     reportRepository.cancelNer.mockResolvedValue(true);
     reportRepository.cancelForMember.mockResolvedValue(true);
@@ -379,6 +386,7 @@ describe('마스킹 요소 탐지 요청 HTTP API', () => {
     promptRoomRepository.deleteByIdAndMemberId.mockResolvedValue(undefined);
     promptRoomRepository.existsByIdAndMemberId.mockResolvedValue(true);
     promptRoomRepository.findRecentByMemberId.mockResolvedValue([]);
+    promptFileOcrService.extractText.mockResolvedValue('OCR 추출 텍스트');
   });
 
   afterAll(async () => {
@@ -1281,13 +1289,13 @@ describe('마스킹 요소 탐지 요청 HTTP API', () => {
       authentication.userId,
       dto.text,
       null,
-      true,
+      false,
     );
     expect(promptLogRepository.replaceMasking).toHaveBeenCalledWith(
       dto.chatRoomId,
       ticket,
       dto.text.slice(0, 50),
-      'Claude',
+      dto.llmModel,
       dto.llmModel,
     );
 
@@ -1340,7 +1348,7 @@ describe('마스킹 요소 탐지 요청 HTTP API', () => {
       dto.chatRoomId,
       ticket,
       dto.text.slice(0, 50),
-      'Claude',
+      dto.llmModel,
       dto.llmModel,
     );
     expect(response.body.code).toBe('PROM200_1');
@@ -1385,7 +1393,7 @@ describe('마스킹 요소 탐지 요청 HTTP API', () => {
       authentication.userId,
       initialText,
       null,
-      true,
+      false,
     );
     expect(response.body.result).toEqual({
       chatRoomId: createdRoom.promptRoomId,
@@ -1467,7 +1475,7 @@ describe('마스킹 요소 탐지 요청 HTTP API', () => {
       authentication.userId,
       dto.text,
       null,
-      true,
+      false,
     );
     expect(objectStorage.putObject).not.toHaveBeenCalled();
     expect(objectStorage.copyObject).not.toHaveBeenCalled();
@@ -1538,30 +1546,31 @@ describe('마스킹 요소 탐지 요청 HTTP API', () => {
     });
   });
 
-  it('NER 호출 전에 NER PENDING 리포트를 만들고 정규식 결과를 전달한다', async () => {
+  it('NER 탐지가 중지된 동안에는 DONE 리포트를 만들고 파일 OCR만 실행한다', async () => {
     const response = await postAnalyzeWithFile(file).expect(200);
 
     expect(objectStorage.presignedGetObject).not.toHaveBeenCalled();
     expect(reportRepository.saveRegexDetections).toHaveBeenCalledTimes(1);
     expect(reportRepository.saveNerDetections).not.toHaveBeenCalled();
     expect(reportRepository.cancelNer).not.toHaveBeenCalled();
-    await waitForCall(() => nerClient.requestAnalyze.mock.calls.length > 0);
     expect(reportRepository.create).toHaveBeenCalledWith(
       ticket,
       authentication.userId,
       dto.text,
       null,
-      true,
+      false,
     );
     expect(nerClient.getEnabledLlmDeploymentIdByModelName).not.toHaveBeenCalled();
-    expect(nerClient.getFirstNerDeploymentId).toHaveBeenCalledTimes(1);
-    expect(nerClient.getFirstLlmDeploymentId).toHaveBeenCalledTimes(1);
-    expect(nerClient.requestAnalyze).toHaveBeenCalledWith(expect.objectContaining({
-      text: dto.text,
-      nerDeploymentId: 'ner-gliner-multi',
-      llmDeploymentId: 'llm-qwen3-14b',
-      existingDetections: expect.any(Array),
-    }));
+    expect(nerClient.getFirstNerDeploymentId).not.toHaveBeenCalled();
+    expect(nerClient.getFirstLlmDeploymentId).not.toHaveBeenCalled();
+    expect(nerClient.requestAnalyze).not.toHaveBeenCalled();
+    await waitForCall(() => promptFileOcrService.extractText.mock.calls.length > 0);
+    expect(promptFileOcrService.extractText).toHaveBeenCalledWith({
+      objectKey: finalObjectKey,
+      extension: '.pdf',
+    });
+    expect(reportRepository.saveNerTextDetections).not.toHaveBeenCalled();
+    expect(reportRepository.saveNerTextAndFileDetections).not.toHaveBeenCalled();
     expect(promptFileRepository.create).toHaveBeenCalledWith(
       ticket,
       `s3://${TEST_BUCKET}/${finalObjectKey}`,
@@ -1578,28 +1587,19 @@ describe('마스킹 요소 탐지 요청 HTTP API', () => {
     });
   });
 
-  it('요청의 ner와 매칭된 local-* LLM Deployment를 LPL 탐지 요청에 사용한다', async () => {
-    const localLlmDeploymentId = 'ollama-qwen3-8b';
+  it('요청에 ner를 지정해도 NER 탐지가 중지된 동안 NER 서버에 요청하지 않는다', async () => {
     const localLlmModel = 'local-qwen3:8b';
-    nerClient.getEnabledLlmDeploymentIdByModelName.mockResolvedValueOnce(
-      localLlmDeploymentId,
-    );
 
     await postAnalyze({
       ...dto,
       llmModel: localLlmModel,
       ner: 'ner-custom',
     }).expect(200);
-    await waitForCall(() => nerClient.requestAnalyze.mock.calls.length > 0);
 
-    expect(nerClient.getEnabledLlmDeploymentIdByModelName)
-      .toHaveBeenCalledWith(localLlmModel);
+    expect(nerClient.getEnabledLlmDeploymentIdByModelName).not.toHaveBeenCalled();
     expect(nerClient.getFirstNerDeploymentId).not.toHaveBeenCalled();
     expect(nerClient.getFirstLlmDeploymentId).not.toHaveBeenCalled();
-    expect(nerClient.requestAnalyze).toHaveBeenCalledWith(expect.objectContaining({
-      nerDeploymentId: 'ner-custom',
-      llmDeploymentId: localLlmDeploymentId,
-    }));
+    expect(nerClient.requestAnalyze).not.toHaveBeenCalled();
   });
 
   it('부서 정책에 포함되지 않은 마스킹 항목은 탐지하지 않는다', async () => {
@@ -1620,7 +1620,7 @@ describe('마스킹 요소 탐지 요청 HTTP API', () => {
     ]);
   });
 
-  it('파일을 최종 위치에 저장하고 텍스트 원문은 NER에 요청한다', async () => {
+  it('파일을 최종 위치에 저장하고 NER 없이 OCR만 실행한다', async () => {
     const response = await postAnalyzeWithFile(file).expect(200);
 
     expect(reportRepository.create).toHaveBeenCalledWith(
@@ -1628,7 +1628,7 @@ describe('마스킹 요소 탐지 요청 HTTP API', () => {
       authentication.userId,
       dto.text,
       null,
-      true,
+      false,
     );
     expect(objectStorage.putObject).toHaveBeenCalledTimes(1);
     const putRequest = objectStorage.putObject.mock.calls[0]?.[0];
@@ -1650,7 +1650,14 @@ describe('마스킹 요소 탐지 요청 HTTP API', () => {
     );
     expect(objectStorage.presignedGetObject).not.toHaveBeenCalled();
     expect(reportRepository.saveNerDetections).not.toHaveBeenCalled();
-    await waitForCall(() => nerClient.requestAnalyze.mock.calls.length > 0);
+    expect(nerClient.requestAnalyze).not.toHaveBeenCalled();
+    await waitForCall(() => promptFileOcrService.extractText.mock.calls.length > 0);
+    expect(promptFileOcrService.extractText).toHaveBeenCalledWith({
+      objectKey: finalObjectKey,
+      extension: '.pdf',
+    });
+    expect(reportRepository.saveNerTextDetections).not.toHaveBeenCalled();
+    expect(reportRepository.saveNerTextAndFileDetections).not.toHaveBeenCalled();
 
     await waitForCall(() => hasRemovedObject(STAGED_OBJECT_KEY));
     expect(objectStorage.objects.get(finalObjectKey)).toEqual(file);
@@ -1691,7 +1698,7 @@ describe('마스킹 요소 탐지 요청 HTTP API', () => {
       authentication.userId,
       dto.text,
       null,
-      true,
+      false,
     );
     expect(objectStorage.copyObject).toHaveBeenCalledWith({
       sourceObjectKey: STAGED_OBJECT_KEY,

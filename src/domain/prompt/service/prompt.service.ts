@@ -22,6 +22,7 @@ import { MaskingReportRepository } from '../repository/masking-report.repository
 import { PromptFileRepository } from '../repository/prompt-file.repository.js';
 import { PromptLogRepository } from '../repository/prompt-log.repository.js';
 import { PromptRoomRepository } from '../repository/prompt-room.repository.js';
+import { PromptFileOcrService } from './prompt-file-ocr.service.js';
 import {
   MASKING_CONTENT,
   normalizeMaskingContent,
@@ -29,7 +30,10 @@ import {
   type MaskingContent,
 } from '../type/masking-content.type.js';
 import { MaskingReportStatus } from '../type/masking-report-status.enum.js';
-import type { StoredPromptFile } from '../type/stored-prompt-file.type.js';
+import type {
+  StoredPromptFile,
+  StoredPromptFileExtension,
+} from '../type/stored-prompt-file.type.js';
 import { LlmProvider } from '../../../global/llm/enum/llm-provider.enum.js';
 import { ProviderClient } from '../../../global/llm/client/provider.client.js';
 import { ApiKeyEncryptionService } from '../../../global/llm/service/api-key-encryption.service.js';
@@ -54,6 +58,16 @@ import {
 const MASKING_OBJECT_PREFIX = 'masking';
 const MAX_STORED_DETECTION_LENGTH = 255;
 const MAX_PROMPT_ROOM_TITLE_LENGTH = 255;
+/**
+ * LPL NER `/detect` 계약과 서버 구현이 완료될 때까지 마스킹 분석의 NER 분기를
+ * 일시 중지합니다. 로컬 NER/LLM 관리·목록·상태 변경 API에는 적용하지 않습니다.
+ */
+const NER_ANALYSIS_ENABLED = false;
+/**
+ * NER 연동 재개 전 OCR 동작과 완료 로그를 검증하기 위해 파일 OCR만 일시적으로 실행합니다.
+ * NER 요청·NER 상태 전이·NER 결과 저장에는 영향을 주지 않습니다.
+ */
+const OCR_ANALYSIS_ENABLED = true;
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -108,6 +122,12 @@ interface AccessiblePromptModel {
   readonly modelName: string;
 }
 
+interface PersistedPromptFileForNer {
+  readonly objectKey: string;
+  readonly fileUrl: string;
+  readonly extension: StoredPromptFileExtension;
+}
+
 @Injectable()
 export class PromptService {
   private readonly logger = new Logger(PromptService.name);
@@ -125,6 +145,7 @@ export class PromptService {
     private readonly promptLogRepository: PromptLogRepository,
     private readonly promptRoomRepository: PromptRoomRepository,
     private readonly objectStorage: MinioObjectStorageService,
+    private readonly promptFileOcrService: PromptFileOcrService,
     private readonly providerClient: ProviderClient,
     private readonly apiKeyEncryption: ApiKeyEncryptionService,
     private readonly nerClient: NerClient,
@@ -141,6 +162,7 @@ export class PromptService {
     let finalObjectKey: string | undefined;
     let finalObjectVersionId: string | undefined;
     let promptFileId: string | undefined;
+    let persistedFileForNer: PersistedPromptFileForNer | undefined;
     let promptLogCreated = false;
     let createdChatRoomId: string | undefined;
     const recentTicket = dto.recentTicket ?? null;
@@ -172,20 +194,21 @@ export class PromptService {
       if (requestedChatRoomId === null) {
         createdChatRoomId = chatRoomId;
       }
-      // NER 응답 전에는 최종 분석 완료가 될 수 없으므로 항상 PENDING으로 생성합니다.
+      // NER 탐지가 중지된 동안에는 정규식 탐지 완료만으로 분석을 완료합니다.
       await this.maskingReportRepository.create(
         dto.ticket,
         authentication.userId,
         dto.text,
         recentTicket,
-        true,
+        NER_ANALYSIS_ENABLED,
       );
       reportCreated = true;
       await this.promptLogRepository.replaceMasking(
         chatRoomId,
         dto.ticket,
         this.toPromptSummary(dto.text),
-        accessibleModel.modelType,
+        // MASKING 로그의 model_type도 실제 선택한 세부 모델명으로 보존합니다.
+        accessibleModel.modelName,
         accessibleModel.modelName,
       );
       promptLogCreated = true;
@@ -205,6 +228,12 @@ export class PromptService {
           file.originalname,
         );
         promptFileId = promptFile.promptFileId;
+        persistedFileForNer = {
+          objectKey: copiedObject.objectKey,
+          // masking_detail은 prompt_file과 완전히 같은 영구 S3 URL을 참조합니다.
+          fileUrl: promptFile.fileUrl,
+          extension: file.extension,
+        };
       }
 
       const policyByContent = new Map(
@@ -231,21 +260,38 @@ export class PromptService {
       }
       regexCompleted = true;
 
-      const existingDetections = this.toNerExistingDetections(detections);
-      void this.requestNerAnalysis({
-        ticket: dto.ticket,
-        text: dto.text,
-        llmModel: accessibleModel.modelName,
-        nerDeploymentId: dto.ner ?? null,
-        existingDetections,
-        policies,
-      }).catch(async (error: unknown) => {
-        await this.safeCancelNer(dto.ticket);
-        this.logger.error(
-          `NER 탐지 요청 실패: ticket=${dto.ticket}`,
-          error instanceof Error ? error.stack : undefined,
-        );
-      });
+      // NER 서버 개발이 완료되면 NER_ANALYSIS_ENABLED만 true로 전환해
+      // 기존 텍스트·OCR 파일 탐지 흐름을 다시 사용합니다.
+      if (NER_ANALYSIS_ENABLED) {
+        const existingDetections = this.toNerExistingDetections(detections);
+        void this.requestNerAnalysis({
+          ticket: dto.ticket,
+          text: dto.text,
+          llmModel: accessibleModel.modelName,
+          nerDeploymentId: dto.ner ?? null,
+          existingDetections,
+          policies,
+          file: persistedFileForNer,
+        }).catch(async (error: unknown) => {
+          await this.safeCancelNer(dto.ticket);
+          this.logger.error(
+            `NER 탐지 요청 실패: ticket=${dto.ticket}`,
+            error instanceof Error ? error.stack : undefined,
+          );
+        });
+      } else if (OCR_ANALYSIS_ENABLED && persistedFileForNer !== undefined) {
+        // NER 호출 없이 OCR 추출과 prompt_file_ocr_completed 로그만 검증합니다.
+        const fileForOcr = persistedFileForNer;
+        void this.promptFileOcrService.extractText({
+          objectKey: fileForOcr.objectKey,
+          extension: fileForOcr.extension,
+        }).catch((error: unknown) => {
+          this.logger.error(
+            `OCR 추출 요청 실패: object_key=${fileForOcr.objectKey} extension=${fileForOcr.extension}`,
+            error instanceof Error ? error.stack : undefined,
+          );
+        });
+      }
 
       return { chatRoomId };
     } catch (error: unknown) {
@@ -256,7 +302,9 @@ export class PromptService {
         if (!regexCompleted) {
           await this.safeCancelRegex(dto.ticket);
         }
-        await this.safeCancelNer(dto.ticket);
+        if (NER_ANALYSIS_ENABLED) {
+          await this.safeCancelNer(dto.ticket);
+        }
       }
 
       if (finalObjectKey !== undefined) {
@@ -901,26 +949,62 @@ export class PromptService {
     nerDeploymentId: string | null;
     existingDetections: readonly NerExistingDetection[];
     policies: readonly Readonly<DepartmentMaskingPolicy>[];
+    file: PersistedPromptFileForNer | undefined;
   }>): Promise<void> {
     const [nerDeploymentId, llmDeploymentId] = await Promise.all([
       data.nerDeploymentId ?? this.nerClient.getFirstNerDeploymentId(),
       this.resolveNerLlmDeploymentId(data.llmModel),
     ]);
-    const response = await this.nerClient.requestAnalyze({
-      text: data.text,
-      nerDeploymentId,
-      llmDeploymentId,
-      existingDetections: data.existingDetections,
-    } satisfies NerAnalyzeRequest);
-    const detections = this.toNerTextDetections(
+    const [textResponse, ocrText] = await Promise.all([
+      this.nerClient.requestAnalyze({
+        text: data.text,
+        nerDeploymentId,
+        llmDeploymentId,
+        existingDetections: data.existingDetections,
+      } satisfies NerAnalyzeRequest),
+      data.file === undefined
+        ? Promise.resolve(null)
+        : this.promptFileOcrService.extractText({
+          objectKey: data.file.objectKey,
+          extension: data.file.extension,
+        }),
+    ]);
+    const textDetections = this.toNerTextDetections(
       data.text,
-      response.detections,
+      textResponse.detections,
       data.existingDetections,
       data.policies,
     );
-    const saved = await this.maskingReportRepository.saveNerTextDetections(
+
+    if (data.file === undefined) {
+      const saved = await this.maskingReportRepository.saveNerTextDetections(
+        data.ticket,
+        textDetections,
+      );
+      if (!saved) {
+        // 사용자가 이미 취소한 요청 등, 완료 권한이 사라진 응답은 저장하지 않습니다.
+        return;
+      }
+      return;
+    }
+
+    const fileOcrText = ocrText ?? '';
+    const fileDetections = fileOcrText === ''
+      ? []
+      : this.toNerFileDetections(
+        (await this.nerClient.requestAnalyze({
+          text: fileOcrText,
+          nerDeploymentId,
+          llmDeploymentId,
+          existingDetections: [],
+        } satisfies NerAnalyzeRequest)).detections,
+        data.policies,
+      );
+    const saved = await this.maskingReportRepository.saveNerTextAndFileDetections(
       data.ticket,
-      detections,
+      textDetections,
+      data.file.fileUrl,
+      fileDetections,
     );
     if (!saved) {
       // 사용자가 이미 취소한 요청 등, 완료 권한이 사라진 응답은 저장하지 않습니다.
@@ -988,6 +1072,27 @@ export class PromptService {
         maskingText: detection.maskingText,
         departmentPolicyId: policy.departmentPolicyId,
       };
+    });
+  }
+
+  /** 파일 OCR 응답은 활성 부서 정책에 매핑되는 type만 저장합니다. */
+  private toNerFileDetections(
+    detections: readonly Readonly<NerDetection>[],
+    policies: readonly Readonly<DepartmentMaskingPolicy>[],
+  ): PromptData.NerDetection[] {
+    const policyByContent = new Map(
+      policies.map((policy) => [policy.maskingContent, policy] as const),
+    );
+
+    return detections.flatMap((detection) => {
+      const maskingContent = this.toMaskingContentFromNerType(detection.type);
+      const policy = maskingContent === null
+        ? undefined
+        : policyByContent.get(maskingContent);
+
+      return policy === undefined
+        ? []
+        : [{ departmentPolicyId: policy.departmentPolicyId }];
     });
   }
 

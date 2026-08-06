@@ -37,7 +37,8 @@ export class MaskingReportDAO {
     name: 'ner_status',
     type: 'varchar',
     length: 10,
-    default: MaskingReportStatus.PENDING,
+    // 마스킹 분석의 NER 연동은 현재 중지되어 있으므로 새 행의 기본값도 완료입니다.
+    default: MaskingReportStatus.DONE,
   })
   nerStatus!: MaskingReportStatus;
 
