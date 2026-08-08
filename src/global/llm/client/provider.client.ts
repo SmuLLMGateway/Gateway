@@ -116,7 +116,7 @@ export class ProviderClient {
       throw new Error('Provider 응답 형식이 올바르지 않습니다.');
     }
     this.logger.log(
-      `event=provider_response_received ticket=${request.ticket} status=${response.status} provider=${payload.provider} model=${payload.model} response_id=${payload.response_id} output_chars=${payload.output_text.length} total_usd=${payload.total_usd} response_body=${this.toLoggableBody(responseBody)}`,
+      `event=provider_response_received ticket=${request.ticket} status=${response.status} provider=${payload.provider} model=${payload.model} response_id=${payload.response_id} output_chars=${payload.output_text.length} total_usd=${payload.total_usd} request_body=${requestBody} response_body=${this.toLoggableBody(responseBody)}`,
     );
     return {
       outputText: payload.output_text,

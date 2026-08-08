@@ -18,8 +18,21 @@ import type { LlmApiKeyValidationClient } from '../../src/global/llm/client/llm-
 import type { ApiKeyEncryptionService } from '../../src/global/llm/service/api-key-encryption.service.js';
 import type { PasswordEncoderService } from '../../src/global/security/service/password-encoder.service.js';
 import type { MinioObjectStorageService } from '../../src/global/storage/service/minio-object-storage.service.js';
+import { UserRole } from '../../src/global/security/type/user-role.enum.js';
 
 describe('AdminService 프롬프트 상세 조회', () => {
+  const totalAdmin = {
+    userId: 1,
+    expiredAt: '',
+    accessToken: true,
+    role: UserRole.TOTAL_ADMIN,
+  } as const;
+  const departmentAdmin = {
+    userId: 7,
+    expiredAt: '',
+    accessToken: true,
+    role: UserRole.DEPART_ADMIN,
+  } as const;
   const promptLogRepository = { findOne: jest.fn() };
   const maskingDetailRepository = { find: jest.fn() };
   const memberDepartmentRepository = { findOne: jest.fn() };
@@ -65,6 +78,7 @@ describe('AdminService 프롬프트 상세 조회', () => {
       },
       maskingReport: {
         originalText: 'API키와 01012345678',
+        maskingText: '**와 [전화]',
         createdAt: new Date('2026-08-02T15:55:00.000Z'),
       },
     });
@@ -92,7 +106,9 @@ describe('AdminService 프롬프트 상세 조회', () => {
       },
     ]);
 
-    await expect(service.getPromptDetail('101')).resolves.toEqual({
+    await expect(service.getPromptDetail(101, totalAdmin)).resolves.toEqual({
+      promptId: 101,
+      ticket: 'report-1',
       name: '김서윤',
       department: '정책기획팀',
       email: 'seoyun@example.com',
@@ -127,6 +143,9 @@ describe('AdminService 프롬프트 상세 조회', () => {
         },
       ],
     });
+    expect(promptLogRepository.findOne).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { promptLogId: '101' } }),
+    );
   });
 
   it('외부 LLM 사용량이 없으면 0으로 반환하고, 로그가 없으면 404를 반환한다', async () => {
@@ -141,6 +160,7 @@ describe('AdminService 프롬프트 상세 조회', () => {
       },
       maskingReport: {
         originalText: '원문',
+        maskingText: '원문',
         createdAt: new Date('2026-08-02T15:55:00.000Z'),
       },
     });
@@ -151,13 +171,49 @@ describe('AdminService 프롬프트 상세 조회', () => {
     memberLimitRepository.find.mockResolvedValue([]);
     maskingDetailRepository.find.mockResolvedValue([]);
 
-    await expect(service.getPromptDetail('102')).resolves.toMatchObject({
+    await expect(service.getPromptDetail(102, totalAdmin)).resolves.toMatchObject({
       usage: 0,
       usagePercent: 0,
       promptedAt: '2026-08-03T00:55:00.000+09:00',
     });
 
     promptLogRepository.findOne.mockResolvedValueOnce(null);
-    await expect(service.getPromptDetail('404')).rejects.toBeInstanceOf(PromptException);
+    await expect(service.getPromptDetail(404, totalAdmin)).rejects.toBeInstanceOf(PromptException);
+  });
+
+  it('부서 관리자는 자기 부서 일반 사용자 프롬프트 상세만 조회할 수 있다', async () => {
+    memberDepartmentRepository.findOne
+      .mockResolvedValueOnce({ departmentId: '7' })
+      .mockResolvedValueOnce({
+        departmentId: '7',
+        member: { authorize: UserRole.USER },
+      })
+      .mockResolvedValueOnce({
+        departmentId: '7',
+        department: { departmentName: '정책기획팀' },
+      });
+
+    await expect(service.getPromptDetail(101, departmentAdmin)).resolves.toMatchObject({
+      name: '김서윤',
+    });
+  });
+
+  it.each([
+    {
+      description: '다른 부서 일반 사용자',
+      target: { departmentId: '8', member: { authorize: UserRole.USER } },
+    },
+    {
+      description: '같은 부서 관리자',
+      target: { departmentId: '7', member: { authorize: UserRole.DEPART_ADMIN } },
+    },
+  ])('부서 관리자는 $description 프롬프트 상세를 조회할 수 없다', async ({ target }) => {
+    memberDepartmentRepository.findOne
+      .mockResolvedValueOnce({ departmentId: '7' })
+      .mockResolvedValueOnce(target);
+
+    await expect(service.getPromptDetail(101, departmentAdmin)).rejects.toThrow();
+    expect(memberLimitRepository.find).not.toHaveBeenCalled();
+    expect(maskingDetailRepository.find).not.toHaveBeenCalled();
   });
 });

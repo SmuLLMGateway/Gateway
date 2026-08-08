@@ -15,8 +15,21 @@ import type { LlmApiKeyValidationClient } from '../../src/global/llm/client/llm-
 import type { ApiKeyEncryptionService } from '../../src/global/llm/service/api-key-encryption.service.js';
 import type { PasswordEncoderService } from '../../src/global/security/service/password-encoder.service.js';
 import type { MinioObjectStorageService } from '../../src/global/storage/service/minio-object-storage.service.js';
+import { UserRole } from '../../src/global/security/type/user-role.enum.js';
 
 describe('AdminService 전체 채팅 기록 사용자 목록 조회', () => {
+  const totalAdmin = {
+    userId: 1,
+    expiredAt: '',
+    accessToken: true,
+    role: UserRole.TOTAL_ADMIN,
+  } as const;
+  const departmentAdmin = {
+    userId: 7,
+    expiredAt: '',
+    accessToken: true,
+    role: UserRole.DEPART_ADMIN,
+  } as const;
   const queryBuilder = {
     innerJoin: jest.fn(),
     where: jest.fn(),
@@ -32,6 +45,7 @@ describe('AdminService 전체 채팅 기록 사용자 목록 조회', () => {
     getRawMany: jest.fn(),
   };
   const memberRepository = { createQueryBuilder: jest.fn() };
+  const memberDepartmentRepository = { findOne: jest.fn() };
   const memberLimitRepository = { find: jest.fn() };
   const service = new AdminService(
     {} as DataSource,
@@ -40,7 +54,7 @@ describe('AdminService 전체 채팅 기록 사용자 목록 조회', () => {
     {} as AdminMapper,
     memberRepository as unknown as Repository<MemberDAO>,
     {} as Repository<DepartmentDAO>,
-    {} as Repository<MemberDepartmentDAO>,
+    memberDepartmentRepository as unknown as Repository<MemberDepartmentDAO>,
     memberLimitRepository as unknown as Repository<MemberLimitDAO>,
     {} as Repository<ActiveApiKeyDAO>,
     {} as Repository<DepartmentPolicyDAO>,
@@ -80,7 +94,7 @@ describe('AdminService 전체 채팅 기록 사용자 목록 조회', () => {
       pageNumber: 1,
       pageSize: 10,
       query: '정책기획팀',
-    })).resolves.toEqual({
+    }, totalAdmin)).resolves.toEqual({
       data: [
         { userId: 2, name: '김서윤', department: '정책기획팀', usage: 75, limit: 300 },
         { userId: 3, name: '이도윤', department: '정책기획팀', usage: 300, limit: 0 },
@@ -107,7 +121,27 @@ describe('AdminService 전체 채팅 기록 사용자 목록 조회', () => {
       pageNumber: 1,
       pageSize: 10,
       query: '없는 사용자',
-    })).resolves.toBeNull();
+    }, totalAdmin)).resolves.toBeNull();
     expect(memberLimitRepository.find).not.toHaveBeenCalled();
+  });
+
+  it('부서 관리자의 전체 프롬프트 사용자 목록은 자신의 부서 일반 사용자만 조건에 포함한다', async () => {
+    memberDepartmentRepository.findOne.mockResolvedValue({ departmentId: '7' });
+    queryBuilder.getCount.mockResolvedValue(0);
+
+    await expect(service.getUserPromptOverview({
+      pageNumber: 1,
+      pageSize: 10,
+      query: '정책',
+    }, departmentAdmin)).resolves.toBeNull();
+
+    expect(queryBuilder.andWhere).toHaveBeenCalledWith(
+      'membership.departmentId = :departmentId',
+      { departmentId: '7' },
+    );
+    expect(queryBuilder.andWhere).toHaveBeenCalledWith(
+      'member.authorize = :normalUserRole',
+      { normalUserRole: UserRole.USER },
+    );
   });
 });

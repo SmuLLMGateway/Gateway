@@ -62,10 +62,9 @@ const localNerDeploymentIdParam = () =>
 const promptIdParam = () =>
   ApiParam({
     name: 'promptId',
-    type: String,
-    format: 'uuid',
-    example: '8e88c068-722e-4c04-93c5-906cea400be2',
-    description: '프롬프트 ID',
+    type: Number,
+    example: 101,
+    description: '프롬프트 로그 ID(prompt_log_id)',
   });
 
 const adminTag = () => ApiTags('관리자');
@@ -100,6 +99,8 @@ export const AdminControllerDocs = () =>
       AdminResDTO.PolicyPreset,
       AdminReqDTO.SyncGlobalPolicies,
       AdminResDTO.Dashboard,
+      AdminReqDTO.DashboardTrends,
+      AdminResDTO.DashboardTrend,
       AdminResDTO.AdminLog,
       AdminResDTO.PolicyDetect,
       AdminResDTO.DepartmentRisk,
@@ -179,7 +180,7 @@ export const DepartmentListDocs = () =>
     adminTag(),
     ApiOperation({
       summary: '부서 목록 조회',
-      description: '부서명을 선택적으로 검색하여 이름순으로 페이지 조회합니다. 조회 결과가 없으면 result는 null입니다.',
+      description: '총 관리자는 전체 부서를, 부서 관리자는 자신의 부서만 부서명 조건으로 페이지 조회합니다. 조회 결과가 없으면 result는 null입니다.',
     }),
     ApiSuccessResponse(
       AdminSuccessStatus.DEPARTMENT_LIST,
@@ -333,9 +334,10 @@ export const DepartmentApiKeyDocs = () =>
   applyDecorators(
     adminTag(),
     ApiOperation({
-      summary: '부서 API 키 조회',
-      description: '현재 로그인한 관리자의 소속 부서에 등록된 LLM API 키를 조회합니다.',
+      summary: '특정 부서 API 키 조회',
+      description: '총 관리자가 지정한 부서에 등록된 LLM API 키를 복호화하여 조회합니다. 조회 사실은 관리자 활동 로그에 남기며, 부서 관리자는 호출할 수 없습니다.',
     }),
+    departmentIdParam(),
     ApiQuery({
       name: 'service',
       required: true,
@@ -507,11 +509,39 @@ export const DashboardDocs = () =>
     adminTag(),
     ApiOperation({
       summary: '운영 현황 조회',
-      description: '운영 현황을 조회합니다.',
+      description: '총 관리자는 전사 운영 현황을, 부서 관리자는 자신의 부서 운영 현황만 조회합니다.',
     }),
     ApiSuccessResponse(
       AdminSuccessStatus.DASHBOARD,
       SwaggerResultSchema.model(getSchemaPath(AdminResDTO.Dashboard)),
+    ),
+    ...commonErrors(),
+  );
+
+export const DashboardTrendsDocs = () =>
+  applyDecorators(
+    adminTag(),
+    ApiOperation({
+      summary: '운영 추이 조회',
+      description: 'KST 일자별 LLM 전송·보안 정책 탐지 추이를 조회합니다. 총 관리자는 departmentId로 특정 부서를 선택하거나 생략하여 전사를 조회할 수 있고, 부서 관리자는 자신의 부서만 조회할 수 있습니다.',
+    }),
+    ApiQuery({
+      name: 'recent',
+      required: true,
+      enum: ['7d', '30d', '90d'],
+      example: '30d',
+      description: '오늘을 포함한 집계 기간',
+    }),
+    ApiQuery({
+      name: 'departmentId',
+      required: false,
+      type: Number,
+      example: 12,
+      description: '총 관리자만 지정 가능한 대상 부서 ID',
+    }),
+    ApiSuccessResponse(
+      AdminSuccessStatus.DASHBOARD_TRENDS,
+      SwaggerResultSchema.array(getSchemaPath(AdminResDTO.DashboardTrend)),
     ),
     ...commonErrors(),
   );
@@ -535,7 +565,7 @@ export const PolicyDetectDocs = () =>
     adminTag(),
     ApiOperation({
       summary: '정책별 감지 건수 조회',
-      description: '정책별 감지 건수를 조회합니다.',
+      description: '총 관리자는 전사 정책별 감지 건수를, 부서 관리자는 자신의 부서 정책별 감지 건수만 조회합니다.',
     }),
     ApiSuccessResponse(
       AdminSuccessStatus.POLICY_DETECT,
@@ -549,7 +579,7 @@ export const DepartmentRisksDocs = () =>
     adminTag(),
     ApiOperation({
       summary: '부서별 위험 분포 조회',
-      description: '존재하는 부서별 사용자 수, 내·외부 LLM 요청 수와 보안 정책 감지 비율을 조회합니다.',
+      description: '총 관리자는 모든 부서의 사용자 수, 내·외부 LLM 요청 수와 보안 정책 감지 비율을 조회합니다. 부서 관리자는 자신의 부서 한 건만 조회합니다.',
     }),
     ApiSuccessResponse(
       AdminSuccessStatus.DEPARTMENT_RISKS,
@@ -631,29 +661,12 @@ export const RestoreUserDocs = () =>
     ...userErrors(),
   );
 
-export const UpdateUserDocs = () =>
-  applyDecorators(
-    adminTag(),
-    ApiOperation({
-      summary: '사용자 정보 수정 (구현 중)',
-      description: '사용자 정보를 수정합니다.',
-    }),
-    userIdParam(),
-    ApiBody({
-      required: true,
-      description: '화면 확정 전 사용자 수정 요청 본문',
-      schema: { type: 'object', additionalProperties: true },
-    }),
-    ApiSuccessResponse(AdminSuccessStatus.UPDATE_USER, SwaggerResultSchema.unknown()),
-    ...userErrors(),
-  );
-
 export const LogsSummaryDocs = () =>
   applyDecorators(
     adminTag(),
     ApiOperation({
-      summary: '전체 채팅 기록 요약 조회',
-      description: 'MASKING 상태를 제외한 프롬프트 로그를 집계합니다. 정책 감지는 프롬프트별로 한 번만 계산하며, localRate는 감지 건수 대비 로컬 LLM 전송 비율입니다.',
+      summary: '채팅 기록 요약 조회',
+      description: 'MASKING 상태를 제외한 프롬프트 로그를 집계합니다. 총 관리자는 전사를, 부서 관리자는 자신의 부서만 집계합니다. 정책 감지는 프롬프트별로 한 번만 계산하며, localRate는 감지 건수 대비 로컬 LLM 전송 비율입니다.',
     }),
     ApiSuccessResponse(
       AdminSuccessStatus.LOGS_SUMMARY,
@@ -667,7 +680,7 @@ export const UserPromptOverviewDocs = () =>
     adminTag(),
     ApiOperation({
       summary: '전체 채팅 기록 - 사용자 목록 조회',
-      description: '사용자 또는 부서 검색어로 사용자별 개인 사용량과 한도를 조회합니다.',
+      description: '총 관리자는 모든 사용자를 조회합니다. 부서 관리자는 자신의 부서 일반 사용자(USER)만 사용자 또는 부서 검색어로 조회할 수 있습니다.',
     }),
     ApiSuccessResponse(
       AdminSuccessStatus.USER_PROMPT_OVERVIEW,
@@ -684,7 +697,7 @@ export const UserPromptListDocs = () =>
     adminTag(),
     ApiOperation({
       summary: '사용자 프롬프트 목록 조회',
-      description: '사용자가 내·외부 LLM에 전송한 프롬프트를 최신순으로 조회합니다. 마스킹 대기 상태 로그는 제외됩니다.',
+      description: '총 관리자는 모든 사용자의 내·외부 LLM 전송 프롬프트를 조회합니다. 부서 관리자는 자신의 부서 일반 사용자(USER)만 조회할 수 있으며, 부서 관리자 프롬프트와 다른 부서 프롬프트는 조회할 수 없습니다. promptId는 숫자 prompt_log_id이고 분석 UUID는 ticket으로 별도 반환합니다. 마스킹 대기 상태 로그는 제외됩니다.',
     }),
     userIdParam(),
     ApiSuccessResponse(
@@ -699,7 +712,7 @@ export const PromptDetailDocs = () =>
     adminTag(),
     ApiOperation({
       summary: '프롬프트 상세 조회',
-      description: '프롬프트의 원문, 전송문 및 탐지 상세를 조회합니다.',
+      description: '총 관리자는 모든 프롬프트의 원문, 실제 저장된 전송문(masking_report.masking_text) 및 탐지 상세를 조회합니다. 부서 관리자는 자신의 부서 일반 사용자(USER)의 프롬프트만 조회할 수 있습니다. path의 promptId는 숫자 prompt_log_id이며 분석 UUID는 응답 ticket에 반환됩니다.',
     }),
     promptIdParam(),
     ApiSuccessResponse(
@@ -719,7 +732,7 @@ export const DepartmentManagementSummaryDocs = () =>
     adminTag(),
     ApiOperation({
       summary: '부서 관리 요약 조회',
-      description: '부서 수, 사용자 수, 외부 전송 허용 부서 수 및 평균 사용률 요약을 조회합니다.',
+      description: '총 관리자는 전사 부서 수·사용자 수·평균 사용률을, 부서 관리자는 자신의 부서 기준 요약을 조회합니다.',
     }),
     ApiSuccessResponse(
       AdminSuccessStatus.DEPARTMENT_SUMMARY,
@@ -735,7 +748,7 @@ export const DepartmentDetailDocs = () =>
     adminTag(),
     ApiOperation({
       summary: '부서 상세 조회',
-      description: '부서 관리자, 사용량, LLM 모델 및 정책 상세를 조회합니다.',
+      description: '총 관리자는 모든 부서의 상세를, 부서 관리자는 자신의 부서 상세만 조회합니다.',
     }),
     departmentIdParam(),
     ApiSuccessResponse(

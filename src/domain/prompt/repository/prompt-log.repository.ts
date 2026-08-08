@@ -2,14 +2,17 @@ import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, IsNull, LessThan, Not, Repository } from 'typeorm';
 import { PromptLogDAO } from '../dao/prompt-log.dao.js';
+import { MaskingReportDAO } from '../dao/masking-report.dao.js';
 import { MaskingReportStatus } from '../type/masking-report-status.enum.js';
 import { PromptLogStatus } from '../type/prompt-log-status.enum.js';
 
 const MASKING_LOG_RETENTION_MS = 24 * 60 * 60 * 1_000;
 
 export interface PromptLogHistoryItem {
+  readonly promptId: number;
   readonly maskingReportId: string;
   readonly request: string;
+  readonly sendText: string;
   readonly response: string | null;
   readonly communicatedAt: Date;
 }
@@ -52,26 +55,47 @@ export class PromptLogRepository {
     }));
   }
 
-  /** 24시간이 지난 마스킹 대기 로그만 제거하고, 나머지 채팅 기록은 보존합니다. */
+  /**
+   * 24시간 동안 LLM 전송으로 이어지지 않은 MASKING 로그를 만료 처리합니다.
+   *
+   * 탐지 결과(masking_report/masking_detail)는 감사 목적으로 보존하되, 해당
+   * 보고서의 최종 상태만 CANCEL로 바꾼 뒤 대기 로그를 제거합니다. 행 잠금으로
+   * 동시에 시작한 LLM 전송이 만료 로그를 다시 PENDING으로 바꾸지 못하게 합니다.
+   */
   async deleteExpiredMasking(now = new Date()): Promise<number> {
-    const expiredLogs = await this.repository.find({
-      select: { promptLogId: true },
-      relations: { maskingReport: true },
-      where: {
-        status: PromptLogStatus.MASKING,
-        maskingReport: {
-          createdAt: LessThan(new Date(now.getTime() - MASKING_LOG_RETENTION_MS)),
-        },
-      },
-    });
-    if (expiredLogs.length === 0) {
-      return 0;
-    }
+    const expiredBefore = new Date(now.getTime() - MASKING_LOG_RETENTION_MS);
 
-    const result = await this.repository.delete({
-      promptLogId: In(expiredLogs.map(({ promptLogId }) => promptLogId)),
+    return this.repository.manager.transaction(async (manager) => {
+      const promptLogRepository = manager.getRepository(PromptLogDAO);
+      const maskingReportRepository = manager.getRepository(MaskingReportDAO);
+      const expiredLogs = await promptLogRepository.find({
+        select: { promptLogId: true, maskingReportId: true },
+        relations: { maskingReport: true },
+        where: {
+          status: PromptLogStatus.MASKING,
+          maskingReport: { createdAt: LessThan(expiredBefore) },
+        },
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (expiredLogs.length === 0) {
+        return 0;
+      }
+
+      const promptLogIds = expiredLogs.map(({ promptLogId }) => promptLogId);
+      const reportIds = [...new Set(
+        expiredLogs.map(({ maskingReportId }) => maskingReportId),
+      )];
+      await maskingReportRepository.update(
+        { maskingReportId: In(reportIds) },
+        { status: MaskingReportStatus.CANCEL },
+      );
+      const result = await promptLogRepository.delete({
+        promptLogId: In(promptLogIds),
+        status: PromptLogStatus.MASKING,
+      });
+
+      return result.affected ?? 0;
     });
-    return result.affected ?? 0;
   }
 
   async deleteByMaskingReportId(maskingReportId: string): Promise<void> {
@@ -89,7 +113,7 @@ export class PromptLogRepository {
         maskingReportId: true,
         communicatedAt: true,
         responseText: true,
-        maskingReport: { originalText: true },
+        maskingReport: { originalText: true, maskingText: true },
       },
       relations: { maskingReport: true },
       where: {
@@ -125,7 +149,7 @@ export class PromptLogRepository {
             maskingReportId: true,
             communicatedAt: true,
             responseText: true,
-            maskingReport: { originalText: true },
+            maskingReport: { originalText: true, maskingText: true },
           },
           relations: { maskingReport: true },
           where: {
@@ -162,8 +186,10 @@ export class PromptLogRepository {
         }
 
         return {
+          promptId: Number(log.promptLogId),
           maskingReportId: log.maskingReportId,
           request: log.maskingReport.originalText,
+          sendText: log.maskingReport.maskingText,
           response: log.responseText,
           communicatedAt: log.communicatedAt,
         };

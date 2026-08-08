@@ -77,10 +77,16 @@ describe('AdminService 부서-사용자 연동', () => {
       departmentName: '정책기획팀',
       limit: '300',
     });
-    memberRepository.find.mockResolvedValue([
-      { memberId: '25', memberName: '김보안' },
-      { memberId: '23', memberName: '박안녕' },
-    ]);
+    memberRepository.find
+      .mockResolvedValueOnce([
+        { memberId: '25', memberName: '김보안' },
+        { memberId: '23', memberName: '박안녕' },
+      ])
+      .mockResolvedValueOnce([
+        { memberId: '24' },
+        { memberId: '23' },
+        { memberId: '25' },
+      ]);
     memberDepartmentRepository.find
       .mockResolvedValueOnce([{ memberId: '24' }])
       .mockResolvedValueOnce([
@@ -112,12 +118,12 @@ describe('AdminService 부서-사용자 연동', () => {
       { memberId: '25', departmentId: '4' },
     ]);
     expect(memberLimitRepository.upsert).toHaveBeenCalledWith([
-      { memberId: '24', activeApiKeyId: '10', limit: '100' },
-      { memberId: '24', activeApiKeyId: '11', limit: '100' },
-      { memberId: '23', activeApiKeyId: '10', limit: '100' },
-      { memberId: '23', activeApiKeyId: '11', limit: '100' },
-      { memberId: '25', activeApiKeyId: '10', limit: '100' },
-      { memberId: '25', activeApiKeyId: '11', limit: '100' },
+      { memberId: '24', activeApiKeyId: '10', limit: '100', usage: '0' },
+      { memberId: '24', activeApiKeyId: '11', limit: '100', usage: '0' },
+      { memberId: '23', activeApiKeyId: '10', limit: '100', usage: '0' },
+      { memberId: '23', activeApiKeyId: '11', limit: '100', usage: '0' },
+      { memberId: '25', activeApiKeyId: '10', limit: '100', usage: '0' },
+      { memberId: '25', activeApiKeyId: '11', limit: '100', usage: '0' },
     ], ['memberId', 'activeApiKeyId']);
     expect(departmentRepository.findOne).toHaveBeenCalledWith({
       select: { departmentId: true, departmentName: true, limit: true },

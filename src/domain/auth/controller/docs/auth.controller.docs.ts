@@ -24,6 +24,7 @@ export const AuthControllerDocs = () => {
       AuthReqDTO.Login,
       AuthReqDTO.RefreshToken,
       AuthReqDTO.UpdatePassword,
+      AuthReqDTO.DevelopmentUpdatePassword,
       AuthResDTO.Login,
       AuthResDTO.RefreshToken,
       AuthResDTO.UpdatePassword,
@@ -99,6 +100,26 @@ export const UpdateUserPasswordDocs = () => {
     ...ApiErrorResponses([
       AuthErrorStatus.PASSWORD_ERROR,
       AuthErrorStatus.TOKEN_EXPIRED,
+      AuthErrorStatus.USER_NOT_FOUND,
+      ErrorStatus.INTERNAL_SERVER_ERROR,
+    ]),
+  );
+};
+
+export const DevelopmentUpdateUserPasswordDocs = () => {
+  return applyDecorators(
+    ApiOperation({
+      summary: '개발용 사용자 비밀번호 수정',
+      description:
+        '개발 환경에서 사용자 이메일로 대상을 찾아 새 비밀번호를 설정합니다. 인증 헤더는 필요하지 않습니다.',
+    }),
+    ApiBody({ type: AuthReqDTO.DevelopmentUpdatePassword }),
+    ApiSuccessResponse(
+      AuthSuccessStatus.UPDATE_PASSWORD,
+      SwaggerResultSchema.model(getSchemaPath(AuthResDTO.UpdatePassword)),
+    ),
+    ...ApiErrorResponses([
+      AuthErrorStatus.PASSWORD_ERROR,
       AuthErrorStatus.USER_NOT_FOUND,
       ErrorStatus.INTERNAL_SERVER_ERROR,
     ]),

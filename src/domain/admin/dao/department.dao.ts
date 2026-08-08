@@ -42,6 +42,10 @@ export class DepartmentDAO {
     @Column({ name: 'must_filtering', type: 'boolean', default: true })
     mustFiltering!: boolean;
 
+    /** false이면 정규식·파일 저장만 수행하고 LPL(Local NER·LLM) 호출을 하지 않습니다. */
+    @Column({ name: 'active_local_llm', type: 'boolean', default: true })
+    activeLocalLLM!: boolean;
+
     @OneToMany(
         () => DepartmentPolicyDAO,
         (departmentPolicy) => departmentPolicy.department

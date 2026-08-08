@@ -1,5 +1,7 @@
 import { Injectable, Logger, type OnApplicationBootstrap } from '@nestjs/common';
-import { DataSource, type EntityManager } from 'typeorm';
+import { DataSource, In, type EntityManager } from 'typeorm';
+import { ActiveApiKeyDAO } from '../../../domain/admin/dao/active-api-key.dao.js';
+import { ActiveLlmDAO } from '../../../domain/admin/dao/active-llm.dao.js';
 import { LlmDetailModelDAO } from '../../../domain/admin/dao/llm-detail-model.dao.js';
 import { MaskingClass, PolicyDAO } from '../../../domain/admin/dao/policy.dao.js';
 import {
@@ -8,7 +10,9 @@ import {
 } from '../../../domain/admin/policy/security-policy.catalog.js';
 import { DEFAULT_LLM_DETAIL_MODELS } from '../seed/master-data.seed.js';
 import { NerClient } from '../../ner/client/ner.client.js';
-import { toLocalLlmModelName } from '../../llm/llm-service.mapping.js';
+import {
+  LOCAL_LLM_MODEL,
+} from '../../llm/llm-service.mapping.js';
 
 /**
  * 비어 있거나 일부만 구성된 DB에 필수 마스터 데이터를 보충합니다.
@@ -31,6 +35,7 @@ export class MasterDataSeedService implements OnApplicationBootstrap {
 
     await this.dataSource.transaction(async (manager) => {
       await this.seedLlmDetailModels(manager, localLlmModelNames);
+      await this.syncEnabledLocalLlmMappings(manager, localLlmModelNames);
       await this.seedPolicies(manager);
     });
   }
@@ -63,21 +68,60 @@ export class MasterDataSeedService implements OnApplicationBootstrap {
     );
   }
 
+  /** LPL의 deploymentId(local-*)를 llm_detail_model.llm_name으로 그대로 시드합니다. */
   private async getLocalLlmModelNames(): Promise<readonly string[]> {
-    let modelNames: readonly string[];
+    let deploymentIds: readonly string[];
 
     try {
-      modelNames = await this.nerClient.getEnabledLlmModelNames();
+      deploymentIds = await this.nerClient.getEnabledLocalLlmDeploymentIds();
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : '알 수 없는 오류';
       this.logger.warn(`LPL 로컬 LLM 모델 조회에 실패했습니다: ${message}`);
       return [];
     }
 
-    return [...new Set(modelNames.flatMap((modelName) => {
-      const localModelName = toLocalLlmModelName(modelName);
-      return localModelName === null ? [] : [localModelName];
-    }))];
+    return [...new Set(deploymentIds)];
+  }
+
+  /**
+   * LPL에서 enabled인 local-* 모델은 모든 부서의 전용 Local LLM 키와 연결합니다.
+   * 기존 부서가 로컬 Deployment 등록보다 먼저 생성된 경우에도 분석 요청의
+   * 모델 접근 검사와 같은 active_llm 기준을 충족하도록 합니다.
+   */
+  private async syncEnabledLocalLlmMappings(
+    manager: EntityManager,
+    localLlmModelNames: readonly string[],
+  ): Promise<void> {
+    if (localLlmModelNames.length === 0) {
+      return;
+    }
+
+    const llmDetailModelRepository = manager.getRepository(LlmDetailModelDAO);
+    const activeApiKeyRepository = manager.getRepository(ActiveApiKeyDAO);
+    const activeLlmRepository = manager.getRepository(ActiveLlmDAO);
+    const [models, localLlmActiveApiKeys] = await Promise.all([
+      llmDetailModelRepository.find({
+        select: { llmDetailModelId: true },
+        where: { llmName: In(localLlmModelNames) },
+      }),
+      activeApiKeyRepository.find({
+        select: { activeApiKeyId: true },
+        where: { serviceType: LOCAL_LLM_MODEL },
+      }),
+    ]);
+    if (models.length === 0 || localLlmActiveApiKeys.length === 0) {
+      return;
+    }
+
+    await activeLlmRepository.upsert(
+      localLlmActiveApiKeys.flatMap((activeApiKey) => (
+        models.map((model) => ({
+          activeApiKeyId: activeApiKey.activeApiKeyId,
+          llmDetailModelId: model.llmDetailModelId,
+        }))
+      )),
+      ['activeApiKeyId', 'llmDetailModelId'],
+    );
   }
 
   private async seedPolicies(manager: EntityManager): Promise<void> {

@@ -156,37 +156,58 @@ export class UserService {
     const pageSize = this.toPositiveInteger(dto.pageSize, 10, 100);
     const pageNumber = this.toPositiveInteger(dto.pageNumber, 1, Number.MAX_SAFE_INTEGER);
     const since = this.toMessageHistorySince(dto.recent);
-    const [promptLogs, totalCnt] = await this.promptLogRepository.findAndCount({
-      select: {
-        // 관계 조회 + 페이지네이션에서 TypeORM이 만드는 DISTINCT 정렬 쿼리에는
-        // 정렬 키가 SELECT에 포함되어야 합니다. 응답에는 maskingReportId만 반환합니다.
-        promptLogId: true,
-        promptSummary: true,
-        communicatedAt: true,
-        modelType: true,
-        maskingReportId: true,
-        maskingReport: { maskingReportId: true },
-      },
-      relations: { maskingReport: true },
-      where: {
-        communicatedAt: since === null
-          ? Not(IsNull())
-          : MoreThanOrEqual(since),
-        maskingReport: { memberId: String(authentication.userId) },
-      },
-      order: { communicatedAt: 'DESC', promptLogId: 'DESC' },
-      take: pageSize,
-      skip: (pageNumber - 1) * pageSize,
-    });
+    const model = this.toMessageHistoryModel(dto.model);
+    const query = this.toMessageHistorySearchQuery(dto.query);
+    const sort = this.toMessageHistorySort(dto.sort);
+    const queryBuilder = this.promptLogRepository
+      .createQueryBuilder('promptLog')
+      .innerJoin('promptLog.maskingReport', 'maskingReport')
+      .where('maskingReport.memberId = :memberId', {
+        memberId: String(authentication.userId),
+      })
+      .andWhere(
+        since === null
+          ? 'promptLog.communicatedAt IS NOT NULL'
+          : 'promptLog.communicatedAt >= :since',
+        since === null ? {} : { since },
+      );
+    if (model !== undefined) {
+      queryBuilder.andWhere(
+        '(LOWER(COALESCE(promptLog.modelName, \'\')) LIKE :modelPrefix OR LOWER(COALESCE(promptLog.modelType, \'\')) LIKE :modelPrefix)',
+        { modelPrefix: `${model}%` },
+      );
+    }
+    if (query !== undefined) {
+      queryBuilder.andWhere(
+        '(LOWER(COALESCE(promptLog.promptSummary, \'\')) LIKE :query OR LOWER(maskingReport.originalText) LIKE :query)',
+        { query: `%${query.toLowerCase()}%` },
+      );
+    }
+    const [promptLogs, totalCnt] = await queryBuilder
+      .select([
+        'promptLog.promptLogId',
+        'promptLog.promptSummary',
+        'promptLog.communicatedAt',
+        'promptLog.modelType',
+        'promptLog.modelName',
+        'promptLog.maskingReportId',
+      ])
+      .orderBy('promptLog.communicatedAt', sort === 'recent' ? 'DESC' : 'ASC')
+      .addOrderBy('promptLog.promptLogId', sort === 'recent' ? 'DESC' : 'ASC')
+      .take(pageSize)
+      .skip((pageNumber - 1) * pageSize)
+      .getManyAndCount();
     if (totalCnt === 0) {
       return null;
     }
 
     const reportIds = promptLogs.map(({ maskingReportId }) => maskingReportId);
-    const details = await this.maskingDetailRepository.find({
-      select: { maskingReportId: true },
-      where: { maskingReportId: In(reportIds) },
-    });
+    const details = reportIds.length === 0
+      ? []
+      : await this.maskingDetailRepository.find({
+        select: { maskingReportId: true },
+        where: { maskingReportId: In(reportIds) },
+      });
     const detectCntByReportId = new Map<string, number>();
     for (const { maskingReportId } of details) {
       detectCntByReportId.set(
@@ -197,10 +218,11 @@ export class UserService {
 
     return {
       data: promptLogs.map((promptLog) => ({
-        promptId: promptLog.maskingReportId,
+        promptId: Number(promptLog.promptLogId),
+        ticket: promptLog.maskingReportId,
         promptSummary: promptLog.promptSummary,
         promptedAt: this.toDateTimeString(promptLog.communicatedAt),
-        llmModel: promptLog.modelType,
+        llmModel: promptLog.modelName ?? promptLog.modelType,
         detectCnt: detectCntByReportId.get(promptLog.maskingReportId) ?? 0,
       })),
       totalCnt,
@@ -246,6 +268,54 @@ export class UserService {
     const since = new Date();
     since.setDate(since.getDate() - days);
     return since;
+  }
+
+  private toMessageHistoryModel(value: unknown):
+    | 'claude'
+    | 'gpt'
+    | 'gemini'
+    | 'local'
+    | undefined {
+    if (value === undefined) {
+      return undefined;
+    }
+    if (typeof value !== 'string') {
+      throw new UserException(UserErrorStatus.INVALID_MESSAGE_LIST);
+    }
+    const model = value.trim().toLowerCase();
+    if (
+      model !== 'claude'
+      && model !== 'gpt'
+      && model !== 'gemini'
+      && model !== 'local'
+    ) {
+      throw new UserException(UserErrorStatus.INVALID_MESSAGE_LIST);
+    }
+    return model;
+  }
+
+  private toMessageHistorySearchQuery(value: unknown): string | undefined {
+    if (value === undefined) {
+      return undefined;
+    }
+    if (typeof value !== 'string') {
+      throw new UserException(UserErrorStatus.INVALID_MESSAGE_LIST);
+    }
+    const query = value.trim();
+    if (query.length === 0 || query.length > 255) {
+      throw new UserException(UserErrorStatus.INVALID_MESSAGE_LIST);
+    }
+    return query;
+  }
+
+  private toMessageHistorySort(value: unknown): 'recent' | 'oldest' {
+    if (value === undefined) {
+      return 'recent';
+    }
+    if (value !== 'recent' && value !== 'oldest') {
+      throw new UserException(UserErrorStatus.INVALID_MESSAGE_LIST);
+    }
+    return value;
   }
 
   private toPositiveInteger(value: number, fallback: number, maximum: number): number {

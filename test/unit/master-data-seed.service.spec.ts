@@ -1,6 +1,8 @@
 import 'reflect-metadata';
 import type { DataSource, EntityManager, Repository } from 'typeorm';
 import { AppModule } from '../../src/app.module.js';
+import { ActiveApiKeyDAO } from '../../src/domain/admin/dao/active-api-key.dao.js';
+import { ActiveLlmDAO } from '../../src/domain/admin/dao/active-llm.dao.js';
 import { LlmDetailModelDAO } from '../../src/domain/admin/dao/llm-detail-model.dao.js';
 import { MaskingClass, PolicyDAO } from '../../src/domain/admin/dao/policy.dao.js';
 import { DEFAULT_POLICIES } from '../../src/domain/admin/policy/security-policy.catalog.js';
@@ -66,13 +68,19 @@ describe('MasterDataSeedService', () => {
     find: jest.fn(),
     insert: jest.fn(),
   };
+  const activeApiKeyRepository = {
+    find: jest.fn(),
+  };
+  const activeLlmRepository = {
+    upsert: jest.fn(),
+  };
   const policyRepository = {
     find: jest.fn(),
     insert: jest.fn(),
     update: jest.fn(),
   };
   const nerClient = {
-    getEnabledLlmModelNames: jest.fn(),
+    getEnabledLocalLlmDeploymentIds: jest.fn(),
   };
 
   let llmDetailModels: StoredLlmDetailModel[];
@@ -82,7 +90,9 @@ describe('MasterDataSeedService', () => {
   beforeEach(() => {
     llmDetailModels = [];
     policies = [];
-    nerClient.getEnabledLlmModelNames.mockResolvedValue([]);
+    nerClient.getEnabledLocalLlmDeploymentIds.mockResolvedValue([]);
+    activeApiKeyRepository.find.mockResolvedValue([]);
+    activeLlmRepository.upsert.mockResolvedValue({});
 
     dataSource.transaction.mockImplementation(async (
       work: (manager: EntityManager) => Promise<unknown>,
@@ -91,14 +101,29 @@ describe('MasterDataSeedService', () => {
       if (target === LlmDetailModelDAO) {
         return llmDetailModelRepository;
       }
+      if (target === ActiveApiKeyDAO) {
+        return activeApiKeyRepository;
+      }
+      if (target === ActiveLlmDAO) {
+        return activeLlmRepository;
+      }
       if (target === PolicyDAO) {
         return policyRepository;
       }
       throw new Error('예상하지 못한 마스터 데이터 Repository입니다.');
     });
-    llmDetailModelRepository.find.mockImplementation(async () => (
-      llmDetailModels.map((model) => ({ ...model }))
-    ));
+    llmDetailModelRepository.find.mockImplementation(async (options?: {
+      select?: { llmDetailModelId?: boolean };
+    }) => {
+      if (options?.select?.llmDetailModelId === true) {
+        return llmDetailModels.flatMap((model, index) => (
+          model.llmName?.startsWith('local-')
+            ? [{ llmDetailModelId: `llm-model-${index + 1}` }]
+            : []
+        ));
+      }
+      return llmDetailModels.map((model) => ({ ...model }));
+    });
     llmDetailModelRepository.insert.mockImplementation(async (
       value: { llmName: string } | Array<{ llmName: string }>,
     ) => {
@@ -208,10 +233,10 @@ describe('MasterDataSeedService', () => {
   });
 
   it('LPL의 활성 로컬 LLM 모델을 중복 없이 함께 시드한다', async () => {
-    nerClient.getEnabledLlmModelNames.mockResolvedValue([
-      'Qwen2.5-7B-Instruct',
-      'Qwen2.5-7B-Instruct',
-      'Custom Local Model',
+    nerClient.getEnabledLocalLlmDeploymentIds.mockResolvedValue([
+      'local-Qwen2.5-7B-Instruct',
+      'local-Qwen2.5-7B-Instruct',
+      'local-Custom Local Model',
     ]);
 
     await service.onApplicationBootstrap();
@@ -223,8 +248,32 @@ describe('MasterDataSeedService', () => {
       .toHaveLength(1);
   });
 
+  it('시작 시 enabled local-* 모델을 모든 부서의 Local LLM 키에 연결한다', async () => {
+    nerClient.getEnabledLocalLlmDeploymentIds.mockResolvedValue([
+      'local-Qwen2.5-7B-Instruct',
+      'local-Llama-3.1-8B',
+    ]);
+    activeApiKeyRepository.find.mockResolvedValue([
+      { activeApiKeyId: 'local-key-1' },
+      { activeApiKeyId: 'local-key-2' },
+    ]);
+
+    await service.onApplicationBootstrap();
+
+    expect(activeApiKeyRepository.find).toHaveBeenCalledWith({
+      select: { activeApiKeyId: true },
+      where: { serviceType: 'Local LLM' },
+    });
+    expect(activeLlmRepository.upsert).toHaveBeenCalledWith([
+      { activeApiKeyId: 'local-key-1', llmDetailModelId: 'llm-model-11' },
+      { activeApiKeyId: 'local-key-1', llmDetailModelId: 'llm-model-12' },
+      { activeApiKeyId: 'local-key-2', llmDetailModelId: 'llm-model-11' },
+      { activeApiKeyId: 'local-key-2', llmDetailModelId: 'llm-model-12' },
+    ], ['activeApiKeyId', 'llmDetailModelId']);
+  });
+
   it('NER 조회에 실패해도 기존 마스터 데이터 시드는 계속한다', async () => {
-    nerClient.getEnabledLlmModelNames.mockRejectedValue(
+    nerClient.getEnabledLocalLlmDeploymentIds.mockRejectedValue(
       new Error('connection refused'),
     );
 

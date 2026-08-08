@@ -5,6 +5,8 @@ export const MASKING_CONTENT = {
   PHONE: 'PHONE',
   RESIDENT: 'RESIDENT',
   CARD: 'CARD',
+  ACCOUNT: 'ACCOUNT',
+  ADDRESS: 'ADDRESS',
   EMAIL: 'EMAIL',
   API_KEY: 'API_KEY',
 } as const;

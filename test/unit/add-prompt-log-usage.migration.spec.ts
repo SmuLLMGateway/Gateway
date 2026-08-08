@@ -17,13 +17,13 @@ describe('AddPromptLogUsage2026080200001', () => {
 
   afterEach(() => jest.clearAllMocks());
 
-  it('prompt_log.usage를 nullable INT로 추가한다', async () => {
+  it('prompt_log.usage를 nullable DECIMAL(20,6)로 추가한다', async () => {
     mockSchema({ tables: ['prompt_log'], columns: [] });
 
     await migration.up(queryRunner as unknown as QueryRunner);
 
     expect(queryRunner.query).toHaveBeenCalledWith(
-      'ALTER TABLE `prompt_log` ADD COLUMN `usage` INT NULL',
+      'ALTER TABLE `prompt_log` ADD COLUMN `usage` DECIMAL(20,6) NULL',
     );
   });
 

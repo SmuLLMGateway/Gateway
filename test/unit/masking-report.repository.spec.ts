@@ -133,6 +133,7 @@ describe('MaskingReportRepository', () => {
       nerStatus: MaskingReportStatus.DONE,
       memberId: '42',
       originalText,
+      maskingText: originalText,
       recentMaskingReportId: null,
     };
     expect(promptMapper.toMaskingReportDAO).toHaveBeenCalledWith(expected);
@@ -505,7 +506,7 @@ describe('MaskingReportRepository', () => {
     expect(transactionReportRepository.update).not.toHaveBeenCalled();
   });
 
-  it('본인 분석을 취소하면 MASKING 로그를 제거하고 모든 상태를 CANCEL로 변경한다', async () => {
+  it('본인 분석을 취소하면 MASKING 로그를 제거하고 리포트 상태만 CANCEL로 변경한다', async () => {
     transactionReportRepository.findOne.mockResolvedValueOnce(createReport({
       regexStatus: MaskingReportStatus.DONE,
       nerStatus: MaskingReportStatus.PENDING,
@@ -514,6 +515,7 @@ describe('MaskingReportRepository', () => {
     transactionPromptLogRepository.find.mockResolvedValueOnce([
       { promptLogId: '31' },
     ]);
+    transactionPromptLogRepository.delete.mockResolvedValueOnce({ affected: 1 });
 
     await expect(repository.cancelForMember(ticket, 42)).resolves.toBe(true);
 
@@ -524,13 +526,17 @@ describe('MaskingReportRepository', () => {
         status: PromptLogStatus.MASKING,
         promptRoom: { memberId: '42' },
       },
+      lock: { mode: 'pessimistic_write' },
     });
-    expect(transactionPromptLogRepository.delete).toHaveBeenCalledWith(['31']);
+    expect(transactionPromptLogRepository.delete).toHaveBeenCalledWith({
+      promptLogId: expect.anything(),
+      status: PromptLogStatus.MASKING,
+    });
+    const deleteWhere = transactionPromptLogRepository.delete.mock.calls[0]?.[0];
+    expect(deleteWhere.promptLogId.value).toEqual(['31']);
     expect(transactionReportRepository.update).toHaveBeenCalledWith(
       { maskingReportId: ticket },
       {
-        regexStatus: MaskingReportStatus.CANCEL,
-        nerStatus: MaskingReportStatus.CANCEL,
         status: MaskingReportStatus.CANCEL,
       },
     );
@@ -543,6 +549,18 @@ describe('MaskingReportRepository', () => {
 
     expect(transactionPromptLogRepository.find).not.toHaveBeenCalled();
     expect(transactionPromptLogRepository.delete).not.toHaveBeenCalled();
+    expect(transactionReportRepository.update).not.toHaveBeenCalled();
+  });
+
+  it('LLM 전송이 먼저 예약되어 MASKING 로그 삭제가 실패하면 리포트를 CANCEL로 바꾸지 않는다', async () => {
+    transactionReportRepository.findOne.mockResolvedValueOnce(createReport());
+    transactionPromptLogRepository.find.mockResolvedValueOnce([
+      { promptLogId: '31' },
+    ]);
+    transactionPromptLogRepository.delete.mockResolvedValueOnce({ affected: 0 });
+
+    await expect(repository.cancelForMember(ticket, 42)).resolves.toBe(false);
+
     expect(transactionReportRepository.update).not.toHaveBeenCalled();
   });
 

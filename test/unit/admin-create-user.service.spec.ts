@@ -21,9 +21,17 @@ describe('AdminService 사용자 생성', () => {
   const memberRepository = {
     findOne: jest.fn(),
     findOneBy: jest.fn(),
+    find: jest.fn(),
     save: jest.fn(),
   };
-  const memberDepartmentRepository = { findOneBy: jest.fn(), save: jest.fn() };
+  const memberDepartmentRepository = {
+    findOneBy: jest.fn(),
+    find: jest.fn(),
+    save: jest.fn(),
+  };
+  const departmentRepository = { findOne: jest.fn() };
+  const memberLimitRepository = { upsert: jest.fn() };
+  const activeApiKeyRepository = { find: jest.fn() };
   const adminLogRepository = { save: jest.fn() };
   const manager = { getRepository: jest.fn() };
   const dataSource = { transaction: jest.fn() };
@@ -58,6 +66,9 @@ describe('AdminService 사용자 생성', () => {
     manager.getRepository.mockImplementation((entity: unknown) => {
       if (entity === MemberDAO) return memberRepository;
       if (entity === MemberDepartmentDAO) return memberDepartmentRepository;
+      if (entity === DepartmentDAO) return departmentRepository;
+      if (entity === MemberLimitDAO) return memberLimitRepository;
+      if (entity === ActiveApiKeyDAO) return activeApiKeyRepository;
       if (entity === AdminLogDAO) return adminLogRepository;
       throw new Error('정의되지 않은 Repository입니다.');
     });
@@ -102,5 +113,59 @@ describe('AdminService 사용자 생성', () => {
       logContent: '김서윤 사용자 계정을 생성했습니다.',
       actionMemberName: '총괄 관리자',
     }));
+  });
+
+  it('부서 관리자가 사용자를 만들면 부서 인원 수 기준으로 모든 개인 한도와 사용량을 재배분한다', async () => {
+    memberRepository.findOne.mockResolvedValue(null);
+    memberRepository.findOneBy.mockResolvedValue({
+      memberId: '7',
+      memberName: '부서 관리자',
+      authorize: UserRole.DEPART_ADMIN,
+      disabledAt: null,
+    });
+    memberRepository.find.mockResolvedValue([
+      { memberId: '7' },
+      { memberId: '10' },
+    ]);
+    memberDepartmentRepository.findOneBy.mockResolvedValue({ departmentId: '4' });
+    departmentRepository.findOne.mockResolvedValue({
+      departmentId: '4',
+      limit: '300',
+    });
+    memberDepartmentRepository.find.mockResolvedValue([
+      { memberId: '7' },
+      { memberId: '10' },
+    ]);
+    activeApiKeyRepository.find.mockResolvedValue([
+      { activeApiKeyId: '11' },
+    ]);
+    passwordEncoder.encode.mockResolvedValue('encoded-password');
+    userMapper.toMemberDAO.mockImplementation((data) => data);
+    userMapper.toMemberDepartmentDAO.mockImplementation((data) => data);
+    memberRepository.save.mockResolvedValue({
+      memberId: '10',
+      memberName: '김서윤',
+    });
+
+    await expect(service.createUser({
+      name: '김서윤',
+      email: 'seoyun@example.com',
+      password: 'Gateway123!',
+      authorize: UserRole.USER,
+    }, {
+      userId: 7,
+      expiredAt: '',
+      accessToken: true,
+      role: UserRole.DEPART_ADMIN,
+    })).resolves.toEqual({ id: 10, name: '김서윤' });
+
+    expect(memberDepartmentRepository.save).toHaveBeenCalledWith({
+      memberId: '10',
+      departmentId: '4',
+    });
+    expect(memberLimitRepository.upsert).toHaveBeenCalledWith([
+      { memberId: '7', activeApiKeyId: '11', limit: '150', usage: '0' },
+      { memberId: '10', activeApiKeyId: '11', limit: '150', usage: '0' },
+    ], ['memberId', 'activeApiKeyId']);
   });
 });

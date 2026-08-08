@@ -3,6 +3,7 @@ import { NerClient } from '../../src/global/ner/client/ner.client.js';
 import { NerConfig } from '../../src/global/ner/config/ner.config.js';
 import { NerRequestException } from '../../src/global/ner/exception/ner-request.exception.js';
 import type { NerAnalyzeRequest } from '../../src/global/ner/type/ner-analyze-request.type.js';
+import type { LplLlmGenerateRequest } from '../../src/global/ner/type/lpl-llm-generate.type.js';
 
 describe('NerConfig', () => {
   const originalServerIp = process.env.NER_SERVER_IP;
@@ -27,7 +28,8 @@ describe('NerConfig', () => {
 
     const config = new NerConfig();
     expect(config.analyzeUrl).toBe('http://127.0.0.1:8000/detect');
-    expect(config.requestTimeoutMs).toBe(90_000);
+    expect(config.generateUrl).toBe('http://127.0.0.1:8000/generate');
+    expect(config.requestTimeoutMs).toBe(360_000);
   });
 
   it('Docker 호스트명과 포트도 사용할 수 있다', () => {
@@ -110,10 +112,13 @@ describe('NerClient', () => {
     enabled: true,
   };
   const config = {
+    baseUrl: 'http://127.0.0.1:8000/',
     analyzeUrl: 'http://127.0.0.1:8000/detect',
+    generateUrl: 'http://127.0.0.1:8000/generate',
+    healthUrl: 'http://127.0.0.1:8000/health',
     nerDeploymentsUrl: 'http://127.0.0.1:8000/deployments/ner',
     llmDeploymentsUrl: 'http://127.0.0.1:8000/deployments/llm',
-    requestTimeoutMs: 90_000,
+    requestTimeoutMs: 360_000,
   } as NerConfig;
 
   let client: NerClient;
@@ -162,6 +167,121 @@ describe('NerClient', () => {
       body: JSON.stringify(request),
       signal: expect.any(AbortSignal),
     });
+  });
+
+  it('성공한 LPL /detect 요청도 요청·응답 본문을 로그에 남긴다', async () => {
+    const loggerLogSpy = jest.spyOn(Logger.prototype, 'log')
+      .mockImplementation();
+    const responseBody = JSON.stringify({ detections: [] });
+    fetchSpy.mockResolvedValueOnce(new Response(responseBody, { status: 200 }));
+
+    try {
+      await expect(client.requestAnalyze(request)).resolves.toEqual({
+        detections: [],
+      });
+      expect(loggerLogSpy).toHaveBeenCalledWith(expect.stringContaining(
+        'event=ner_analyze_response_received method=POST endpoint=/detect status=200',
+      ));
+      expect(loggerLogSpy).toHaveBeenCalledWith(expect.stringContaining(
+        'request_body={"nerDeploymentId":"ner-gliner-multi","llmDeploymentId":"llm-qwen3-14b"',
+      ));
+      expect(loggerLogSpy).toHaveBeenCalledWith(expect.stringContaining(
+        `response_body=${responseBody}`,
+      ));
+    } finally {
+      loggerLogSpy.mockRestore();
+    }
+  });
+
+  it('API 키 없이 LPL /generate에 local LLM Deployment와 마스킹 텍스트를 전송한다', async () => {
+    const request: LplLlmGenerateRequest = {
+      text: '연락처는 [ 전화번호 ]입니다.',
+      llmDeploymentId: 'local-qwen3:8b',
+    };
+    const response = {
+      text: '확인했습니다.',
+      modelName: 'qwen3:8b',
+      finishReason: 'stop',
+      usage: {
+        inputTokens: 10,
+        outputTokens: 12,
+        totalTokens: 22,
+      },
+    };
+    const loggerLogSpy = jest.spyOn(Logger.prototype, 'log')
+      .mockImplementation();
+    fetchSpy.mockResolvedValueOnce(new Response(JSON.stringify(response), {
+      status: 200,
+    }));
+
+    try {
+      await expect(client.requestLlmGenerate(request)).resolves.toEqual(response);
+
+      expect(fetchSpy).toHaveBeenCalledWith(config.generateUrl, {
+        method: 'POST',
+        headers: {
+          accept: 'application/json',
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify(request),
+        signal: expect.any(AbortSignal),
+      });
+      expect(fetchSpy.mock.calls[0]?.[1]).not.toHaveProperty('apiKey');
+      expect(loggerLogSpy).toHaveBeenCalledWith(expect.stringContaining(
+        'event=lpl_llm_generate_response_received method=POST endpoint=/generate status=200',
+      ));
+      expect(loggerLogSpy).toHaveBeenCalledWith(expect.stringContaining(
+        'request_body={"text":"연락처는 [ 전화번호 ]입니다.","llmDeploymentId":"local-qwen3:8b"}',
+      ));
+      expect(loggerLogSpy).toHaveBeenCalledWith(expect.stringContaining(
+        'response_body={"text":"확인했습니다.","modelName":"qwen3:8b","finishReason":"stop","usage":{"inputTokens":10,"outputTokens":12,"totalTokens":22}}',
+      ));
+    } finally {
+      loggerLogSpy.mockRestore();
+    }
+  });
+
+  it('LPL /generate 실패 시 요청·응답 본문을 로그에 남기고 상태 코드를 보존한다', async () => {
+    const loggerErrorSpy = jest.spyOn(Logger.prototype, 'error')
+      .mockImplementation();
+    fetchSpy.mockResolvedValueOnce(new Response(JSON.stringify({
+      detail: 'LLM deployment is disabled',
+    }), { status: 422 }));
+
+    try {
+      await expect(client.requestLlmGenerate({
+        text: '마스킹된 본문',
+        llmDeploymentId: 'local-qwen3:8b',
+      })).rejects.toMatchObject({ status: 422 });
+      expect(loggerErrorSpy).toHaveBeenCalledWith(expect.stringContaining(
+        'event=lpl_llm_generate_request_failed method=POST endpoint=/generate status=422',
+      ));
+      expect(loggerErrorSpy).toHaveBeenCalledWith(expect.stringContaining(
+        'request_body={"text":"마스킹된 본문","llmDeploymentId":"local-qwen3:8b"}',
+      ));
+      expect(loggerErrorSpy).toHaveBeenCalledWith(expect.stringContaining(
+        'response_body={"detail":"LLM deployment is disabled"}',
+      ));
+    } finally {
+      loggerErrorSpy.mockRestore();
+    }
+  });
+
+  it('LPL /generate의 text 없는 성공 응답은 연동 오류로 처리한다', async () => {
+    const loggerErrorSpy = jest.spyOn(Logger.prototype, 'error')
+      .mockImplementation();
+    fetchSpy.mockResolvedValueOnce(new Response(JSON.stringify({
+      modelName: 'qwen3:8b',
+    }), { status: 200 }));
+
+    try {
+      await expect(client.requestLlmGenerate({
+        text: '마스킹된 본문',
+        llmDeploymentId: 'local-qwen3:8b',
+      })).rejects.toBeInstanceOf(NerRequestException);
+    } finally {
+      loggerErrorSpy.mockRestore();
+    }
   });
 
   it('LPL에 NER·로컬 LLM Deployment 등록 요청을 각각 201 계약으로 전송한다', async () => {
@@ -232,6 +352,84 @@ describe('NerClient', () => {
       body: JSON.stringify(mockLlmDeployment),
       signal: expect.any(AbortSignal),
     });
+  });
+
+  it('LPL 배포 등록·상태 변경·목록·상세 조회의 요청·응답 본문을 모두 로그에 남긴다', async () => {
+    const loggerLogSpy = jest.spyOn(Logger.prototype, 'log')
+      .mockImplementation();
+    const updatedNerDeployment = { ...nerDeployment, enabled: false };
+    const listResponse = {
+      deployments: [{
+        deploymentId: nerDeployment.deploymentId,
+        enabled: true,
+      }],
+    };
+
+    fetchSpy
+      .mockResolvedValueOnce(new Response(JSON.stringify(nerDeployment), {
+        status: 201,
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(updatedNerDeployment), {
+        status: 200,
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(listResponse), {
+        status: 200,
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(llmDeployment), {
+        status: 200,
+      }));
+
+    try {
+      await client.createNerDeployment(nerDeployment);
+      await client.updateNerDeploymentEnabled(nerDeployment.deploymentId, false);
+      await client.getNerDeployments();
+      await client.getLlmDeployment(llmDeployment.deploymentId);
+
+      const logs = loggerLogSpy.mock.calls.flat().join('\n');
+      expect(logs).toContain(
+        'event=lpl_response_received method=POST endpoint=/deployments/ner status=201',
+      );
+      expect(logs).toContain(`request_body=${JSON.stringify(nerDeployment)}`);
+      expect(logs).toContain(`response_body=${JSON.stringify(nerDeployment)}`);
+      expect(logs).toContain(
+        'event=lpl_response_received method=PATCH endpoint=/deployments/ner/ner-gliner-multi/enabled status=200',
+      );
+      expect(logs).toContain('request_body={"enabled":false}');
+      expect(logs).toContain(`response_body=${JSON.stringify(updatedNerDeployment)}`);
+      expect(logs).toContain(
+        'event=lpl_response_received method=GET endpoint=/deployments/ner status=200 request_body=<empty>',
+      );
+      expect(logs).toContain(`response_body=${JSON.stringify(listResponse)}`);
+      expect(logs).toContain(
+        `event=lpl_response_received method=GET endpoint=/deployments/llm/${llmDeployment.deploymentId} status=200 request_body=<empty>`,
+      );
+      expect(logs).toContain(`response_body=${JSON.stringify(llmDeployment)}`);
+    } finally {
+      loggerLogSpy.mockRestore();
+    }
+  });
+
+  it('LPL 배포 API 오류도 요청·응답 본문을 로그에 남긴다', async () => {
+    const loggerErrorSpy = jest.spyOn(Logger.prototype, 'error')
+      .mockImplementation();
+    const responseBody = JSON.stringify({ detail: 'duplicate deployment' });
+    fetchSpy.mockResolvedValueOnce(new Response(responseBody, { status: 409 }));
+
+    try {
+      await expect(client.createNerDeployment(nerDeployment)).rejects
+        .toMatchObject({ status: 409 });
+      expect(loggerErrorSpy).toHaveBeenCalledWith(expect.stringContaining(
+        'event=lpl_request_failed method=POST endpoint=/deployments/ner status=409 result=http_error',
+      ));
+      expect(loggerErrorSpy).toHaveBeenCalledWith(expect.stringContaining(
+        `request_body=${JSON.stringify(nerDeployment)}`,
+      ));
+      expect(loggerErrorSpy).toHaveBeenCalledWith(expect.stringContaining(
+        `response_body=${responseBody}`,
+      ));
+    } finally {
+      loggerErrorSpy.mockRestore();
+    }
   });
 
   it.each([409, 422])('등록 요청의 LPL %i 오류 상태를 보존한다', async (status) => {
@@ -503,7 +701,7 @@ describe('NerClient', () => {
     });
   });
 
-  it('활성 로컬 모델명에 일치하는 첫 LLM Deployment ID를 상세 설정에서 찾는다', async () => {
+  it('레거시 modelName이 일치해도 Deployment ID가 다르면 사용하지 않는다', async () => {
     fetchSpy
       .mockResolvedValueOnce(new Response(JSON.stringify({
         deployments: [
@@ -532,32 +730,16 @@ describe('NerClient', () => {
 
     await expect(
       client.getEnabledLlmDeploymentIdByModelName('local-qwen3:8b'),
-    ).resolves.toBe('ollama-qwen-first');
+    ).resolves.toBeNull();
 
     expect(fetchSpy).toHaveBeenNthCalledWith(1, config.llmDeploymentsUrl, {
       headers: { accept: 'application/json' },
       signal: expect.any(AbortSignal),
     });
-    expect(fetchSpy).toHaveBeenNthCalledWith(
-      2,
-      'http://127.0.0.1:8000/deployments/llm/ollama-non-matching',
-      {
-        headers: { accept: 'application/json' },
-        signal: expect.any(AbortSignal),
-      },
-    );
-    expect(fetchSpy).toHaveBeenNthCalledWith(
-      3,
-      'http://127.0.0.1:8000/deployments/llm/ollama-qwen-first',
-      {
-        headers: { accept: 'application/json' },
-        signal: expect.any(AbortSignal),
-      },
-    );
-    expect(fetchSpy).toHaveBeenCalledTimes(3);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
 
-  it('활성 LLM Deployment 상세에 일치하는 로컬 모델명이 없으면 null을 반환한다', async () => {
+  it('활성 local-* Deployment ID가 없으면 null을 반환한다', async () => {
     fetchSpy
       .mockResolvedValueOnce(new Response(JSON.stringify({
         deployments: [
@@ -587,11 +769,21 @@ describe('NerClient', () => {
       client.getEnabledLlmDeploymentIdByModelName('local-mistral:7b'),
     ).resolves.toBeNull();
 
-    expect(fetchSpy).toHaveBeenCalledTimes(3);
-    expect(fetchSpy).not.toHaveBeenCalledWith(
-      'http://127.0.0.1:8000/deployments/llm/disabled-matching',
-      expect.anything(),
-    );
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('활성 local-* LLM Deployment ID만 DB 동기화용으로 반환한다', async () => {
+    fetchSpy.mockResolvedValueOnce(new Response(JSON.stringify({
+      deployments: [
+        { deploymentId: 'local-qwen3:8b', enabled: true },
+        { deploymentId: 'local-disabled', enabled: false },
+        { deploymentId: 'ollama-legacy', enabled: true },
+      ],
+    }), { status: 200 }));
+
+    await expect(client.getEnabledLocalLlmDeploymentIds()).resolves.toEqual([
+      'local-qwen3:8b',
+    ]);
   });
 
   it('LPL에서 NER 배포 요약 목록을 비활성 항목까지 그대로 조회한다', async () => {

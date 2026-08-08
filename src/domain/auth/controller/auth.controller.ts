@@ -9,6 +9,7 @@ import {
 } from "@nestjs/common";
 import {
   AuthControllerDocs,
+  DevelopmentUpdateUserPasswordDocs,
   LoginDocs,
   LogoutDocs,
   RefreshTokenDocs,
@@ -80,6 +81,16 @@ export class AuthController {
     @CurrentUser() authentication: AuthenticatedUser,
   ): Promise<GeneralResponse<AuthResDTO.UpdatePassword>> {
     const result = await this.authService.updatePassword(dto, authentication);
+    return GeneralResponse.onSuccess(AuthSuccessStatus.UPDATE_PASSWORD, result);
+  }
+
+  @DevelopmentUpdateUserPasswordDocs()
+  @Public()
+  @Patch('/auth/v1/development/password')
+  async updateDevelopmentUserPassword(
+    @Body() dto: AuthReqDTO.DevelopmentUpdatePassword,
+  ): Promise<GeneralResponse<AuthResDTO.UpdatePassword>> {
+    const result = await this.authService.updateDevelopmentPassword(dto);
     return GeneralResponse.onSuccess(AuthSuccessStatus.UPDATE_PASSWORD, result);
   }
 }

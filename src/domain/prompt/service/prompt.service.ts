@@ -6,6 +6,7 @@ import { MaskingClass } from '../../admin/dao/policy.dao.js';
 import { ActiveLlmDAO } from '../../admin/dao/active-llm.dao.js';
 import { DepartmentPolicyDAO } from '../../admin/dao/department-policy.dao.js';
 import { DepartmentDAO } from '../../admin/dao/department.dao.js';
+import { AdminResDTO } from '../../admin/dto/admin.response.dto.js';
 import { MemberDepartmentDAO } from '../../user/dao/member-department.dao.js';
 import { MemberLimitDAO } from '../../user/dao/member-limit.dao.js';
 import { GatewayException } from '../../../global/apiPayload/exception/gateway.exception.js';
@@ -49,11 +50,16 @@ import { MaskingDetailDAO } from '../dao/masking-detail.dao.js';
 import { MaskingReportDAO } from '../dao/masking-report.dao.js';
 import { PromptLogStatus } from '../type/prompt-log-status.enum.js';
 import {
+  getSecurityPolicyClassDisplayName,
+  getSecurityPolicyDisplayName,
+} from '../../admin/policy/security-policy.catalog.js';
+import {
   getLlmServiceDescriptor,
   isLocalLlmModelName,
   LOCAL_LLM_MODEL,
   resolveLlmServiceFromModelName,
 } from '../../../global/llm/llm-service.mapping.js';
+import { toKoreaStandardTimeISOString } from '../../../global/time/korea-standard-time.js';
 
 const MASKING_OBJECT_PREFIX = 'masking';
 const MAX_STORED_DETECTION_LENGTH = 255;
@@ -83,6 +89,21 @@ const CARD_NUMBER_PATTERNS = [
   /(?<!\d)\d{4}([ -])\d{4}\1\d{4}(?:\1\d{1,4})?(?:\1\d{1,3})?(?!\d)/g,
   /(?<!\d)\d{4}([ -])\d{6}\1\d{4,5}(?!\d)/g,
 ] as const;
+const ACCOUNT_NUMBER_PATTERN =
+  /(?<!\d)\d{2,6}(?:[ -]\d{2,7}){1,3}(?!\d)/g;
+const CONTEXTUAL_ACCOUNT_NUMBER_PATTERN =
+  /(?:account(?:\s*number)?|(?:입금|출금)?\s*계좌(?:번호)?|은행\s*계좌)\s*(?:는|은)?\s*(?::|=)?\s*([0-9][0-9 -]{8,20}[0-9])/gi;
+const KOREAN_ADDRESS_AREA_SOURCE = String.raw`(?:(?:[가-힣]+(?:특별시|광역시|특별자치시|도)\s+(?:[가-힣]+(?:시|군|구)\s+){0,2})|(?:[가-힣]+(?:시|군|구)\s+){1,2})`;
+const KOREAN_ADDRESS_BUILDING_SOURCE =
+  String.raw`(?:\s+(?:\d+동|\d+층|\d+호|[가-힣0-9]+(?:아파트|빌딩|타워))){0,3}`;
+const KOREAN_ROAD_ADDRESS_PATTERN = new RegExp(
+  String.raw`(?<![가-힣0-9])${KOREAN_ADDRESS_AREA_SOURCE}[가-힣0-9]+(?:대로|로|길)(?:\s*\d+번길)?\s+\d+(?:-\d+)?${KOREAN_ADDRESS_BUILDING_SOURCE}(?![0-9-])`,
+  'g',
+);
+const KOREAN_JIBUN_ADDRESS_PATTERN = new RegExp(
+  String.raw`(?<![가-힣0-9])${KOREAN_ADDRESS_AREA_SOURCE}[가-힣0-9]+(?:읍|면|동|리|가)\s+\d+(?:-\d+)?${KOREAN_ADDRESS_BUILDING_SOURCE}(?![0-9-])`,
+  'g',
+);
 const EMAIL_PATTERN =
   /(?<![A-Z0-9.!#$%&'*+/=?^_`{|}~-])[A-Z0-9.!#$%&'*+/=?^_`{|}~-]{1,64}@[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?(?:\.[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?){1,10}(?![A-Z0-9.-])/gi;
 
@@ -165,11 +186,15 @@ export class PromptService {
     let persistedFileForNer: PersistedPromptFileForNer | undefined;
     let promptLogCreated = false;
     let createdChatRoomId: string | undefined;
+    let localLplAllowed = false;
     const recentTicket = dto.recentTicket ?? null;
     const requestedChatRoomId = dto.chatRoomId ?? null;
 
     try {
       const departmentId = await this.resolveDepartmentId(authentication.userId);
+      localLplAllowed = await this.isDepartmentLocalLlmEnabled(
+        departmentId,
+      );
       const accessibleModel = await this.resolveAccessiblePromptModel(
         departmentId,
         dto.llmModel,
@@ -186,6 +211,12 @@ export class PromptService {
         );
       }
       const policies = await this.findSupportedPolicies(departmentId);
+      // Gateway는 PRIVATE 정책 중 정규식으로 확정 가능한 항목만 직접 탐지합니다.
+      // 그 외 활성 정책은 NER/LLM 분석 재개 시 원문과 함께 전달할 정책 목록에는
+      // 남기되, 정규식 후보로는 사용하지 않습니다.
+      const regexPolicies = policies.filter(
+        (policy) => policy.maskingClass === MaskingClass.PRIVATE,
+      );
 
       const chatRoomId = requestedChatRoomId ?? await this.createInitialChatRoom(
         authentication.userId,
@@ -200,7 +231,7 @@ export class PromptService {
         authentication.userId,
         dto.text,
         recentTicket,
-        NER_ANALYSIS_ENABLED,
+        NER_ANALYSIS_ENABLED && localLplAllowed,
       );
       reportCreated = true;
       await this.promptLogRepository.replaceMasking(
@@ -237,7 +268,7 @@ export class PromptService {
       }
 
       const policyByContent = new Map(
-        policies.map((policy) => [policy.maskingContent, policy] as const),
+        regexPolicies.map((policy) => [policy.maskingContent, policy] as const),
       );
       const detections = this.detectMaskingElements(
         dto.text,
@@ -259,10 +290,11 @@ export class PromptService {
         throw new PromptException(PromptErrorStatus.ANALYZE_SERVICE_UNAVAILABLE);
       }
       regexCompleted = true;
+      await this.persistMaskedPromptText(dto.ticket, dto.text);
 
       // NER 서버 개발이 완료되면 NER_ANALYSIS_ENABLED만 true로 전환해
       // 기존 텍스트·OCR 파일 탐지 흐름을 다시 사용합니다.
-      if (NER_ANALYSIS_ENABLED) {
+      if (NER_ANALYSIS_ENABLED && localLplAllowed) {
         const existingDetections = this.toNerExistingDetections(detections);
         void this.requestNerAnalysis({
           ticket: dto.ticket,
@@ -302,7 +334,7 @@ export class PromptService {
         if (!regexCompleted) {
           await this.safeCancelRegex(dto.ticket);
         }
-        if (NER_ANALYSIS_ENABLED) {
+        if (NER_ANALYSIS_ENABLED && localLplAllowed) {
           await this.safeCancelNer(dto.ticket);
         }
       }
@@ -405,14 +437,70 @@ export class PromptService {
     }
 
     const model = promptLog.modelName ?? promptLog.modelType;
-    if (
-      model === null
-      || promptLog.modelType?.trim().toLowerCase() === LOCAL_LLM_MODEL.toLowerCase()
-      || isLocalLlmModelName(model)
-    ) {
+    if (model === null) {
       throw new PromptException(PromptErrorStatus.FORBIDDEN_LLM_MODEL);
     }
     const departmentId = await this.resolveDepartmentId(authentication.userId);
+
+    const localModelName = this.resolveLocalPromptModelName(promptLog);
+    if (localModelName !== null) {
+      await this.assertDepartmentLocalLlmOutboundAllowed(departmentId);
+      const localLlm = await this.activeLlmRepository.findOne({
+        select: { activeLlmId: true },
+        where: {
+          activeApiKey: {
+            departmentId,
+            serviceType: LOCAL_LLM_MODEL,
+          },
+          llmDetailModel: { llmName: localModelName },
+        },
+      });
+      if (localLlm === null) {
+        this.throwForbiddenModel();
+      }
+      await this.assertEnabledLocalLlmDeployment(localModelName);
+
+      const maskedText = await this.persistMaskedPromptText(
+        ticket,
+        promptLog.maskingReport.originalText,
+      );
+      const reserved = await promptLogRepository.update(
+        {
+          promptLogId: promptLog.promptLogId,
+          status: In([PromptLogStatus.MASKING, PromptLogStatus.ERROR]),
+        },
+        {
+          status: PromptLogStatus.PENDING,
+          communicatedAt: new Date(),
+          // 로컬 LLM은 LPL에 API 키를 전달하지 않으며 연결 이력에도 남기지 않습니다.
+          activeApiKeyId: null,
+        },
+      );
+      if (reserved.affected !== 1) {
+        return null;
+      }
+
+      // local-* 모델명은 LPL 등록 시 llmDeploymentId와 같은 값으로 저장됩니다.
+      void this.sendLocalLlmRequest({
+        ticket,
+        text: maskedText,
+        llmDeploymentId: localModelName,
+      }).catch(async (error: unknown) => {
+        await this.markLlmRequestFailed(ticket, 'Local');
+        this.logger.error(
+          `Local LLM 전송 실패: ticket=${ticket}`,
+          error instanceof Error ? error.stack : undefined,
+        );
+      });
+      return null;
+    }
+
+    if (
+      promptLog.modelType?.trim().toLowerCase() === LOCAL_LLM_MODEL.toLowerCase()
+      || isLocalLlmModelName(model)
+    ) {
+      this.throwForbiddenModel();
+    }
     const provider = this.resolveModelProvider(model);
     const activeLlm = await this.activeLlmRepository.findOne({
       relations: { activeApiKey: true, llmDetailModel: true },
@@ -427,7 +515,8 @@ export class PromptService {
     if (activeLlm.activeApiKey.apiKey === null) {
       this.throwForbiddenModel();
     }
-    const maskedText = await this.toMaskedPromptText(
+    await this.assertExternalLlmOutboundAllowed(departmentId, ticket);
+    const maskedText = await this.persistMaskedPromptText(
       ticket,
       promptLog.maskingReport.originalText,
     );
@@ -459,17 +548,7 @@ export class PromptService {
       text: maskedText,
       apiKey,
     }).catch(async (error: unknown) => {
-      try {
-        await this.dataSource.getRepository(PromptLogDAO).update(
-          { maskingReportId: ticket, status: PromptLogStatus.PENDING },
-          { status: PromptLogStatus.ERROR },
-        );
-      } catch (statusUpdateError: unknown) {
-        this.logger.error(
-          `Provider LLM 실패 상태 기록 실패: ticket=${ticket}`,
-          statusUpdateError instanceof Error ? statusUpdateError.stack : undefined,
-        );
-      }
+      await this.markLlmRequestFailed(ticket, 'Provider');
       this.logger.error(`Provider LLM 전송 실패: ticket=${ticket}`, error instanceof Error ? error.stack : undefined);
     });
     return null;
@@ -540,6 +619,45 @@ export class PromptService {
     });
   }
 
+  /** API 키 없이 LPL Provider의 `/generate`로 로컬 LLM 응답을 생성합니다. */
+  private async sendLocalLlmRequest(data: Readonly<{
+    ticket: string;
+    text: string;
+    llmDeploymentId: string;
+  }>): Promise<void> {
+    const response = await this.nerClient.requestLlmGenerate({
+      text: data.text,
+      llmDeploymentId: data.llmDeploymentId,
+    });
+    await this.dataSource.getRepository(PromptLogDAO).update(
+      { maskingReportId: data.ticket, status: PromptLogStatus.PENDING },
+      {
+        status: PromptLogStatus.DONE,
+        responseText: response.text,
+        // usage는 금액 컬럼이므로 API 키가 없는 로컬 LLM에는 저장하지 않습니다.
+        usage: null,
+        activeApiKeyId: null,
+      },
+    );
+  }
+
+  private async markLlmRequestFailed(
+    ticket: string,
+    source: 'Local' | 'Provider',
+  ): Promise<void> {
+    try {
+      await this.dataSource.getRepository(PromptLogDAO).update(
+        { maskingReportId: ticket, status: PromptLogStatus.PENDING },
+        { status: PromptLogStatus.ERROR },
+      );
+    } catch (statusUpdateError: unknown) {
+      this.logger.error(
+        `${source} LLM 실패 상태 기록 실패: ticket=${ticket}`,
+        statusUpdateError instanceof Error ? statusUpdateError.stack : undefined,
+      );
+    }
+  }
+
   /**
    * 저장된 텍스트 탐지 결과를 뒤에서부터 적용해 원문의 인덱스를 보존합니다.
    * 파일 탐지처럼 텍스트 위치나 치환 문자열이 없는 상세 항목은 LLM 본문에 적용하지 않습니다.
@@ -605,6 +723,23 @@ export class PromptService {
     return maskedText;
   }
 
+  /** 계산한 본문과 DB 이력을 같은 값으로 맞춰, 이후 상세/이력 조회에서 정확히 복원합니다. */
+  private async persistMaskedPromptText(
+    ticket: string,
+    originalText: string,
+  ): Promise<string> {
+    const maskingText = await this.toMaskedPromptText(ticket, originalText);
+    const updated = await this.maskingReportRepository.updateMaskingText(
+      ticket,
+      maskingText,
+    );
+    if (!updated) {
+      throw new PromptException(PromptErrorStatus.ANALYZE_SERVICE_UNAVAILABLE);
+    }
+
+    return maskingText;
+  }
+
   async getRecentPrompts(
     authentication: Readonly<AuthenticatedUser>,
   ): Promise<PromptResDTO.RecentPromptList> {
@@ -618,6 +753,9 @@ export class PromptService {
     authentication: Readonly<AuthenticatedUser>,
   ): Promise<PromptResDTO.ModelList> {
     const departmentId = await this.resolveDepartmentId(authentication.userId);
+    const activeLocalLLM = await this.isDepartmentLocalLlmEnabled(
+      departmentId,
+    );
     const activeLlms = await this.activeLlmRepository.find({
       select: {
         activeApiKey: { serviceType: true },
@@ -628,16 +766,24 @@ export class PromptService {
       order: { llmDetailModel: { llmName: 'ASC' } },
     });
 
-    const externalModels = activeLlms.flatMap((activeLlm) => {
-      const llmName = activeLlm.llmDetailModel.llmName;
-      return llmName === null ? [] : [llmName];
-    });
+    const enabledLocalDeploymentIds = activeLocalLLM
+      ? await this.getEnabledLocalLlmDeploymentIds()
+      : new Set<string>();
 
     const localModels = activeLlms.flatMap((activeLlm) => {
       const llmName = activeLlm.llmDetailModel.llmName;
       return activeLlm.activeApiKey.serviceType !== LOCAL_LLM_MODEL
         || llmName === null
         || !isLocalLlmModelName(llmName)
+        || !enabledLocalDeploymentIds.has(llmName.toLowerCase())
+        ? []
+        : [llmName];
+    });
+
+    const externalModels = activeLlms.flatMap((activeLlm) => {
+      const llmName = activeLlm.llmDetailModel.llmName;
+      return activeLlm.activeApiKey.serviceType === LOCAL_LLM_MODEL
+        || llmName === null
         ? []
         : [llmName];
     });
@@ -707,7 +853,10 @@ export class PromptService {
         promptLog.maskingReportId,
       );
       return {
+        promptId: promptLog.promptId,
+        ticket: promptLog.maskingReportId,
         request: promptLog.request,
+        sendText: promptLog.sendText,
         response: promptLog.response,
         file: files.length === 0
           ? null
@@ -723,6 +872,117 @@ export class PromptService {
       data,
       hasNext: promptLogPage.hasNext,
       nextCursor: String(lastPromptLog.communicatedAt.getTime()),
+    };
+  }
+
+  async getPromptDetail(
+    promptId: number,
+    authentication: Readonly<AuthenticatedUser>,
+  ): Promise<AdminResDTO.PromptDetail> {
+    const promptLog = await this.dataSource.getRepository(PromptLogDAO).findOne({
+      select: {
+        promptLogId: true,
+        communicatedAt: true,
+        usage: true,
+        maskingReportId: true,
+        promptRoom: {
+          memberId: true,
+          member: { memberId: true, memberName: true, email: true },
+        },
+        maskingReport: { originalText: true, maskingText: true, createdAt: true },
+      },
+      relations: {
+        promptRoom: { member: true },
+        maskingReport: true,
+      },
+      where: { promptLogId: String(promptId) },
+    });
+    if (promptLog === null) {
+      throw new PromptException(PromptErrorStatus.NOT_FOUND_PROMPT);
+    }
+
+    if (promptLog.promptRoom.memberId !== String(authentication.userId)) {
+      throw new PromptException(PromptErrorStatus.FORBIDDEN_PROMPT_DETAIL);
+    }
+
+    const [membership, memberLimits, maskingDetails] = await Promise.all([
+      this.memberDepartmentRepository.findOne({
+        select: {
+          departmentId: true,
+          department: { departmentName: true },
+        },
+        relations: { department: true },
+        where: { memberId: promptLog.promptRoom.memberId },
+        order: { memberDepartmentId: 'ASC' },
+      }),
+      this.dataSource.getRepository(MemberLimitDAO).find({
+        select: { limit: true, usage: true },
+        where: { memberId: promptLog.promptRoom.memberId },
+      }),
+      this.dataSource.getRepository(MaskingDetailDAO).find({
+        select: {
+          maskingDetailId: true,
+          originalText: true,
+          startIdx: true,
+          maskingText: true,
+          departmentPolicy: {
+            policy: { maskingContent: true, maskingClass: true },
+          },
+        },
+        relations: { departmentPolicy: { policy: true } },
+        where: { maskingReportId: promptLog.maskingReportId },
+        order: { maskingDetailId: 'ASC' },
+      }),
+    ]);
+    if (membership === null) {
+      throw new PromptException(PromptErrorStatus.NOT_FOUND_PROMPT);
+    }
+
+    const detect: AdminResDTO.PromptDetection[] = [];
+    for (const detail of maskingDetails) {
+      if (
+        detail.originalText === null
+        || detail.startIdx === null
+        || detail.maskingText === null
+      ) {
+        continue;
+      }
+
+      detect.push({
+        targetText: detail.originalText,
+        startIdx: detail.startIdx,
+        endIdx: detail.startIdx + detail.originalText.length - 1,
+        maskingCategory: getSecurityPolicyClassDisplayName(
+          detail.departmentPolicy.policy.maskingClass,
+        ),
+        detailCategory: getSecurityPolicyDisplayName(
+          detail.departmentPolicy.policy.maskingContent,
+        ),
+        maskingText: detail.maskingText,
+        maskingStartIdx: detail.startIdx,
+        maskingEndIdx: detail.startIdx + detail.maskingText.length - 1,
+      });
+    }
+
+    const { limit } = this.toMemberLimitTotals(memberLimits);
+    const usage = Number(promptLog.usage ?? 0);
+    return {
+      promptId: Number(promptLog.promptLogId),
+      ticket: promptLog.maskingReportId,
+      name: promptLog.promptRoom.member.memberName,
+      department: membership.department.departmentName,
+      email: promptLog.promptRoom.member.email,
+      limit,
+      usage,
+      usagePercent: this.toRatioPercent(usage, limit),
+      promptedAt: toKoreaStandardTimeISOString(
+        promptLog.communicatedAt ?? promptLog.maskingReport.createdAt,
+      ),
+      detectCnt: maskingDetails.length,
+      maskingCnt: detect.length,
+      originalText: promptLog.maskingReport.originalText,
+      sendText: promptLog.maskingReport.maskingText,
+      detect,
     };
   }
 
@@ -745,9 +1005,18 @@ export class PromptService {
       throw new PromptException(PromptErrorStatus.NOT_FOUND_FILE);
     }
 
-    const isAdministrator = authentication.role === UserRole.TOTAL_ADMIN
-      || authentication.role === UserRole.DEPART_ADMIN;
-    if (!isAdministrator && promptFile.memberId !== String(authentication.userId)) {
+    if (authentication.role === UserRole.DEPART_ADMIN) {
+      const canDownload = await this.canDepartmentAdminDownloadMemberFile(
+        authentication.userId,
+        promptFile.memberId,
+      );
+      if (!canDownload) {
+        throw new PromptException(PromptErrorStatus.FORBIDDEN_FILE_DOWNLOAD);
+      }
+    } else if (
+      authentication.role !== UserRole.TOTAL_ADMIN
+      && promptFile.memberId !== String(authentication.userId)
+    ) {
       throw new PromptException(PromptErrorStatus.FORBIDDEN_FILE_DOWNLOAD);
     }
 
@@ -782,6 +1051,36 @@ export class PromptService {
     }
   }
 
+  private toRatioPercent(numerator: number, denominator: number): number {
+    if (denominator === 0) {
+      return 0;
+    }
+    return Math.round(((numerator / denominator) * 100) * 10) / 10;
+  }
+
+  private toMemberLimitTotals(
+    memberLimits: readonly Readonly<Pick<MemberLimitDAO, 'limit' | 'usage'>>[],
+  ): { limit: number; usage: number } {
+    let totalLimit = 0n;
+    let totalUsage = 0n;
+    let hasUnlimitedLimit = false;
+
+    for (const memberLimit of memberLimits) {
+      const limit = BigInt(memberLimit.limit);
+      totalUsage += BigInt(Math.round(Number(memberLimit.usage) * 1_000_000));
+      if (limit === 0n) {
+        hasUnlimitedLimit = true;
+      } else {
+        totalLimit += limit;
+      }
+    }
+
+    return {
+      limit: hasUnlimitedLimit ? 0 : Number(totalLimit),
+      usage: Number(totalUsage) / 1_000_000,
+    };
+  }
+
   private async resolveDepartmentId(memberId: number): Promise<string> {
     if (!Number.isSafeInteger(memberId) || memberId <= 0) {
       this.throwForbiddenModel();
@@ -799,6 +1098,143 @@ export class PromptService {
     return membership.departmentId;
   }
 
+  /** 부서의 Local LLM 사용 허용값은 LPL로 나가는 모든 실행 경로의 전제 조건입니다. */
+  private async isDepartmentLocalLlmEnabled(
+    departmentId: string,
+  ): Promise<boolean> {
+    const department = await this.dataSource.getRepository(DepartmentDAO).findOne({
+      select: { departmentId: true, activeLocalLLM: true },
+      where: { departmentId },
+    });
+    if (department === null) {
+      this.throwForbiddenModel();
+    }
+
+    // 마이그레이션 전 단위 테스트/레거시 행은 undefined일 수 있으나 실제 DB의
+    // 기본값은 true입니다. 명시적으로 false인 경우에만 LPL 실행을 차단합니다.
+    return department.activeLocalLLM !== false;
+  }
+
+  private async assertDepartmentLocalLlmOutboundAllowed(
+    departmentId: string,
+  ): Promise<void> {
+    if (!await this.isDepartmentLocalLlmEnabled(departmentId)) {
+      this.throwForbiddenModel();
+    }
+  }
+
+  /**
+   * LPL의 enabled 상태를 모델 선택 시점에도 확인합니다. DB active_llm만 남아
+   * 있고 LPL 배포가 꺼진 상태라면 클라이언트가 수동으로 local-* 값을 보내도
+   * 사용할 수 없습니다.
+   */
+  private async assertEnabledLocalLlmDeployment(modelName: string): Promise<void> {
+    const enabledDeploymentIds = await this.getEnabledLocalLlmDeploymentIds();
+    if (!enabledDeploymentIds.has(modelName.trim().toLowerCase())) {
+      this.throwForbiddenModel();
+    }
+  }
+
+  /** 사용자 모델 목록과 local-* 접근 검증 모두 LPL Registry 상태를 기준으로 합니다. */
+  private async getEnabledLocalLlmDeploymentIds(): Promise<ReadonlySet<string>> {
+    try {
+      const deployments = await this.nerClient.getLlmDeployments();
+      return new Set(
+        deployments
+          .filter(({ enabled, deploymentId }) => (
+            enabled && isLocalLlmModelName(deploymentId)
+          ))
+          .map(({ deploymentId }) => deploymentId.trim().toLowerCase()),
+      );
+    } catch (error: unknown) {
+      if (error instanceof NerRequestException) {
+        throw new PromptException(
+          PromptErrorStatus.LLM_DEPLOYMENT_LIST_UNAVAILABLE,
+        );
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * mustFiltering=true인 부서는 탐지 상세가 하나라도 남아 있으면 외부 Provider로
+   * 전송할 수 없습니다. false이면 탐지 여부와 무관하게 외부 전송을 허용합니다.
+   */
+  private async assertExternalLlmOutboundAllowed(
+    departmentId: string,
+    ticket: string,
+  ): Promise<void> {
+    const department = await this.dataSource.getRepository(DepartmentDAO).findOne({
+      select: { departmentId: true, mustFiltering: true },
+      where: { departmentId },
+    });
+    // 소속은 확인됐지만 부서가 삭제·변경된 경합 상태라면 외부 전송을 허용하지
+    // 않습니다. 보안 설정을 읽지 못한 경우의 기본값은 차단입니다.
+    if (department === null) {
+      this.throwForbiddenModel();
+    }
+    if (!department.mustFiltering) {
+      return;
+    }
+
+    const detection = await this.dataSource.getRepository(MaskingDetailDAO).findOne({
+      select: { maskingDetailId: true },
+      where: { maskingReportId: ticket },
+    });
+    if (detection !== null) {
+      throw new PromptException(
+        PromptErrorStatus.FORBIDDEN_EXTERNAL_LLM_WITH_DETECTIONS,
+      );
+    }
+  }
+
+  /**
+   * 부서 관리자는 자기 부서의 일반 사용자(USER) 파일만 받을 수 있습니다.
+   * 부서 관리자 본인·다른 부서 사용자·다른 부서 관리자의 파일은 모두 제외합니다.
+   */
+  private async canDepartmentAdminDownloadMemberFile(
+    departmentAdminId: number,
+    targetMemberId: string,
+  ): Promise<boolean> {
+    const [administratorMembership, targetMembership] = await Promise.all([
+      this.memberDepartmentRepository.findOne({
+        select: { departmentId: true },
+        where: { memberId: String(departmentAdminId) },
+      }),
+      this.memberDepartmentRepository.findOne({
+        select: {
+          departmentId: true,
+          member: { authorize: true },
+        },
+        relations: { member: true },
+        where: { memberId: targetMemberId },
+      }),
+    ]);
+
+    return administratorMembership !== null
+      && targetMembership !== null
+      && targetMembership.member.authorize === UserRole.USER
+      && administratorMembership.departmentId === targetMembership.departmentId;
+  }
+
+  /**
+   * 현재 로그는 model_name에 local-* 값을 저장하고, 이전 로그는 model_type에만
+   * 저장했을 수 있으므로 두 컬럼을 읽어 호환합니다.
+   */
+  private resolveLocalPromptModelName(
+    promptLog: Pick<PromptLogDAO, 'modelName' | 'modelType'>,
+  ): string | null {
+    const modelName = promptLog.modelName?.trim();
+    if (typeof modelName === 'string' && isLocalLlmModelName(modelName)) {
+      return modelName;
+    }
+
+    const modelType = promptLog.modelType?.trim();
+    return typeof modelType === 'string' && isLocalLlmModelName(modelType)
+      ? modelType
+      : null;
+  }
+
   private async resolveAccessiblePromptModel(
     departmentId: string,
     model: string,
@@ -813,6 +1249,12 @@ export class PromptService {
       });
       if (localLlm === null) {
         this.throwForbiddenModel();
+      }
+      // 부서에서 Local LLM 사용을 꺼도 정규식·파일 보관 분석 자체는 완료할 수
+      // 있습니다. 이 경우에는 LPL 상태를 조회하거나 호출하지 않고, 실제 LLM
+      // 전송 시점에만 아래의 사용 허용 검증으로 차단합니다.
+      if (await this.isDepartmentLocalLlmEnabled(departmentId)) {
+        await this.assertEnabledLocalLlmDeployment(model);
       }
       return { modelType: LOCAL_LLM_MODEL, modelName: model };
     }
@@ -985,6 +1427,7 @@ export class PromptService {
         // 사용자가 이미 취소한 요청 등, 완료 권한이 사라진 응답은 저장하지 않습니다.
         return;
       }
+      await this.persistMaskedPromptText(data.ticket, data.text);
       return;
     }
 
@@ -1010,6 +1453,7 @@ export class PromptService {
       // 사용자가 이미 취소한 요청 등, 완료 권한이 사라진 응답은 저장하지 않습니다.
       return;
     }
+    await this.persistMaskedPromptText(data.ticket, data.text);
   }
 
   /** 선택한 로컬 모델과 LPL Deployment를 연결할 수 없으면 기존 기본 배포를 사용합니다. */
@@ -1039,16 +1483,19 @@ export class PromptService {
       end: detection.end,
     }));
 
-    return detections.map((detection) => {
+    return detections.flatMap((detection) => {
       const maskingContent = this.toMaskingContentFromNerType(detection.type);
       const policy = maskingContent === null
         ? undefined
         : policyByContent.get(maskingContent);
-      if (policy === undefined) {
-        throw new Error(`활성 부서 정책에 매핑할 수 없는 NER 탐지 유형입니다: ${detection.type}`);
-      }
+      // LPL은 탐지 위치만 제시하고 maskingText를 생략할 수 있습니다. 이 경우는
+      // 마스킹할 요소가 없는 것으로 취급해 저장하지 않습니다. 현재 부서 정책에
+      // 없는 유형도 Gateway가 임의로 기록하지 않고 건너뜁니다.
       if (detection.maskingText === undefined) {
-        throw new Error('NER 탐지 응답에 maskingText가 없습니다.');
+        return [];
+      }
+      if (policy === undefined) {
+        return [];
       }
       if (
         detection.text.length > MAX_STORED_DETECTION_LENGTH
@@ -1066,12 +1513,12 @@ export class PromptService {
       }
       occupiedRanges.push({ start: detection.start, end: detection.end });
 
-      return {
+      return [{
         originalText: detection.text,
         startIdx: detection.start,
         maskingText: detection.maskingText,
         departmentPolicyId: policy.departmentPolicyId,
-      };
+      }];
     });
   }
 
@@ -1159,6 +1606,42 @@ export class PromptService {
           maskingContent: MASKING_CONTENT.CARD,
           priority: 80,
           validate: (value) => this.isCardNumberCandidate(value),
+        }));
+      }
+    }
+
+    if (enabledContents.has(MASKING_CONTENT.ACCOUNT)) {
+      candidates.push(...this.findDetectionCandidates(
+        text,
+        ACCOUNT_NUMBER_PATTERN,
+        {
+          maskingContent: MASKING_CONTENT.ACCOUNT,
+          // 전화번호·카드번호와 겹칠 때는 더 구체적인 기존 규칙을 우선합니다.
+          priority: 50,
+          validate: (value) => this.isAccountNumberCandidate(value),
+        },
+      ));
+      candidates.push(...this.findDetectionCandidates(
+        text,
+        CONTEXTUAL_ACCOUNT_NUMBER_PATTERN,
+        {
+          maskingContent: MASKING_CONTENT.ACCOUNT,
+          // 계좌 문맥이 명확하면 카드번호처럼 보이는 숫자열보다 우선합니다.
+          priority: 85,
+          captureGroup: 1,
+          validate: (value) => this.isAccountNumberCandidate(value),
+        },
+      ));
+    }
+
+    if (enabledContents.has(MASKING_CONTENT.ADDRESS)) {
+      for (const pattern of [
+        KOREAN_ROAD_ADDRESS_PATTERN,
+        KOREAN_JIBUN_ADDRESS_PATTERN,
+      ]) {
+        candidates.push(...this.findDetectionCandidates(text, pattern, {
+          maskingContent: MASKING_CONTENT.ADDRESS,
+          priority: 65,
         }));
       }
     }
@@ -1272,6 +1755,25 @@ export class PromptService {
     return /^\d{13,19}$/.test(digits) && !/^(\d)\1+$/.test(digits);
   }
 
+  private isAccountNumberCandidate(value: string): boolean {
+    const digits = value.replace(/[ -]/g, '');
+
+    return /^\d{10,14}$/.test(digits)
+      && !/^(\d)\1+$/.test(digits)
+      && !this.isPhoneNumberCandidate(digits)
+      && !this.isResidentRegistrationNumberCandidate(value);
+  }
+
+  private isPhoneNumberCandidate(digits: string): boolean {
+    return /^01[016789]\d{7,8}$/.test(digits)
+      || /^02\d{7,8}$/.test(digits)
+      || /^0(?:3[1-3]|4[1-4]|5[1-5]|6[1-4]|70|80)\d{7,8}$/.test(digits);
+  }
+
+  private isResidentRegistrationNumberCandidate(value: string): boolean {
+    return /^\d{6}[ -]?[1-4]\d{6}$/.test(value);
+  }
+
   private isValidEmail(value: string): boolean {
     if (value.length > 254) {
       return false;
@@ -1360,6 +1862,10 @@ export class PromptService {
         return '주민등록번호';
       case MASKING_CONTENT.CARD:
         return '카드번호';
+      case MASKING_CONTENT.ACCOUNT:
+        return '계좌번호';
+      case MASKING_CONTENT.ADDRESS:
+        return '주소';
       case MASKING_CONTENT.EMAIL:
         return '이메일';
       case MASKING_CONTENT.API_KEY:

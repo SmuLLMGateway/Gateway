@@ -44,7 +44,9 @@ export namespace PromptReqDTO {
         @ApiProperty({
             type: String,
             example: '840c66ce-0b5d-4663-bc63-b4c4666cd0f5',
-            description: '채팅방 ID. 새 채팅방이면 요청자가 생성한 UUID를 전달',
+            nullable: true,
+            required: false,
+            description: '기존 채팅방 ID. 생략하거나 null이면 서버가 새 UUID 채팅방을 생성하고, 값이 있으면 요청자 소유의 기존 채팅방 UUID만 허용',
             format: 'uuid'
         })
         chatRoomId!: string | null;

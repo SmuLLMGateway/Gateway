@@ -68,6 +68,13 @@ const EXPECTED_OPERATIONS: readonly ExpectedOperation[] = [
     tag: '인증',
   },
   {
+    method: 'patch',
+    path: '/auth/v1/development/password',
+    summary: '개발용 사용자 비밀번호 수정',
+    operationId: 'AuthController_updateDevelopmentUserPassword',
+    tag: '인증',
+  },
+  {
     method: 'post',
     path: '/api/v1/analyze',
     summary: '마스킹 요소 탐지 요청',
@@ -135,6 +142,13 @@ const EXPECTED_OPERATIONS: readonly ExpectedOperation[] = [
     path: '/api/v1/chat-rooms/{chatRoomId}/prompts',
     summary: '프롬프트 조회',
     operationId: 'PromptController_getPromptList',
+    tag: '프롬프트',
+  },
+  {
+    method: 'get',
+    path: '/api/v1/prompts/{promptId}',
+    summary: '프롬프트 상세 조회',
+    operationId: 'PromptController_getPromptDetail',
     tag: '프롬프트',
   },
   {
@@ -223,8 +237,8 @@ const EXPECTED_OPERATIONS: readonly ExpectedOperation[] = [
   },
   {
     method: 'get',
-    path: '/admin/v1/departments/me/api-key',
-    summary: '부서 API 키 조회',
+    path: '/admin/v1/departments/{departmentId}/api-key',
+    summary: '특정 부서 API 키 조회',
     operationId: 'AdminController_getDepartmentApiKey',
     tag: '관리자',
   },
@@ -292,13 +306,6 @@ const EXPECTED_OPERATIONS: readonly ExpectedOperation[] = [
     tag: '관리자',
   },
   {
-    method: 'patch',
-    path: '/admin/v1/users/{userId}',
-    summary: '사용자 정보 수정',
-    operationId: 'AdminController_updateUserInformation',
-    tag: '관리자',
-  },
-  {
     method: 'get',
     path: '/admin/v1/departments',
     summary: '부서 목록 조회',
@@ -329,7 +336,7 @@ const EXPECTED_OPERATIONS: readonly ExpectedOperation[] = [
   {
     method: 'get',
     path: '/admin/v1/logs-summary',
-    summary: '전체 채팅 기록 요약 조회',
+    summary: '채팅 기록 요약 조회',
     operationId: 'AdminController_getAllChatLogSummary',
     tag: '관리자',
   },
@@ -403,11 +410,17 @@ const EXPECTED_OPERATIONS: readonly ExpectedOperation[] = [
     operationId: 'AdminController_getOperationalStatus',
     tag: '관리자',
   },
+  {
+    method: 'get',
+    path: '/admin/v1/dashboard/trends',
+    summary: '운영 추이 조회',
+    operationId: 'AdminController_getOperationalTrends',
+    tag: '관리자',
+  },
 ] as const;
 
 const IN_PROGRESS_OPERATION_IDS: ReadonlySet<string> = new Set([
   'PromptController_requestMaskingElementDetection',
-  'AdminController_updateUserInformation',
   'AdminController_createUsersBatch',
 ]);
 
@@ -482,7 +495,7 @@ describe('Swagger와 Notion API 명세 정합성', () => {
       EXPECTED_OPERATIONS.map(({ operationId }) => operationId),
     );
 
-    expect(IN_PROGRESS_OPERATION_IDS.size).toBe(3);
+    expect(IN_PROGRESS_OPERATION_IDS.size).toBe(2);
     for (const operationId of IN_PROGRESS_OPERATION_IDS) {
       expect(knownOperationIds.has(operationId)).toBe(true);
     }
@@ -503,6 +516,22 @@ describe('Swagger와 Notion API 명세 정합성', () => {
       in: 'query',
       required: false,
     });
+
+    for (const path of [
+      '/admin/v1/prompts/{promptId}',
+      '/api/v1/prompts/{promptId}',
+    ]) {
+      const promptDetail = document.paths[path]?.get;
+      const promptId = (promptDetail?.parameters ?? []).find(
+        (parameter) => !('$ref' in parameter) && parameter.name === 'promptId',
+      );
+      expect(promptId).toMatchObject({
+        name: 'promptId',
+        in: 'path',
+        required: true,
+        schema: { type: 'number' },
+      });
+    }
 
     const messageHistory = document.paths['/api/v1/messages']?.get;
     const recentQuery = (messageHistory?.parameters ?? []).find(
@@ -639,6 +668,7 @@ describe('Swagger와 Notion API 명세 정합성', () => {
       'departLimitPercent',
       'departLimitUsd',
       'departUseUsd',
+      'activeLocalLLM',
     ]);
     expect(departmentItem.required).toEqual([
       'departmentId',
@@ -651,12 +681,13 @@ describe('Swagger와 Notion API 명세 정합성', () => {
       'departLimitPercent',
       'departLimitUsd',
       'departUseUsd',
+      'activeLocalLLM',
     ]);
     expect(departmentItem.properties?.policyType).toMatchObject({
       enum: ['표준', '커스텀'],
     });
     expect(departmentItem.properties?.outbound).toMatchObject({
-      enum: ['허용', '불가'],
+      enum: ['허용', '조건부'],
     });
     expect(departmentItem.properties?.departLimitUsd).toMatchObject({
       type: 'number',
@@ -683,6 +714,7 @@ describe('Swagger와 Notion API 명세 정합성', () => {
       'remainUsd',
       'llmModel',
       'mustFiltering',
+      'activeLocalLLM',
       'policies',
     ]);
     expect(departmentDetail.properties?.departmentAdminName).toMatchObject({
@@ -721,6 +753,7 @@ describe('Swagger와 Notion API 명세 정합성', () => {
       'remainUsd',
       'llmModel',
       'mustFiltering',
+      'activeLocalLLM',
       'policies',
     ]);
     expect(departmentDetail.properties).not.toHaveProperty('monthlyUsagePercent');
@@ -755,6 +788,8 @@ describe('Swagger와 Notion API 명세 정합성', () => {
         required?: string[];
       };
     expect(Object.keys(promptDetail.properties ?? {})).toEqual([
+      'promptId',
+      'ticket',
       'name',
       'department',
       'email',
@@ -769,6 +804,8 @@ describe('Swagger와 Notion API 명세 정합성', () => {
       'detect',
     ]);
     expect(promptDetail.required).toEqual([
+      'promptId',
+      'ticket',
       'name',
       'department',
       'email',
@@ -781,6 +818,31 @@ describe('Swagger와 Notion API 명세 정합성', () => {
       'originalText',
       'sendText',
       'detect',
+    ]);
+
+    const promptListItem = document.components?.schemas
+      ?.PromptListItem as {
+        properties?: Record<string, { type?: string }>;
+        required?: string[];
+      };
+    expect(Object.keys(promptListItem.properties ?? {})).toEqual([
+      'promptId',
+      'ticket',
+      'request',
+      'sendText',
+      'response',
+      'file',
+    ]);
+    expect(promptListItem.properties?.promptId).toMatchObject({
+      type: 'number',
+    });
+    expect(promptListItem.required).toEqual([
+      'promptId',
+      'ticket',
+      'request',
+      'sendText',
+      'response',
+      'file',
     ]);
 
     const departmentListResponse = document.components?.schemas
@@ -886,6 +948,7 @@ describe('Swagger와 Notion API 명세 정합성', () => {
       };
     expect(Object.keys(userPromptListItem.properties ?? {})).toEqual([
       'promptId',
+      'ticket',
       'promptSummary',
       'promptedAt',
       'model',
@@ -893,11 +956,15 @@ describe('Swagger와 Notion API 명세 정합성', () => {
     ]);
     expect(userPromptListItem.required).toEqual([
       'promptId',
+      'ticket',
       'promptSummary',
       'promptedAt',
       'model',
       'usage',
     ]);
+    expect(userPromptListItem.properties?.promptId).toMatchObject({
+      type: 'number',
+    });
 
     const userInfo = document.components?.schemas?.UserInfoResponse as {
       properties?: Record<string, { type?: string }>;
@@ -968,9 +1035,7 @@ describe('Swagger와 Notion API 명세 정합성', () => {
     expect(legacyModel).toBeUndefined();
     expect(recentTicket).toMatchObject({ type: String, nullable: true });
     expect(recentTicket.required).not.toBe(false);
-    expect(chatRoomId).toMatchObject({ type: String });
-    expect(chatRoomId.nullable).toBeUndefined();
-    expect(chatRoomId.required).not.toBe(false);
+    expect(chatRoomId).toMatchObject({ type: String, nullable: true, required: false });
 
     const requestBody = document.paths['/api/v1/analyze']?.post?.requestBody as {
       content?: Record<string, {
@@ -1034,6 +1099,7 @@ describe('Swagger와 Notion API 명세 정합성', () => {
           enum?: string[];
           example?: unknown;
           maxLength?: number;
+          maximum?: number;
         }>;
         required?: string[];
       };
@@ -1055,6 +1121,10 @@ describe('Swagger와 Notion API 명세 정합성', () => {
     expect(llmRequest.properties?.deploymentId).toMatchObject({
       example: 'local-qwen3:8b',
       maxLength: 50,
+    });
+    expect(llmRequest.properties?.timeoutMs).toMatchObject({
+      example: 300000,
+      maximum: 300000,
     });
 
     const nerRequest = document.components?.schemas

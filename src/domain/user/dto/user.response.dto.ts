@@ -56,12 +56,19 @@ export namespace UserResDTO {
     @ApiSchema({ name: 'UserMessageHistoryItem' })
     export class MessageHistoryItem {
         @ApiProperty({
+            type: Number,
+            example: 101,
+            description: '프롬프트 상세 조회에 사용하는 prompt_log_id'
+        })
+        promptId!: number;
+
+        @ApiProperty({
             type: String,
             example: 'cbc9dacd-1788-4f7a-81c8-1df5d0d30cbf',
             format: 'uuid',
-            description: '마스킹 탐지 요청 티켓(prompt_log.masking_report_id)'
+            description: '마스킹 탐지 요청 티켓(masking_report_id). 상세 조회 path에는 사용하지 않습니다.'
         })
-        promptId!: string;
+        ticket!: string;
 
         @ApiProperty({ type: String, example: 'A사 계약 리스크 검토' })
         promptSummary!: string;

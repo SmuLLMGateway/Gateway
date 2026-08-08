@@ -11,6 +11,7 @@ import { ActiveLlmDAO } from '../../src/domain/admin/dao/active-llm.dao.js';
 import { LlmDetailModelDAO } from '../../src/domain/admin/dao/llm-detail-model.dao.js';
 import { MaskingClass, PolicyDAO } from '../../src/domain/admin/dao/policy.dao.js';
 import { DepartmentPolicyDAO } from '../../src/domain/admin/dao/department-policy.dao.js';
+import { PresetPolicyDAO } from '../../src/domain/admin/dao/preset-policy.dao.js';
 import { AdminLogDAO } from '../../src/domain/admin/dao/admin-log.dao.js';
 import { HealthHistoryDAO } from '../../src/domain/admin/dao/health-history.dao.js';
 import { PromptLogDAO } from '../../src/domain/prompt/dao/prompt-log.dao.js';
@@ -65,6 +66,7 @@ describe('로그인/회원 생성 HTTP API', () => {
     usage: '0',
     recentUsePercent: '0',
     mustFiltering: true,
+    activeLocalLLM: true,
   };
   const loginDto = {
     email: 'member@example.com',
@@ -73,6 +75,10 @@ describe('로그인/회원 생성 HTTP API', () => {
   const updatePasswordDto = {
     oldPassword: 'raw-password',
     newPassword: 'new-password',
+  };
+  const developmentUpdatePasswordDto = {
+    email: 'member@example.com',
+    password: 'development-new-password',
   };
   const createUserDto = {
     name: '신규회원',
@@ -100,6 +106,7 @@ describe('로그인/회원 생성 HTTP API', () => {
     innerJoin: jest.fn(),
     leftJoin: jest.fn(),
     andWhere: jest.fn(),
+    setParameter: jest.fn(),
     clone: jest.fn(),
     orderBy: jest.fn(),
     addOrderBy: jest.fn(),
@@ -151,6 +158,7 @@ describe('로그인/회원 생성 HTTP API', () => {
     getRawMany: jest.fn(),
   };
   const memberRepository = {
+    find: jest.fn(),
     findOne: jest.fn(),
     findOneBy: jest.fn(),
     save: jest.fn(),
@@ -164,6 +172,7 @@ describe('로그인/회원 생성 HTTP API', () => {
   };
   const memberLimitRepository = {
     find: jest.fn(),
+    upsert: jest.fn(),
     update: jest.fn(),
   };
   const activeApiKeyRepository = {
@@ -173,7 +182,11 @@ describe('로그인/회원 생성 HTTP API', () => {
     save: jest.fn(),
   };
   const activeLlmRepository = {
+    find: jest.fn(),
     upsert: jest.fn(),
+  };
+  const presetPolicyRepository = {
+    find: jest.fn(),
   };
   const llmDetailModelRepository = {
     find: jest.fn(),
@@ -206,7 +219,7 @@ describe('로그인/회원 생성 HTTP API', () => {
     save: jest.fn(),
   };
   const objectStorage = { isHealthy: jest.fn() };
-  const nerClient = { getEnabledLlmModelNames: jest.fn() };
+  const nerClient = { getEnabledLocalLlmDeploymentIds: jest.fn() };
   const departmentPolicyRepository = {
     createQueryBuilder: jest.fn(),
     create: jest.fn(),
@@ -357,6 +370,9 @@ describe('로그인/회원 생성 HTTP API', () => {
     authQueryBuilder.select.mockReturnValue(authQueryBuilder);
     authQueryBuilder.addSelect.mockReturnValue(authQueryBuilder);
     authQueryBuilder.where.mockReturnValue(authQueryBuilder);
+    authQueryBuilder.leftJoin.mockReturnValue(authQueryBuilder);
+    authQueryBuilder.andWhere.mockReturnValue(authQueryBuilder);
+    authQueryBuilder.setParameter.mockReturnValue(authQueryBuilder);
     authQueryBuilder.getOne.mockResolvedValue(createMember());
     authMemberRepository.createQueryBuilder.mockReturnValue(authQueryBuilder);
     authMemberRepository.findOne.mockImplementation(
@@ -416,6 +432,10 @@ describe('로그인/회원 생성 HTTP API', () => {
     );
     memberRepository.findOne.mockResolvedValue(null);
     memberRepository.findOneBy.mockResolvedValue(totalAdmin);
+    memberRepository.find.mockResolvedValue([
+      { memberId: '3' },
+      { memberId: '4' },
+    ]);
     memberRepository.save.mockImplementation(async (member: MemberDAO) => ({
       ...member,
       memberId: '20',
@@ -435,6 +455,7 @@ describe('로그인/회원 생성 HTTP API', () => {
       { memberId: '4' },
     ]);
     memberLimitRepository.update.mockResolvedValue({ affected: 2 });
+    memberLimitRepository.upsert.mockResolvedValue(undefined);
     memberDepartmentRepository.save.mockImplementation(
       async (relation: MemberDepartmentDAO) => relation,
     );
@@ -477,6 +498,7 @@ describe('로그인/회원 생성 HTTP API', () => {
         departmentName: string;
         departmentCode: string;
         mustFiltering: boolean;
+        activeLocalLLM: boolean;
         limit: string;
       }): DepartmentDAO => ({
         departmentId: '',
@@ -486,6 +508,7 @@ describe('로그인/회원 생성 HTTP API', () => {
         usage: '0',
         recentUsePercent: '0',
         mustFiltering: data.mustFiltering,
+        activeLocalLLM: data.activeLocalLLM,
       }),
     );
     adminMapper.toActiveApiKeyDAO.mockImplementation(
@@ -511,11 +534,24 @@ describe('로그인/회원 생성 HTTP API', () => {
       },
     );
     activeLlmRepository.upsert.mockResolvedValue(undefined);
+    activeLlmRepository.find.mockResolvedValue([]);
+    presetPolicyRepository.find.mockResolvedValue(
+      DEFAULT_POLICIES.map((policy, index) => ({
+        presetPolicyId: String(index + 1),
+        policy: {
+          policyId: String(index + 1),
+          maskingContent: policy.maskingContent,
+          maskingClass: policy.maskingClass === 'SENSITIVE'
+            ? MaskingClass.SENSITIVE
+            : MaskingClass.PRIVATE,
+        },
+      })),
+    );
     llmDetailModelRepository.find.mockResolvedValue([
       { llmDetailModelId: '301', llmName: 'gpt-4.1' },
       { llmDetailModelId: '302', llmName: 'GPT-4o' },
     ]);
-    nerClient.getEnabledLlmModelNames.mockResolvedValue([]);
+    nerClient.getEnabledLocalLlmDeploymentIds.mockResolvedValue([]);
     apiKeyValidationClient.validate.mockResolvedValue(
       LlmApiKeyValidationResult.VALID,
     );
@@ -570,6 +606,7 @@ describe('로그인/회원 생성 HTTP API', () => {
       if (entity === ActiveApiKeyDAO) return activeApiKeyRepository;
       if (entity === ActiveLlmDAO) return activeLlmRepository;
       if (entity === LlmDetailModelDAO) return llmDetailModelRepository;
+      if (entity === PresetPolicyDAO) return presetPolicyRepository;
       if (entity === PolicyDAO) return policyRepository;
       if (entity === DepartmentPolicyDAO) return departmentPolicyRepository;
       if (entity === AdminLogDAO) return adminLogRepository;
@@ -829,6 +866,81 @@ describe('로그인/회원 생성 HTTP API', () => {
     });
   });
 
+  describe('PATCH /auth/v1/development/password', () => {
+    it('인증 헤더 없이 이메일로 사용자를 찾아 비밀번호를 변경한다', async () => {
+      authMemberRepository.findOne.mockResolvedValue(
+        createMember({
+          memberId: '3',
+          email: developmentUpdatePasswordDto.email,
+          disabledAt: new Date('2026-08-01T00:00:00.000Z'),
+        }),
+      );
+
+      const response = await request(app.getHttpServer())
+        .patch('/auth/v1/development/password')
+        .send(developmentUpdatePasswordDto)
+        .expect(200);
+
+      expect(tokenService.verifyAccessToken).not.toHaveBeenCalled();
+      expect(authMemberRepository.findOne).toHaveBeenCalledWith({
+        select: { memberId: true },
+        where: { email: developmentUpdatePasswordDto.email },
+      });
+      expect(passwordEncoder.matches).not.toHaveBeenCalled();
+      expect(passwordEncoder.encode).toHaveBeenCalledWith(
+        developmentUpdatePasswordDto.password,
+      );
+      expect(authMemberRepository.update).toHaveBeenCalledWith(
+        { memberId: '3' },
+        { password: '$2b$12$encoded-password' },
+      );
+      expect(response.body).toEqual({
+        isSuccess: true,
+        code: 'AUTH200_4',
+        message: '성공적으로 해당 사용자 비밀번호를 수정했습니다.',
+        result: {
+          userId: 3,
+          updatedAt: expect.any(String),
+        },
+      });
+    });
+
+    it('대상 이메일의 사용자가 없으면 USER_NOT_FOUND를 반환한다', async () => {
+      authMemberRepository.findOne.mockResolvedValue(null);
+
+      const response = await request(app.getHttpServer())
+        .patch('/auth/v1/development/password')
+        .send(developmentUpdatePasswordDto)
+        .expect(404);
+
+      expect(tokenService.verifyAccessToken).not.toHaveBeenCalled();
+      expect(passwordEncoder.encode).not.toHaveBeenCalled();
+      expect(authMemberRepository.update).not.toHaveBeenCalled();
+      expect(response.body).toEqual({
+        isSuccess: false,
+        code: 'AUTH404_1',
+        message: '해당 사용자를 찾을 수 없습니다.',
+      });
+    });
+
+    it('email 또는 password가 누락되면 PASSWORD_ERROR를 반환한다', async () => {
+      const response = await request(app.getHttpServer())
+        .patch('/auth/v1/development/password')
+        .send({ email: developmentUpdatePasswordDto.email })
+        .expect(400);
+
+      expect(tokenService.verifyAccessToken).not.toHaveBeenCalled();
+      expect(authMemberRepository.findOne).not.toHaveBeenCalled();
+      expect(passwordEncoder.encode).not.toHaveBeenCalled();
+      expect(authMemberRepository.update).not.toHaveBeenCalled();
+      expect(response.body).toEqual({
+        isSuccess: false,
+        code: 'AUTH400_1',
+        message: '이메일 혹은 비밀번호가 틀렸습니다.',
+      });
+    });
+  });
+
   describe('POST /admin/v1/users', () => {
     it('TOTAL_ADMIN은 부서 미지정 회원을 생성하고 생성 결과를 반환한다', async () => {
       const response = await request(app.getHttpServer())
@@ -1055,7 +1167,7 @@ describe('로그인/회원 생성 HTTP API', () => {
     it('TOTAL_ADMIN은 부서 관리자와 함께 부서를 생성한다', async () => {
       memberRepository.findOne.mockResolvedValue(departmentAdmin);
       memberDepartmentRepository.findOneBy.mockResolvedValue(null);
-      nerClient.getEnabledLlmModelNames.mockResolvedValue(['qwen3:8b']);
+      nerClient.getEnabledLocalLlmDeploymentIds.mockResolvedValue(['local-qwen3:8b']);
       llmDetailModelRepository.find.mockResolvedValueOnce([
         { llmDetailModelId: '303', llmName: 'local-qwen3:8b' },
       ]);
@@ -1074,6 +1186,7 @@ describe('로그인/회원 생성 HTTP API', () => {
         departmentName: createDepartmentDto.name,
         departmentCode: createDepartmentDto.code,
         mustFiltering: createDepartmentDto.mustFiltering,
+        activeLocalLLM: createDepartmentDto.activeLocalLLM,
         limit: '0',
       });
       expect(departmentRepository.save).toHaveBeenCalledWith({
@@ -1084,6 +1197,7 @@ describe('로그인/회원 생성 HTTP API', () => {
         usage: '0',
         recentUsePercent: '0',
         mustFiltering: createDepartmentDto.mustFiltering,
+        activeLocalLLM: createDepartmentDto.activeLocalLLM,
       });
       expect(memberDepartmentRepository.save).toHaveBeenCalledWith({
         memberId: departmentAdmin.memberId,
@@ -1401,6 +1515,7 @@ describe('로그인/회원 생성 HTTP API', () => {
 
         const findOptions = departmentRepository.findAndCount.mock.calls[0]?.[0] as {
           where?: {
+            departmentId?: string;
             departmentName?: {
               type: string;
               objectLiteralParameters?: Record<string, string>;
@@ -1414,6 +1529,7 @@ describe('로그인/회원 생성 HTTP API', () => {
             departmentId: true,
             departmentName: true,
             mustFiltering: true,
+            activeLocalLLM: true,
             limit: true,
             usage: true,
           },
@@ -1431,6 +1547,9 @@ describe('로그인/회원 생성 HTTP API', () => {
         expect(departmentName?.getSql('department.department_name')).toBe(
           'LOWER(department.department_name) LIKE :departmentName',
         );
+        expect(findOptions.where?.departmentId).toBe(
+          token === 'depart-token' ? department.departmentId : undefined,
+        );
         expect(response.body).toEqual({
           isSuccess: true,
           code: 'ADMIN200_17',
@@ -1441,13 +1560,14 @@ describe('로그인/회원 생성 HTTP API', () => {
                 departmentId: 12,
                 departmentName: 'Security Operations',
                 departmentUserCnt: 119,
-                canUseLLMModel: ['Local LLM', 'GPT'],
+                canUseLLMModel: ['GPT'],
                 policyType: '표준',
                 policyCnt: 16,
-                outbound: '허용',
+                outbound: '조건부',
                 departLimitPercent: 59,
                 departLimitUsd: 200000,
                 departUseUsd: 118000,
+                activeLocalLLM: true,
               },
             ],
             totalCnt: 3,
@@ -1473,7 +1593,7 @@ describe('로그인/회원 생성 HTTP API', () => {
       });
     });
 
-    it('활성 API 키가 없는 부서도 Local LLM은 사용할 수 있다', async () => {
+    it('실제 active_llm 매핑이 없는 부서는 Local LLM을 사용할 수 없다고 반환한다', async () => {
       departmentRepository.findAndCount.mockResolvedValueOnce([
         [
           {
@@ -1495,7 +1615,7 @@ describe('로그인/회원 생성 HTTP API', () => {
 
       expect(response.body.result.data[0]).toMatchObject({
         departmentId: 15,
-        canUseLLMModel: ['Local LLM'],
+        canUseLLMModel: [],
       });
     });
 
@@ -1591,9 +1711,10 @@ describe('로그인/회원 생성 HTTP API', () => {
 
   describe('GET /admin/v1/dashboard', () => {
     it('운영 현황을 사용자·프롬프트·필터 감지 단위로 집계해 반환한다', async () => {
-      authMemberRepository.count
-        .mockResolvedValueOnce(120)
-        .mockResolvedValueOnce(9);
+      authQueryBuilder.getRawOne.mockResolvedValueOnce({
+        userCnt: '120',
+        userRate: '9',
+      });
       dashboardQueryBuilder.getRawOne.mockResolvedValueOnce({
         chatCnt: '400', chatRate: '80', filterDetect: '55', filterDetectRate: '12',
         maskingToGpt: '20', maskingToClaude: '15', maskingToGemini: '10',
@@ -1654,7 +1775,7 @@ describe('로그인/회원 생성 HTTP API', () => {
         message: '성공적으로 관리자 활동 목록을 조회했습니다.',
         result: [{
           title: '정책기획팀 보안 정책을 수정했습니다.',
-          activityAt: '2026-07-26T01:02:03.000Z',
+          activityAt: '2026-07-26T10:02:03.000+09:00',
           adminName: '총괄관리자',
         }],
       });
@@ -1774,6 +1895,7 @@ describe('로그인/회원 생성 HTTP API', () => {
         message: '성공적으로 부서 상세정보를 조회했습니다.',
         result: {
           departmentName: '보안팀',
+          activeLocalLLM: true,
           departmentAdminName: '장우진',
           departmentAdminAuthorize: '부서 관리자',
           email: 'woojin@example.com',
@@ -1783,7 +1905,6 @@ describe('로그인/회원 생성 HTTP API', () => {
           limitUsd: 100,
           remainUsd: 25,
           llmModel: [
-            { modelName: 'Local LLM', hasApiKey: true },
             { modelName: 'Gemini', hasApiKey: true },
             { modelName: 'GPT', hasApiKey: true },
             { modelName: 'Claude', hasApiKey: true },
@@ -1833,6 +1954,9 @@ describe('로그인/회원 생성 HTTP API', () => {
         llmDetailModelRepository.find.mockResolvedValueOnce([
           { llmDetailModelId: '301', llmName: model },
         ]);
+        activeApiKeyRepository.find.mockResolvedValueOnce([
+          { activeApiKeyId: '71' },
+        ]);
 
         const response = await request(app.getHttpServer())
           .post('/admin/v1/departments/10/apis')
@@ -1857,6 +1981,7 @@ describe('로그인/회원 생성 HTTP API', () => {
         expect(departmentRepository.findOne).toHaveBeenCalledWith({
           select: {
             departmentId: true,
+            limit: true,
             mustFiltering: true,
             usage: true,
           },
@@ -1890,9 +2015,22 @@ describe('로그인/회원 생성 HTTP API', () => {
           select: { memberId: true },
           where: { departmentId: '10' },
         });
-        expect(memberLimitRepository.update).toHaveBeenCalledWith(
-          { memberId: expect.anything() },
-          { usage: '0' },
+        expect(memberLimitRepository.upsert).toHaveBeenCalledWith(
+          [
+            {
+              memberId: '3',
+              activeApiKeyId: '71',
+              limit: '0',
+              usage: '0',
+            },
+            {
+              memberId: '4',
+              activeApiKeyId: '71',
+              limit: '0',
+              usage: '0',
+            },
+          ],
+          ['memberId', 'activeApiKeyId'],
         );
         expect(
           JSON.stringify(activeApiKeyRepository.save.mock.calls),
@@ -2243,7 +2381,7 @@ describe('로그인/회원 생성 HTTP API', () => {
       expect(policyRepository.find).toHaveBeenCalledWith({
         where: [
           { maskingContent: 'PHONE', maskingClass: MaskingClass.PRIVATE },
-          { maskingContent: 'API_KEY', maskingClass: MaskingClass.SENSITIVE },
+          { maskingContent: 'API_KEY', maskingClass: MaskingClass.PRIVATE },
           {
             maskingContent: 'SECURITY_INFRA',
             maskingClass: MaskingClass.SENSITIVE,
@@ -2457,6 +2595,7 @@ describe('로그인/회원 생성 HTTP API', () => {
       departmentRepository.findAndCount,
       departmentRepository.save,
       departmentRepository.createQueryBuilder,
+      memberRepository.find,
       memberRepository.findOne,
       memberRepository.findOneBy,
       memberRepository.save,
@@ -2487,9 +2626,11 @@ describe('로그인/회원 생성 HTTP API', () => {
       activeApiKeyRepository.find,
       activeApiKeyRepository.findOneBy,
       activeApiKeyRepository.save,
+      memberLimitRepository.update,
+      memberLimitRepository.upsert,
       activeLlmRepository.upsert,
       llmDetailModelRepository.find,
-      nerClient.getEnabledLlmModelNames,
+      nerClient.getEnabledLocalLlmDeploymentIds,
       departmentPolicyRepository.create,
       departmentPolicyRepository.createQueryBuilder,
       departmentPolicyRepository.delete,

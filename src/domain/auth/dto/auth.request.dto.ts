@@ -44,4 +44,21 @@ export namespace AuthReqDTO {
         })
         newPassword!: string;
     }
+
+    @ApiSchema({ name: 'AuthDevelopmentUpdatePasswordRequest' })
+    export class DevelopmentUpdatePassword {
+        @ApiProperty({
+            type: String,
+            example: 'example@example.com',
+            description: '비밀번호를 변경할 사용자 계정 이메일'
+        })
+        email!: string;
+
+        @ApiProperty({
+            type: String,
+            example: 'NewPassword123!',
+            description: '변경할 새 비밀번호'
+        })
+        password!: string;
+    }
 } 

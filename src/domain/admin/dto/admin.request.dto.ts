@@ -64,7 +64,7 @@ export namespace AdminReqDTO {
         @ApiProperty({
             example: true,
             type: Boolean,
-            description: '부서 생성 시 Local LLM 연결은 자동 생성됩니다. 전달값은 형식만 검증하며 사용하지 않습니다.'
+            description: '부서의 LPL(Local NER·LLM) 호출 허용 여부. false여도 파일 저장과 정규식 탐지는 수행하지만 Local NER 탐지와 Local LLM 응답 요청은 차단됩니다.'
         })
         activeLocalLLM!: boolean;
 
@@ -145,7 +145,8 @@ export namespace AdminReqDTO {
             example: 300000,
             type: Number,
             minimum: 1,
-            description: 'LPL Provider가 로컬 LLM 호출에 사용할 제한 시간(ms). adapterType이 openai_compatible이면 필수이고 mock이면 생략합니다.'
+            maximum: 300000,
+            description: 'LPL Provider가 로컬 LLM 호출에 사용할 제한 시간(ms). 최대 300,000ms(5분)이며 adapterType이 openai_compatible이면 필수이고 mock이면 생략합니다.'
         })
         timeoutMs?: number;
 
@@ -202,6 +203,24 @@ export namespace AdminReqDTO {
             description: '조회할 LLM 서비스. 대소문자를 구분하지 않습니다.'
         })
         service!: string;
+    }
+
+    @ApiSchema({ name: 'AdminDashboardTrendsQuery' })
+    export class DashboardTrends {
+        @ApiProperty({
+            example: '30d',
+            enum: ['7d', '30d', '90d'],
+            description: '오늘을 포함해 일 단위로 집계할 기간'
+        })
+        recent!: string;
+
+        @ApiPropertyOptional({
+            example: 12,
+            type: Number,
+            minimum: 1,
+            description: '총 관리자만 지정 가능한 대상 부서 ID. 생략 시 전체 부서를 집계합니다. 부서 관리자는 자신의 부서만 조회할 수 있습니다.'
+        })
+        departmentId?: number;
     }
 
     @ApiSchema({ name: 'AdminLinkDepartmentUsersRequest' })
@@ -299,6 +318,4 @@ export namespace AdminReqDTO {
         @ApiProperty({ example: 1, description: '현재 페이지 번호' })
         pageNumber!: number;
     }
-
-    export type UpdateUser = unknown;
 }

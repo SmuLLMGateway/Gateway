@@ -47,11 +47,6 @@ export const AdminSuccessStatus = {
         code: 'ADMIN200_10',
         message: '성공적으로 해당 사용자를 복구했습니다.'
     },
-    UPDATE_USER: {
-        httpStatus: HttpStatus.OK,
-        code: 'ADMIN200_11',
-        message: '성공적으로 해당 사용자를 수정했습니다.'
-    },
     LOGS_SUMMARY: {
         httpStatus: HttpStatus.OK,
         code: 'ADMIN200_12',
@@ -116,6 +111,11 @@ export const AdminSuccessStatus = {
         httpStatus: HttpStatus.OK,
         code: 'ADMIN200_24',
         message: '성공적으로 모델 상태를 조회했습니다.'
+    },
+    DASHBOARD_TRENDS: {
+        httpStatus: HttpStatus.OK,
+        code: 'ADMIN200_26',
+        message: '성공적으로 운영 추이 정보를 조회했습니다.'
     },
     LOCAL_LLM_LIST: {
         httpStatus: HttpStatus.OK,

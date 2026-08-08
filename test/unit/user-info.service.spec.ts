@@ -20,7 +20,12 @@ describe('UserService.getUserInfo', () => {
     andWhere: jest.fn(),
     select: jest.fn(),
     addSelect: jest.fn(),
+    orderBy: jest.fn(),
+    addOrderBy: jest.fn(),
+    take: jest.fn(),
+    skip: jest.fn(),
     getRawOne: jest.fn(),
+    getManyAndCount: jest.fn(),
   };
   const service = new UserService(
     memberRepository as never,
@@ -59,13 +64,17 @@ describe('UserService.getUserInfo', () => {
     summaryQueryBuilder.andWhere.mockReturnValue(summaryQueryBuilder);
     summaryQueryBuilder.select.mockReturnValue(summaryQueryBuilder);
     summaryQueryBuilder.addSelect.mockReturnValue(summaryQueryBuilder);
+    summaryQueryBuilder.orderBy.mockReturnValue(summaryQueryBuilder);
+    summaryQueryBuilder.addOrderBy.mockReturnValue(summaryQueryBuilder);
+    summaryQueryBuilder.take.mockReturnValue(summaryQueryBuilder);
+    summaryQueryBuilder.skip.mockReturnValue(summaryQueryBuilder);
     summaryQueryBuilder.getRawOne.mockResolvedValue({
       totalChatCnt: '10',
       filter: '3',
       masking: '2',
       local: '4',
     });
-    promptLogRepository.findAndCount.mockResolvedValue([[
+    summaryQueryBuilder.getManyAndCount.mockResolvedValue([[
       {
         promptLogId: '101',
         promptSummary: '계약서 검토 요청',
@@ -186,14 +195,16 @@ describe('UserService.getUserInfo', () => {
     })).resolves.toEqual({
       data: [
         {
-          promptId: 'report-1',
+          promptId: 101,
+          ticket: 'report-1',
           promptSummary: '계약서 검토 요청',
           promptedAt: '2026-07-27T10:00:00.000+09:00',
           llmModel: 'GPT',
           detectCnt: 2,
         },
         {
-          promptId: 'report-2',
+          promptId: 102,
+          ticket: 'report-2',
           promptSummary: '로컬 요약 요청',
           promptedAt: '2026-07-26T10:00:00.000+09:00',
           llmModel: 'Local LLM',
@@ -204,15 +215,13 @@ describe('UserService.getUserInfo', () => {
       dataCnt: 2,
       pageNumber: 1,
     });
-    expect(promptLogRepository.findAndCount).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: expect.objectContaining({
-          maskingReport: { memberId: '42' },
-        }),
-        order: { communicatedAt: 'DESC', promptLogId: 'DESC' },
-        take: 10,
-        skip: 0,
-      }),
+    expect(summaryQueryBuilder.where).toHaveBeenCalledWith(
+      'maskingReport.memberId = :memberId',
+      { memberId: '42' },
+    );
+    expect(summaryQueryBuilder.orderBy).toHaveBeenCalledWith(
+      'promptLog.communicatedAt',
+      'DESC',
     );
   });
 
@@ -231,6 +240,6 @@ describe('UserService.getUserInfo', () => {
       baseStatus: UserErrorStatus.INVALID_MESSAGE_LIST,
     });
 
-    expect(promptLogRepository.findAndCount).not.toHaveBeenCalled();
+    expect(summaryQueryBuilder.getManyAndCount).not.toHaveBeenCalled();
   });
 });

@@ -7,8 +7,10 @@ import { DataSource } from 'typeorm';
 import { Readable } from 'node:stream';
 import request from 'supertest';
 import { ActiveLlmDAO } from '../../src/domain/admin/dao/active-llm.dao.js';
+import { DepartmentDAO } from '../../src/domain/admin/dao/department.dao.js';
 import { DepartmentPolicyDAO } from '../../src/domain/admin/dao/department-policy.dao.js';
 import { MaskingClass } from '../../src/domain/admin/dao/policy.dao.js';
+import { MaskingDetailDAO } from '../../src/domain/prompt/dao/masking-detail.dao.js';
 import { PromptErrorStatus } from '../../src/domain/prompt/code/prompt.status.js';
 import { PromptController } from '../../src/domain/prompt/controller/prompt.controller.js';
 import type { PromptData } from '../../src/domain/prompt/data/prompt.data.js';
@@ -186,6 +188,16 @@ describe('마스킹 요소 탐지 요청 HTTP API', () => {
       maskingContent: MASKING_CONTENT.API_KEY,
       maskingClass: MaskingClass.SENSITIVE,
     },
+    {
+      departmentPolicyId: '106',
+      maskingContent: MASKING_CONTENT.ACCOUNT,
+      maskingClass: MaskingClass.PRIVATE,
+    },
+    {
+      departmentPolicyId: '107',
+      maskingContent: MASKING_CONTENT.ADDRESS,
+      maskingClass: MaskingClass.PRIVATE,
+    },
   ];
 
   const toDepartmentPolicyEntities = (
@@ -214,6 +226,15 @@ describe('마스킹 요소 탐지 요청 HTTP API', () => {
   const departmentPolicyRepository = {
     find: jest.fn(),
   };
+  const departmentRepository = {
+    findOne: jest.fn(),
+  };
+  const maskingDetailRepository = {
+    find: jest.fn(),
+  };
+  const dataSource = {
+    getRepository: jest.fn(),
+  };
   const reportRepository = {
     create: jest.fn(),
     validateRequestTickets: jest.fn(),
@@ -226,6 +247,7 @@ describe('마스킹 요소 탐지 요청 HTTP API', () => {
     cancelRegex: jest.fn(),
     cancelNer: jest.fn(),
     cancelForMember: jest.fn(),
+    updateMaskingText: jest.fn(),
   };
   const promptFileRepository = {
     create: jest.fn(),
@@ -249,6 +271,7 @@ describe('마스킹 요소 탐지 요청 HTTP API', () => {
     getFirstNerDeploymentId: jest.fn(),
     getFirstLlmDeploymentId: jest.fn(),
     getEnabledLlmDeploymentIdByModelName: jest.fn(),
+    getLlmDeployments: jest.fn(),
     getNerDeployments: jest.fn(),
     requestAnalyze: jest.fn(),
   };
@@ -282,7 +305,7 @@ describe('마스킹 요소 탐지 요청 HTTP API', () => {
       controllers: [PromptController],
       providers: [
         PromptService,
-        { provide: DataSource, useValue: {} },
+        { provide: DataSource, useValue: dataSource },
         ParseOptionalPromptFileFieldPipe,
         ParseAnalyzeQueryPipe,
         ParsePromptListQueryPipe,
@@ -336,9 +359,23 @@ describe('마스킹 요소 탐지 요청 HTTP API', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     objectStorage.reset();
+    dataSource.getRepository.mockImplementation((entity: unknown) => {
+      if (entity === DepartmentDAO) return departmentRepository;
+      if (entity === MaskingDetailDAO) return maskingDetailRepository;
+      throw new Error('테스트에서 정의하지 않은 Repository입니다.');
+    });
+    departmentRepository.findOne.mockResolvedValue({
+      departmentId,
+      activeLocalLLM: true,
+    });
+    maskingDetailRepository.find.mockResolvedValue([]);
     nerClient.getFirstNerDeploymentId.mockResolvedValue('ner-gliner-multi');
     nerClient.getFirstLlmDeploymentId.mockResolvedValue('llm-qwen3-14b');
     nerClient.getEnabledLlmDeploymentIdByModelName.mockResolvedValue(null);
+    nerClient.getLlmDeployments.mockResolvedValue([
+      { deploymentId: 'local-qwen3:8b', enabled: true },
+      { deploymentId: 'local-Qwen2.5-7B-Instruct', enabled: true },
+    ]);
     nerClient.getNerDeployments.mockResolvedValue([]);
     nerClient.requestAnalyze.mockResolvedValue({ detections: [] });
 
@@ -367,6 +404,7 @@ describe('마스킹 요소 탐지 요청 HTTP API', () => {
     reportRepository.cancelRegex.mockResolvedValue(true);
     reportRepository.cancelNer.mockResolvedValue(true);
     reportRepository.cancelForMember.mockResolvedValue(true);
+    reportRepository.updateMaskingText.mockResolvedValue(true);
     promptFileRepository.create.mockResolvedValue({
       promptFileId: '52',
       fileOriginalName: 'report.pdf',
@@ -566,6 +604,60 @@ describe('마스킹 요소 탐지 요청 HTTP API', () => {
               },
             ],
           },
+        },
+      });
+    });
+
+    it('계좌번호와 주소 정보는 한글 상세 분류로 반환한다', async () => {
+      const accountNumber = '110-123-456789';
+      const address = '서울특별시 강남구 테헤란로 123';
+      const originText = `계좌 ${accountNumber}, 주소 ${address}`;
+      reportRepository.findAnalyzeResult.mockResolvedValueOnce({
+        status: MaskingReportStatus.DONE,
+        originalText: originText,
+        details: [
+          {
+            originalText: accountNumber,
+            startIdx: originText.indexOf(accountNumber),
+            endIdx: originText.indexOf(accountNumber) + accountNumber.length,
+            fileUrl: null,
+            maskingContent: MASKING_CONTENT.ACCOUNT,
+            maskingClass: MaskingClass.PRIVATE,
+          },
+          {
+            originalText: address,
+            startIdx: originText.indexOf(address),
+            endIdx: originText.indexOf(address) + address.length,
+            fileUrl: null,
+            maskingContent: MASKING_CONTENT.ADDRESS,
+            maskingClass: MaskingClass.PRIVATE,
+          },
+        ],
+      } satisfies PromptData.AnalyzeReport);
+
+      const response = await getAnalyze().expect(200);
+
+      expect(response.body.result).toEqual({
+        originText,
+        recentDetectCnt: 2,
+        masking: {
+          file: null,
+          text: [
+            {
+              targetText: accountNumber,
+              startIdx: originText.indexOf(accountNumber),
+              endIdx: originText.indexOf(accountNumber) + accountNumber.length - 1,
+              maskingCategory: '개인정보',
+              detailCategory: '계좌번호',
+            },
+            {
+              targetText: address,
+              startIdx: originText.indexOf(address),
+              endIdx: originText.indexOf(address) + address.length - 1,
+              maskingCategory: '개인정보',
+              detailCategory: '주소',
+            },
+          ],
         },
       });
     });
@@ -868,14 +960,18 @@ describe('마스킹 요소 탐지 요청 HTTP API', () => {
         hasNext: true,
         items: [
           {
+            promptId: 101,
             maskingReportId: ticket,
             request: '첫 번째 요청',
+            sendText: '첫 번째 전송문',
             response: '첫 번째 응답',
             communicatedAt: new Date('2026-07-21T11:00:00.000Z'),
           },
           {
+            promptId: 102,
             maskingReportId: 'b25e1559-bf8c-42f8-a1da-a56f013516ac',
             request: '두 번째 요청',
+            sendText: '두 번째 전송문',
             response: null,
             communicatedAt: nextCursor,
           },
@@ -911,9 +1007,19 @@ describe('마스킹 요소 탐지 요청 HTTP API', () => {
         message: '성공적으로 프롬프트를 조회했습니다.',
         result: {
           data: [
-            { request: '첫 번째 요청', response: '첫 번째 응답', file: null },
             {
+              promptId: 101,
+              ticket,
+              request: '첫 번째 요청',
+              sendText: '첫 번째 전송문',
+              response: '첫 번째 응답',
+              file: null,
+            },
+            {
+              promptId: 102,
+              ticket: 'b25e1559-bf8c-42f8-a1da-a56f013516ac',
               request: '두 번째 요청',
+              sendText: '두 번째 전송문',
               response: null,
               file: [{
                 fileOriginalName: 'report.pdf',
@@ -942,8 +1048,10 @@ describe('마스킹 요소 탐지 요청 HTTP API', () => {
       promptLogRepository.findHistoryPageByPromptRoomId.mockResolvedValueOnce({
         hasNext: false,
         items: [{
+          promptId: 101,
           maskingReportId: ticket,
           request: '첫 번째 요청',
+          sendText: '첫 번째 전송문',
           response: '첫 번째 응답',
           communicatedAt,
         }],
@@ -962,7 +1070,14 @@ describe('마스킹 요소 탐지 요청 HTTP API', () => {
         10,
       );
       expect(response.body.result).toEqual({
-        data: [{ request: '첫 번째 요청', response: '첫 번째 응답', file: null }],
+        data: [{
+          promptId: 101,
+          ticket,
+          request: '첫 번째 요청',
+          sendText: '첫 번째 전송문',
+          response: '첫 번째 응답',
+          file: null,
+        }],
         hasNext: false,
         nextCursor: String(communicatedAt.getTime()),
       });
@@ -1109,30 +1224,75 @@ describe('마스킹 요소 탐지 요청 HTTP API', () => {
       });
     });
 
-    it.each([UserRole.TOTAL_ADMIN, UserRole.DEPART_ADMIN])(
-      '%s은 다른 사용자의 파일도 다운로드 URL을 발급할 수 있다',
-      async (role) => {
-        principalService.getAuthenticatedUser.mockResolvedValueOnce({
-          ...authentication,
-          role,
-        });
-        promptFileRepository.findDownloadReferenceByFileUrl.mockResolvedValueOnce({
-          promptFileId: '52',
-          fileUrl,
-          fileOriginalName: 'report.pdf',
-          maskingReportId: ticket,
-          memberId: '999',
-        });
+    it('TOTAL_ADMIN은 다른 사용자의 파일도 다운로드 URL을 발급할 수 있다', async () => {
+      principalService.getAuthenticatedUser.mockResolvedValueOnce({
+        ...authentication,
+        role: UserRole.TOTAL_ADMIN,
+      });
+      promptFileRepository.findDownloadReferenceByFileUrl.mockResolvedValueOnce({
+        promptFileId: '52',
+        fileUrl,
+        fileOriginalName: 'report.pdf',
+        maskingReportId: ticket,
+        memberId: '999',
+      });
 
-        await getDownload().expect(200);
+      await getDownload().expect(200);
 
-        expect(objectStorage.presignedGetObject).toHaveBeenCalledWith(
-          finalObjectKey,
-          undefined,
-          expect.objectContaining({ contentDisposition: "attachment; filename*=UTF-8''report.pdf" }),
-        );
-      },
-    );
+      expect(objectStorage.presignedGetObject).toHaveBeenCalledWith(
+        finalObjectKey,
+        undefined,
+        expect.objectContaining({ contentDisposition: "attachment; filename*=UTF-8''report.pdf" }),
+      );
+    });
+
+    it('DEPART_ADMIN은 자신의 부서 일반 사용자 파일만 다운로드 URL을 발급할 수 있다', async () => {
+      principalService.getAuthenticatedUser.mockResolvedValueOnce({
+        ...authentication,
+        userId: 7,
+        role: UserRole.DEPART_ADMIN,
+      });
+      memberDepartmentRepository.findOne
+        .mockResolvedValueOnce({ departmentId })
+        .mockResolvedValueOnce({
+          departmentId,
+          member: { authorize: UserRole.USER },
+        });
+      promptFileRepository.findDownloadReferenceByFileUrl.mockResolvedValueOnce({
+        promptFileId: '52',
+        fileUrl,
+        fileOriginalName: 'report.pdf',
+        maskingReportId: ticket,
+        memberId: '999',
+      });
+
+      await getDownload().expect(200);
+    });
+
+    it('DEPART_ADMIN은 다른 부서 사용자 파일을 다운로드할 수 없다', async () => {
+      principalService.getAuthenticatedUser.mockResolvedValueOnce({
+        ...authentication,
+        userId: 7,
+        role: UserRole.DEPART_ADMIN,
+      });
+      memberDepartmentRepository.findOne
+        .mockResolvedValueOnce({ departmentId })
+        .mockResolvedValueOnce({
+          departmentId: 'other-department',
+          member: { authorize: UserRole.USER },
+        });
+      promptFileRepository.findDownloadReferenceByFileUrl.mockResolvedValueOnce({
+        promptFileId: '52',
+        fileUrl,
+        fileOriginalName: 'report.pdf',
+        maskingReportId: ticket,
+        memberId: '999',
+      });
+
+      const response = await getDownload().expect(403);
+      expect(response.body.code).toBe('PROM403_2');
+      expect(objectStorage.presignedGetObject).not.toHaveBeenCalled();
+    });
 
     it('DB 파일 URL이 현재 버킷의 canonical URL이 아니면 PROM404_3을 반환한다', async () => {
       promptFileRepository.findDownloadReferenceByFileUrl.mockResolvedValueOnce({
@@ -1458,6 +1618,37 @@ describe('마스킹 요소 탐지 요청 HTTP API', () => {
         endIdx: cardDto.text.indexOf(cardNumber) + cardNumber.length,
         maskingText: '[ 카드번호 ]',
         departmentPolicyId: '103',
+      },
+    ]);
+  });
+
+  it('활성 ACCOUNT와 ADDRESS 정책의 계좌번호·도로명 주소를 저장한다', async () => {
+    const accountNumber = '110-123-456789';
+    const address = '서울특별시 강남구 테헤란로 123 101동 1001호';
+    const requestDto = {
+      ...dto,
+      text: `입금 계좌는 ${accountNumber}이며 배송지는 ${address}입니다.`,
+    };
+    departmentPolicyRepository.find.mockResolvedValueOnce(
+      toDepartmentPolicyEntities([policies[5]!, policies[6]!]),
+    );
+
+    await postAnalyze(requestDto).expect(200);
+
+    expect(reportRepository.saveRegexDetections).toHaveBeenCalledWith(ticket, [
+      {
+        originalText: accountNumber,
+        startIdx: requestDto.text.indexOf(accountNumber),
+        endIdx: requestDto.text.indexOf(accountNumber) + accountNumber.length,
+        maskingText: '[ 계좌번호 ]',
+        departmentPolicyId: '106',
+      },
+      {
+        originalText: address,
+        startIdx: requestDto.text.indexOf(address),
+        endIdx: requestDto.text.indexOf(address) + address.length,
+        maskingText: '[ 주소 ]',
+        departmentPolicyId: '107',
       },
     ]);
   });

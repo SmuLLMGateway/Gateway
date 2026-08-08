@@ -19,10 +19,11 @@ export namespace AdminData {
     canUseLLMModel: string[];
     policyType: '표준' | '커스텀';
     policyCnt: number;
-    outbound: '허용' | '불가';
+    outbound: '허용' | '조건부';
     departLimitPercent: number;
     departLimitUsd: number;
     departUseUsd: number;
+    activeLocalLLM: boolean;
   }
 
   export interface DepartmentList {
@@ -64,6 +65,7 @@ export namespace AdminData {
     departmentName: string;
     departmentCode: string;
     mustFiltering: boolean;
+    activeLocalLLM: boolean;
     limit: string;
   }
 

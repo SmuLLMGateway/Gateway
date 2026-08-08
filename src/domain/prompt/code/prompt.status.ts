@@ -57,6 +57,11 @@ export const PromptSuccessStatus = {
         code: 'PROM200_12',
         message: '성공적으로 로컬 NER 목록을 조회했습니다.'
     },
+    PROMPT_DETAIL: {
+        httpStatus: HttpStatus.OK,
+        code: 'PROM200_13',
+        message: '성공적으로 프롬프트 상세 정보를 조회했습니다.'
+    },
 
     BEFORE_ANALYZE: {
         httpStatus: HttpStatus.OK,
@@ -107,6 +112,16 @@ export const PromptErrorStatus = {
         code: 'PROM403_2',
         message: '해당 파일을 업로드한 사용자가 아닙니다.'
     },
+    FORBIDDEN_PROMPT_DETAIL: {
+        httpStatus: HttpStatus.FORBIDDEN,
+        code: 'PROM403_3',
+        message: '해당 프롬프트를 요청한 사용자가 아닙니다.'
+    },
+    FORBIDDEN_EXTERNAL_LLM_WITH_DETECTIONS: {
+        httpStatus: HttpStatus.FORBIDDEN,
+        code: 'PROM403_4',
+        message: '탐지된 마스킹 요소가 있어 외부 LLM으로 전송할 수 없습니다.'
+    },
 
     NOT_FOUND_ANAL_REQ: {
         httpStatus: HttpStatus.NOT_FOUND,
@@ -147,6 +162,11 @@ export const PromptErrorStatus = {
         httpStatus: HttpStatus.BAD_GATEWAY,
         code: 'PROM502_2',
         message: '로컬 NER 목록 조회에 실패했습니다.'
+    },
+    LLM_DEPLOYMENT_LIST_UNAVAILABLE: {
+        httpStatus: HttpStatus.BAD_GATEWAY,
+        code: 'PROM502_3',
+        message: '로컬 LLM 목록 조회에 실패했습니다.'
     },
     ANALYZE_SERVICE_UNAVAILABLE: {
         httpStatus: HttpStatus.SERVICE_UNAVAILABLE,

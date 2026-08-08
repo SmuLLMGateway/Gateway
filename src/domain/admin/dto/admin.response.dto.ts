@@ -35,7 +35,7 @@ export namespace AdminResDTO {
         @ApiProperty({
             type: [String],
             example: ['Local LLM', 'Gemini', 'GPT'],
-            description: '항상 사용 가능한 Local LLM과 등록된 외부 LLM 서비스 목록'
+            description: 'active_llm 연결이 있고 부서의 activeLocalLLM이 true인 Local LLM 및 등록된 외부 LLM 서비스 목록'
         })
         canUseLLMModel!: string[];
 
@@ -50,11 +50,11 @@ export namespace AdminResDTO {
         policyCnt!: number;
 
         @ApiProperty({
-            example: '허용',
-            enum: ['허용', '불가'],
-            description: '마스킹 후 외부 전송 허용 여부 (mustFiltering=true면 허용)'
+            example: '조건부',
+            enum: ['허용', '조건부'],
+            description: '외부 LLM 전송 정책. mustFiltering=false는 항상 허용, true는 탐지 요소가 없을 때만 허용'
         })
-        outbound!: '허용' | '불가';
+        outbound!: '허용' | '조건부';
 
         @ApiProperty({
             example: 59,
@@ -75,6 +75,12 @@ export namespace AdminResDTO {
             description: '부서 공통 사용량(USD)'
         })
         departUseUsd!: number;
+
+        @ApiProperty({
+            example: true,
+            description: '부서의 LPL(Local NER·LLM) 호출 허용 여부'
+        })
+        activeLocalLLM!: boolean;
     }
 
     @ApiSchema({ name: 'AdminDepartmentListResponse' })
@@ -185,6 +191,12 @@ export namespace AdminResDTO {
 
     @ApiSchema({ name: 'AdminDepartmentApiKeyResponse' })
     export class DepartmentApiKey {
+        @ApiProperty({ example: 12, description: '조회 대상 부서 ID' })
+        departmentId!: number;
+
+        @ApiProperty({ example: '정책기획팀', description: '조회 대상 부서명' })
+        departmentName!: string;
+
         @ApiProperty({
             example: 'GPT',
             enum: ['Claude', 'GPT', 'Gemini'],
@@ -387,6 +399,23 @@ export namespace AdminResDTO {
 
         @ApiProperty({ example: 14.5, description: '최근 30일과 직전 30일의 로컬 LLM 전송 비율 차이(%p)' })
         localRate!: number;
+    }
+
+    export class DashboardTrend {
+        @ApiProperty({ example: '2026-08-08', format: 'date', description: 'KST 기준 집계 일자' })
+        date!: string;
+
+        @ApiProperty({ example: 21, description: '해당 일에 LLM 전송을 예약하거나 완료한 프롬프트 수' })
+        llmRequestCnt!: number;
+
+        @ApiProperty({ example: 8, description: '마스킹 요소가 하나 이상 탐지된 프롬프트 수' })
+        filterDetectCnt!: number;
+
+        @ApiProperty({ example: 6, description: '로컬 LLM으로 전송한 프롬프트 수' })
+        localLlmCnt!: number;
+
+        @ApiProperty({ example: 5, description: '탐지 요소가 있으면서 외부 LLM으로 전송한 프롬프트 수' })
+        maskedExternalLlmCnt!: number;
     }
 
     export class AdminLog {
@@ -596,10 +625,18 @@ export namespace AdminResDTO {
 
     export class UserPromptListItem {
         @ApiProperty({
-            example: '8e88c068-722e-4c04-93c5-906cea400be2',
-            format: 'uuid'
+            type: Number,
+            example: 101,
+            description: '프롬프트 로그 ID(prompt_log_id)'
         })
-        promptId!: string;
+        promptId!: number;
+
+        @ApiProperty({
+            example: '8e46e2d4-b1d0-4e20-8d3b-3c7d71821d65',
+            format: 'uuid',
+            description: '마스킹 분석 요청 식별자(masking_report_id). 상세 조회 path에는 사용하지 않습니다.'
+        })
+        ticket!: string;
 
         @ApiProperty({ example: '계약 검토 내용 요약' })
         promptSummary!: string;
@@ -659,6 +696,12 @@ export namespace AdminResDTO {
     }
 
     export class PromptDetail {
+        @ApiProperty({ type: Number, example: 101, description: '프롬프트 로그 ID(prompt_log_id)' })
+        promptId!: number;
+
+        @ApiProperty({ example: '8e46e2d4-b1d0-4e20-8d3b-3c7d71821d65', format: 'uuid', description: '마스킹 분석 요청 식별자(masking_report_id)' })
+        ticket!: string;
+
         @ApiProperty({ example: '김서윤', description: '프롬프트 요청자 이름' })
         name!: string;
 
@@ -801,6 +844,12 @@ export namespace AdminResDTO {
         mustFiltering!: boolean;
 
         @ApiProperty({
+            example: true,
+            description: '부서의 LPL(Local NER·LLM) 호출 허용 여부'
+        })
+        activeLocalLLM!: boolean;
+
+        @ApiProperty({
             type: () => [DepartmentPolicy],
             nullable: true,
             description: '부서 정책. 등록된 정책이 없으면 null'
@@ -811,5 +860,4 @@ export namespace AdminResDTO {
     export type AdminLogs = AdminLog[] | null;
     export type PolicyDetectList = PolicyDetect[];
     export type DepartmentRiskList = DepartmentRisk[];
-    export type UpdateUser = unknown;
 }

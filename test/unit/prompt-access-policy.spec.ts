@@ -1,3 +1,4 @@
+import { Logger } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { DataSource } from 'typeorm';
@@ -6,8 +7,10 @@ import {
   MaskingClass,
 } from '../../src/domain/admin/dao/policy.dao.js';
 import { DepartmentPolicyDAO } from '../../src/domain/admin/dao/department-policy.dao.js';
+import { DepartmentDAO } from '../../src/domain/admin/dao/department.dao.js';
 import { PromptErrorStatus } from '../../src/domain/prompt/code/prompt.status.js';
 import { MaskingDetailDAO } from '../../src/domain/prompt/dao/masking-detail.dao.js';
+import { PromptLogDAO } from '../../src/domain/prompt/dao/prompt-log.dao.js';
 import type { PromptData } from '../../src/domain/prompt/data/prompt.data.js';
 import { PromptException } from '../../src/domain/prompt/exception/prompt.exception.js';
 import { MaskingReportRepository } from '../../src/domain/prompt/repository/masking-report.repository.js';
@@ -25,6 +28,9 @@ import { ApiKeyEncryptionService } from '../../src/global/llm/service/api-key-en
 import { LOCAL_LLM_MODEL } from '../../src/global/llm/llm-service.mapping.js';
 import { NerClient } from '../../src/global/ner/client/ner.client.js';
 import { NerRequestException } from '../../src/global/ner/exception/ner-request.exception.js';
+import { MaskingReportStatus } from '../../src/domain/prompt/type/masking-report-status.enum.js';
+import { PromptLogStatus } from '../../src/domain/prompt/type/prompt-log-status.enum.js';
+import type { DepartmentMaskingPolicy } from '../../src/domain/prompt/type/masking-content.type.js';
 
 describe('PromptService 부서 접근 및 정책 조회', () => {
   const ticket = 'a81cc17e-e10a-46ae-8113-dceffb932d6c';
@@ -52,6 +58,7 @@ describe('PromptService 부서 접근 및 정책 조회', () => {
     saveRegexDetections: jest.fn(),
     saveNerTextDetections: jest.fn(),
     saveNerTextAndFileDetections: jest.fn(),
+    updateMaskingText: jest.fn(),
     cancelRegex: jest.fn(),
     cancelNer: jest.fn(),
   };
@@ -66,19 +73,48 @@ describe('PromptService 부서 접근 및 정책 조회', () => {
   };
   const maskingDetailRepository = {
     find: jest.fn(),
+    findOne: jest.fn(),
+  };
+  const departmentRepository = {
+    findOne: jest.fn(),
+    increment: jest.fn(),
+  };
+  const memberLimitRepository = {
+    increment: jest.fn(),
+  };
+  const promptLogDataRepository = {
+    findOne: jest.fn(),
+    update: jest.fn(),
+  };
+  const providerClient = {
+    request: jest.fn(),
+  };
+  const promptFileRepository = {
+    findByReportId: jest.fn(),
+    findDownloadReferenceByFileUrl: jest.fn(),
+  };
+  const apiKeyEncryption = {
+    decrypt: jest.fn(),
   };
   const nerClient = {
     getFirstNerDeploymentId: jest.fn(),
     getFirstLlmDeploymentId: jest.fn(),
     getEnabledLlmDeploymentIdByModelName: jest.fn(),
+    getLlmDeployments: jest.fn(),
     getNerDeployments: jest.fn(),
     requestAnalyze: jest.fn(),
+    requestLlmGenerate: jest.fn(),
   };
   const promptFileOcrService = {
     extractText: jest.fn(),
   };
+  const objectStorage = {
+    parseObjectUrl: jest.fn(),
+    presignedGetObject: jest.fn(),
+  };
   const dataSource = {
     getRepository: jest.fn(),
+    transaction: jest.fn(),
   };
 
   let service: PromptService;
@@ -106,7 +142,7 @@ describe('PromptService 부서 접근 및 정책 조회', () => {
         },
         {
           provide: PromptFileRepository,
-          useValue: {},
+          useValue: promptFileRepository,
         },
         {
           provide: PromptRoomRepository,
@@ -116,10 +152,10 @@ describe('PromptService 부서 접근 및 정책 조회', () => {
           provide: PromptLogRepository,
           useValue: promptLogRepository,
         },
-        { provide: MinioObjectStorageService, useValue: {} },
+        { provide: MinioObjectStorageService, useValue: objectStorage },
         { provide: PromptFileOcrService, useValue: promptFileOcrService },
-        { provide: ProviderClient, useValue: {} },
-        { provide: ApiKeyEncryptionService, useValue: {} },
+        { provide: ProviderClient, useValue: providerClient },
+        { provide: ApiKeyEncryptionService, useValue: apiKeyEncryption },
         { provide: NerClient, useValue: nerClient },
       ],
     }).compile();
@@ -140,21 +176,58 @@ describe('PromptService 부서 접근 및 정책 조회', () => {
     promptRoomRepository.existsByIdAndMemberId.mockResolvedValue(true);
     promptLogRepository.replaceMasking.mockResolvedValue(undefined);
     promptLogRepository.deleteByMaskingReportId.mockResolvedValue(undefined);
+    promptFileRepository.findByReportId.mockResolvedValue([]);
+    promptFileRepository.findDownloadReferenceByFileUrl.mockResolvedValue(null);
     departmentPolicyRepository.find.mockResolvedValue([]);
     maskingReportRepository.create.mockResolvedValue(undefined);
     maskingReportRepository.saveRegexDetections.mockResolvedValue(true);
     maskingReportRepository.saveNerTextDetections.mockResolvedValue(true);
     maskingReportRepository.saveNerTextAndFileDetections.mockResolvedValue(true);
+    maskingReportRepository.updateMaskingText.mockResolvedValue(true);
     maskingReportRepository.cancelRegex.mockResolvedValue(true);
     maskingReportRepository.cancelNer.mockResolvedValue(true);
     nerClient.getFirstNerDeploymentId.mockResolvedValue('ner-gliner-multi');
     nerClient.getFirstLlmDeploymentId.mockResolvedValue('llm-qwen3-14b');
     nerClient.getEnabledLlmDeploymentIdByModelName.mockResolvedValue(null);
+    nerClient.getLlmDeployments.mockResolvedValue([
+      { deploymentId: 'local-Llama-3.1', enabled: true },
+      { deploymentId: 'local-Qwen2.5-7B-Instruct', enabled: true },
+      { deploymentId: 'local-qwen3:8b', enabled: true },
+    ]);
     nerClient.getNerDeployments.mockResolvedValue([]);
     nerClient.requestAnalyze.mockResolvedValue({ detections: [] });
+    nerClient.requestLlmGenerate.mockResolvedValue({ text: '로컬 LLM 응답' });
     promptFileOcrService.extractText.mockResolvedValue('OCR 추출 텍스트');
-    dataSource.getRepository.mockReturnValue(maskingDetailRepository);
+    objectStorage.parseObjectUrl.mockReturnValue(
+      'masking/a81cc17e-e10a-46ae-8113-dceffb932d6c.pdf',
+    );
+    objectStorage.presignedGetObject.mockResolvedValue('https://download.example/file');
+    dataSource.getRepository.mockImplementation((target) => (
+      target === PromptLogDAO
+        ? promptLogDataRepository
+        : target === DepartmentDAO
+          ? departmentRepository
+          : maskingDetailRepository
+    ));
+    dataSource.transaction.mockImplementation(async (callback) => callback({
+      getRepository: (target: unknown) => (
+        target === PromptLogDAO
+          ? promptLogDataRepository
+          : target === DepartmentDAO
+            ? departmentRepository
+            : memberLimitRepository
+      ),
+    }));
     maskingDetailRepository.find.mockResolvedValue([]);
+    maskingDetailRepository.findOne.mockResolvedValue(null);
+    departmentRepository.findOne.mockResolvedValue({
+      departmentId: '10',
+      mustFiltering: true,
+    });
+    promptLogDataRepository.findOne.mockResolvedValue(null);
+    promptLogDataRepository.update.mockResolvedValue({ affected: 1 });
+    providerClient.request.mockResolvedValue({ outputText: '외부 LLM 응답', totalUsd: 0.1 });
+    apiKeyEncryption.decrypt.mockReturnValue('external-api-key');
   });
 
   it('회원 부서에서 활성화된 모델, 요청 티켓, 소유 채팅방을 검증한 뒤 리포트를 생성한다', async () => {
@@ -360,6 +433,166 @@ describe('PromptService 부서 접근 및 정책 조회', () => {
     });
   });
 
+  it('로컬 LLM은 API 키와 파일을 제외하고 LPL /generate에 마스킹된 본문을 전송한다', async () => {
+    const phone = '010-1234-5678';
+    const originalText = `담당자 연락처는 ${phone}입니다.`;
+    promptLogDataRepository.findOne.mockResolvedValueOnce({
+      promptLogId: '91',
+      status: PromptLogStatus.MASKING,
+      modelType: 'local-qwen3:8b',
+      modelName: 'local-qwen3:8b',
+      maskingReport: {
+        status: MaskingReportStatus.DONE,
+        originalText,
+      },
+      promptRoom: { memberId: String(authentication.userId) },
+    });
+    maskingDetailRepository.find.mockResolvedValueOnce([{
+      originalText: phone,
+      startIdx: originalText.indexOf(phone),
+      maskingText: '[ 전화번호 ]',
+    }]);
+    nerClient.requestLlmGenerate.mockResolvedValueOnce({
+      text: '마스킹된 내용을 확인했습니다.',
+      modelName: 'qwen3:8b',
+      finishReason: 'stop',
+    });
+
+    await expect(service.requestLlm({ ticket }, authentication)).resolves.toBeNull();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    expect(activeLlmRepository.findOne).toHaveBeenCalledWith({
+      select: { activeLlmId: true },
+      where: {
+        activeApiKey: {
+          departmentId: '10',
+          serviceType: LOCAL_LLM_MODEL,
+        },
+        llmDetailModel: { llmName: 'local-qwen3:8b' },
+      },
+    });
+    expect(nerClient.requestLlmGenerate).toHaveBeenCalledWith({
+      text: '담당자 연락처는 [ 전화번호 ]입니다.',
+      llmDeploymentId: 'local-qwen3:8b',
+    });
+    expect(providerClient.request).not.toHaveBeenCalled();
+    expect(apiKeyEncryption.decrypt).not.toHaveBeenCalled();
+
+    const [reserveCondition, reserveValues] = promptLogDataRepository.update.mock
+      .calls[0] as [Record<string, unknown>, Record<string, unknown>];
+    expect(reserveCondition).toMatchObject({ promptLogId: '91' });
+    expect(reserveValues).toMatchObject({
+      status: PromptLogStatus.PENDING,
+      communicatedAt: expect.any(Date),
+      activeApiKeyId: null,
+    });
+    expect(promptLogDataRepository.update).toHaveBeenLastCalledWith(
+      { maskingReportId: ticket, status: PromptLogStatus.PENDING },
+      {
+        status: PromptLogStatus.DONE,
+        responseText: '마스킹된 내용을 확인했습니다.',
+        usage: null,
+        activeApiKeyId: null,
+      },
+    );
+  });
+
+  it('LPL 로컬 LLM 생성 실패는 프롬프트 로그를 ERROR로 전환한다', async () => {
+    const loggerErrorSpy = jest.spyOn(Logger.prototype, 'error')
+      .mockImplementation();
+    promptLogDataRepository.findOne.mockResolvedValueOnce({
+      promptLogId: '92',
+      status: PromptLogStatus.MASKING,
+      modelType: 'local-qwen3:8b',
+      modelName: 'local-qwen3:8b',
+      maskingReport: {
+        status: MaskingReportStatus.DONE,
+        originalText: '마스킹된 본문',
+      },
+      promptRoom: { memberId: String(authentication.userId) },
+    });
+    nerClient.requestLlmGenerate.mockRejectedValueOnce(
+      new NerRequestException({ status: 503 }),
+    );
+
+    try {
+      await expect(service.requestLlm({ ticket }, authentication)).resolves.toBeNull();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+
+      expect(promptLogDataRepository.update).toHaveBeenLastCalledWith(
+        { maskingReportId: ticket, status: PromptLogStatus.PENDING },
+        { status: PromptLogStatus.ERROR },
+      );
+      expect(loggerErrorSpy).toHaveBeenCalledWith(
+        `Local LLM 전송 실패: ticket=${ticket}`,
+        expect.any(String),
+      );
+    } finally {
+      loggerErrorSpy.mockRestore();
+    }
+  });
+
+  it('mustFiltering=true이고 탐지 상세가 있으면 외부 LLM 전송을 차단한다', async () => {
+    promptLogDataRepository.findOne.mockResolvedValueOnce(
+      createExternalMaskingPromptLog(),
+    );
+    activeLlmRepository.findOne.mockResolvedValueOnce(
+      createExternalActiveLlm(),
+    );
+    maskingDetailRepository.findOne.mockResolvedValueOnce({
+      maskingDetailId: '501',
+    });
+
+    await expect(service.requestLlm({ ticket }, authentication)).rejects.toMatchObject({
+      baseStatus: PromptErrorStatus.FORBIDDEN_EXTERNAL_LLM_WITH_DETECTIONS,
+    });
+
+    expect(promptLogDataRepository.update).not.toHaveBeenCalled();
+    expect(providerClient.request).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    {
+      description: 'mustFiltering=true이지만 탐지 상세가 없는 경우',
+      mustFiltering: true,
+      detection: null,
+    },
+    {
+      description: 'mustFiltering=false이고 탐지 상세가 있는 경우',
+      mustFiltering: false,
+      detection: { maskingDetailId: '501' },
+    },
+  ])('$description 외부 LLM 전송을 허용한다', async ({
+    mustFiltering,
+    detection,
+  }) => {
+    promptLogDataRepository.findOne.mockResolvedValueOnce(
+      createExternalMaskingPromptLog(),
+    );
+    activeLlmRepository.findOne.mockResolvedValueOnce(
+      createExternalActiveLlm(),
+    );
+    departmentRepository.findOne.mockResolvedValueOnce({
+      departmentId: '10',
+      mustFiltering,
+    });
+    maskingDetailRepository.findOne.mockResolvedValueOnce(detection);
+
+    await expect(service.requestLlm({ ticket }, authentication)).resolves.toBeNull();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    expect(providerClient.request).toHaveBeenCalledWith({
+      ticket,
+      model: 'Claude Sonnet 5',
+      apiKey: 'external-api-key',
+      text: '외부 LLM 전송 본문',
+      files: [],
+    });
+    if (!mustFiltering) {
+      expect(maskingDetailRepository.findOne).not.toHaveBeenCalled();
+    }
+  });
+
   it('비활성화된 local-* LLM mapping은 PROM403_1로 거부하고 리포트를 생성하지 않는다', async () => {
     activeLlmRepository.findOne.mockResolvedValueOnce(null);
 
@@ -510,6 +743,65 @@ describe('PromptService 부서 접근 및 정책 조회', () => {
     ]);
   });
 
+  it('활성 ACCOUNT와 ADDRESS 정책의 계좌번호·한국 주소만 정규식으로 저장한다', async () => {
+    const accountNumber = '110-123-456789';
+    const roadAddress = '서울특별시 강남구 테헤란로 123 101동 1001호';
+    const jibunAddress = '경기도 성남시 분당구 정자동 1-2';
+    const text = [
+      `입금 계좌는 ${accountNumber}입니다.`,
+      `도로명 주소는 ${roadAddress}입니다.`,
+      `지번 주소는 ${jibunAddress}입니다.`,
+      '전화번호는 010-1234-5678, 주민번호는 900101-1234567입니다.',
+    ].join(' ');
+    departmentPolicyRepository.find.mockResolvedValue([
+      createDepartmentPolicy('12', 'ACCOUNT', MaskingClass.PRIVATE),
+      createDepartmentPolicy('13', 'ADDRESS', MaskingClass.PRIVATE),
+    ]);
+
+    await requestAnalyze('Claude Sonnet 5', text);
+
+    expect(maskingReportRepository.saveRegexDetections).toHaveBeenCalledWith(
+      ticket,
+      [
+        {
+          originalText: accountNumber,
+          startIdx: text.indexOf(accountNumber),
+          endIdx: text.indexOf(accountNumber) + accountNumber.length,
+          maskingText: '[ 계좌번호 ]',
+          departmentPolicyId: '12',
+        },
+        {
+          originalText: roadAddress,
+          startIdx: text.indexOf(roadAddress),
+          endIdx: text.indexOf(roadAddress) + roadAddress.length,
+          maskingText: '[ 주소 ]',
+          departmentPolicyId: '13',
+        },
+        {
+          originalText: jibunAddress,
+          startIdx: text.indexOf(jibunAddress),
+          endIdx: text.indexOf(jibunAddress) + jibunAddress.length,
+          maskingText: '[ 주소 ]',
+          departmentPolicyId: '13',
+        },
+      ],
+    );
+  });
+
+  it('PRIVATE가 아닌 정책은 정규식 탐지 대상에서 제외하고 이후 NER/LLM 분석용 정책으로만 유지한다', async () => {
+    const phone = '010-1234-5678';
+    departmentPolicyRepository.find.mockResolvedValue([
+      createDepartmentPolicy('5', 'PHONE', MaskingClass.SENSITIVE),
+    ]);
+
+    await requestAnalyze('Claude Sonnet 5', phone);
+
+    expect(maskingReportRepository.saveRegexDetections).toHaveBeenCalledWith(
+      ticket,
+      [],
+    );
+  });
+
   it('NER 탐지가 중지된 동안에는 NER 서버 요청과 NER 상태 전이를 수행하지 않는다', async () => {
     const text = '010-1234-5678 / ner-secret';
     departmentPolicyRepository.find.mockResolvedValue([
@@ -595,6 +887,103 @@ describe('PromptService 부서 접근 및 정책 조회', () => {
     });
   });
 
+  it('NER 응답에서 maskingText가 빠진 탐지는 마스킹 대상 없음으로 간주해 저장하지 않는다', () => {
+    const nerMapper = service as unknown as {
+      toNerTextDetections(
+        text: string,
+        detections: readonly Readonly<{
+          start: number;
+          end: number;
+          text: string;
+          type: string;
+          source: 'ner' | 'llm';
+          score: number;
+          maskingText?: string;
+        }>[],
+        existingDetections: readonly [],
+        policies: readonly Readonly<DepartmentMaskingPolicy>[],
+      ): PromptData.NerTextDetection[];
+    };
+
+    expect(nerMapper.toNerTextDetections(
+      '홍길동에게 전달',
+      [{
+        start: 0,
+        end: 3,
+        text: '홍길동',
+        type: 'PHONE_NUMBER',
+        source: 'ner',
+        score: 0.9,
+      }],
+      [],
+      [{
+        departmentPolicyId: '9',
+        maskingContent: 'PHONE',
+        maskingClass: MaskingClass.PRIVATE,
+      }],
+    )).toEqual([]);
+  });
+
+  it('부서 관리자는 자기 부서 일반 사용자의 파일만 다운로드할 수 있다', async () => {
+    promptFileRepository.findDownloadReferenceByFileUrl.mockResolvedValue({
+      promptFileId: '1',
+      maskingReportId: ticket,
+      fileUrl: 'minio://masking/a81cc17e-e10a-46ae-8113-dceffb932d6c.pdf',
+      fileOriginalName: '검토문서.pdf',
+      memberId: '99',
+    });
+    memberDepartmentRepository.findOne
+      .mockResolvedValueOnce({ departmentId: '10' })
+      .mockResolvedValueOnce({
+        departmentId: '10',
+        member: { authorize: UserRole.USER },
+      });
+
+    await expect(service.downloadFile({
+      fileUrl: 'minio://masking/a81cc17e-e10a-46ae-8113-dceffb932d6c.pdf',
+    }, {
+      ...authentication,
+      userId: 7,
+      role: UserRole.DEPART_ADMIN,
+    })).resolves.toBe('https://download.example/file');
+
+    expect(objectStorage.presignedGetObject).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    {
+      description: '다른 부서 일반 사용자',
+      target: { departmentId: '11', member: { authorize: UserRole.USER } },
+    },
+    {
+      description: '같은 부서 관리자',
+      target: { departmentId: '10', member: { authorize: UserRole.DEPART_ADMIN } },
+    },
+  ])('부서 관리자는 $description 파일을 다운로드할 수 없다', async ({ target }) => {
+    promptFileRepository.findDownloadReferenceByFileUrl.mockResolvedValue({
+      promptFileId: '1',
+      maskingReportId: ticket,
+      fileUrl: 'minio://masking/a81cc17e-e10a-46ae-8113-dceffb932d6c.pdf',
+      fileOriginalName: '검토문서.pdf',
+      memberId: '99',
+    });
+    memberDepartmentRepository.findOne
+      .mockResolvedValueOnce({ departmentId: '10' })
+      .mockResolvedValueOnce(target);
+
+    await expect(service.downloadFile({
+      fileUrl: 'minio://masking/a81cc17e-e10a-46ae-8113-dceffb932d6c.pdf',
+    }, {
+      ...authentication,
+      userId: 7,
+      role: UserRole.DEPART_ADMIN,
+    })).rejects.toMatchObject({
+      baseStatus: PromptErrorStatus.FORBIDDEN_FILE_DOWNLOAD,
+    });
+
+    expect(objectStorage.presignedGetObject).not.toHaveBeenCalled();
+  });
+
   function requestAnalyze(
     llmModel: string,
     text = '',
@@ -613,6 +1002,32 @@ describe('PromptService 부서 접근 및 정책 조회', () => {
       undefined,
       authentication,
     );
+  }
+
+  function createExternalMaskingPromptLog() {
+    return {
+      promptLogId: '93',
+      status: PromptLogStatus.MASKING,
+      modelType: 'Claude',
+      modelName: 'Claude Sonnet 5',
+      maskingReport: {
+        status: MaskingReportStatus.DONE,
+        originalText: '외부 LLM 전송 본문',
+      },
+      promptRoom: { memberId: String(authentication.userId) },
+    };
+  }
+
+  function createExternalActiveLlm() {
+    return {
+      activeLlmId: '301',
+      activeApiKeyId: '401',
+      activeApiKey: {
+        apiKey: 'encrypted-api-key',
+        serviceType: 'Claude',
+      },
+      llmDetailModel: { llmName: 'Claude Sonnet 5' },
+    };
   }
 });
 

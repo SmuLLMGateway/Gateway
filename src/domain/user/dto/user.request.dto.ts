@@ -32,16 +32,25 @@ export namespace UserReqDTO {
         @ApiPropertyOptional({
             type: String,
             example: 'gpt',
-            enum: ['claude', 'gpt', 'local'],
-            description: '정렬 기준: claude, gpt, local'
+            enum: ['claude', 'gpt', 'gemini', 'local'],
+            description: 'LLM 서비스 또는 로컬 LLM 필터'
         })
-        orderBy?: string;
+        model?: string;
 
         @ApiPropertyOptional({
             type: String,
             example: '계약 보고서',
-            description: '검색 키워드. orderBy와 동시에 사용하지 않음'
+            description: '프롬프트 요약 또는 원문 검색 키워드. model, sort와 함께 사용할 수 있습니다.'
         })
         query?: string;
+
+        @ApiPropertyOptional({
+            type: String,
+            example: 'recent',
+            enum: ['recent', 'oldest'],
+            default: 'recent',
+            description: '정렬 방향: recent(최신순), oldest(오래된순). model, query와 함께 사용할 수 있습니다.'
+        })
+        sort?: string;
     }
 }

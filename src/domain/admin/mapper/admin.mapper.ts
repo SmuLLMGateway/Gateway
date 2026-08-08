@@ -31,6 +31,7 @@ export class AdminMapper {
       departmentName: data.departmentName,
       departmentCode: data.departmentCode,
       mustFiltering: data.mustFiltering,
+      activeLocalLLM: data.activeLocalLLM,
       limit: data.limit,
       usage: '0',
       recentUsePercent: '0',
@@ -97,6 +98,7 @@ export class AdminMapper {
       departLimitPercent: data.departLimitPercent,
       departLimitUsd: data.departLimitUsd,
       departUseUsd: data.departUseUsd,
+      activeLocalLLM: data.activeLocalLLM,
     };
   }
 
@@ -190,6 +192,12 @@ export class AdminMapper {
   }
 
   static toDashboard(data: Readonly<AdminResDTO.Dashboard>): AdminResDTO.Dashboard {
+    return { ...data };
+  }
+
+  static toDashboardTrend(
+    data: Readonly<AdminResDTO.DashboardTrend>,
+  ): AdminResDTO.DashboardTrend {
     return { ...data };
   }
 
@@ -307,9 +315,6 @@ export class AdminMapper {
     };
   }
 
-  static toUnknown<T>(result: T): T {
-    return result;
-  }
 
   private static toDateTimeString(value: Date | string): string {
     return toKoreaStandardTimeISOString(value);

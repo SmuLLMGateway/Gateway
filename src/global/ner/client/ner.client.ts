@@ -7,6 +7,15 @@ import type {
   NerDetection,
 } from '../type/ner-analyze-request.type.js';
 import type {
+  LplLlmGenerateRequest,
+  LplLlmGenerateResponse,
+  LplLlmGenerateUsage,
+} from '../type/lpl-llm-generate.type.js';
+import type {
+  LplChatTitleRequest,
+  LplChatTitleResponse,
+} from '../type/lpl-chat-title.type.js';
+import type {
   NerLlmDeployment,
   NerLlmDeploymentDetail,
 } from '../type/ner-llm-deployment.type.js';
@@ -20,9 +29,14 @@ import type {
   LlmDeploymentCreateRequest,
   NerDeploymentCreateRequest,
 } from '../type/ner-deployment-registration.type.js';
-import { toLocalLlmModelName } from '../../llm/llm-service.mapping.js';
+import {
+  isLocalLlmModelName,
+  toLocalLlmModelName,
+} from '../../llm/llm-service.mapping.js';
 
-const MAX_NER_ANALYZE_LOG_BODY_LENGTH = 4_096;
+const MAX_LPL_LOG_BODY_LENGTH = 4_096;
+const MAX_LPL_CHAT_TITLE_LENGTH = 30;
+const MAX_LPL_CHAT_TITLE_BYTES = 120;
 
 @Injectable()
 export class NerClient {
@@ -131,7 +145,11 @@ export class NerClient {
     let responseBody: string | undefined;
     try {
       responseBody = await response.text();
-      return this.toAnalyzeResponse(JSON.parse(responseBody));
+      const result = this.toAnalyzeResponse(JSON.parse(responseBody));
+      this.logger.log(
+        `event=ner_analyze_response_received method=POST endpoint=${endpoint} status=${response.status} text_chars=${request.text.length} existing_detection_count=${request.existingDetections.length} request_body=${loggableRequestBody} response_body=${this.toLoggableBody(responseBody)}`,
+      );
+      return result;
     } catch (error: unknown) {
       this.logAnalyzeRequestFailure({
         endpoint,
@@ -147,7 +165,164 @@ export class NerClient {
     }
   }
 
-  /** 요청·응답 원문은 실패 시에만, 로그 주입·과도한 적재를 막아 남깁니다. */
+  /**
+   * API 키 없이 LPL Provider의 활성 로컬 LLM에 응답 생성을 요청합니다.
+   * Gateway의 local-* 모델명과 LPL Deployment ID는 등록 시 동일하게 저장됩니다.
+   */
+  async requestLlmGenerate(
+    request: Readonly<LplLlmGenerateRequest>,
+  ): Promise<LplLlmGenerateResponse> {
+    const endpoint = new URL(this.config.generateUrl).pathname;
+    const requestBody = JSON.stringify(request);
+    const loggableRequestBody = this.toLoggableBody(requestBody);
+    let response: Response;
+
+    try {
+      response = await fetch(this.config.generateUrl, {
+        method: 'POST',
+        headers: {
+          accept: 'application/json',
+          'content-type': 'application/json',
+        },
+        body: requestBody,
+        signal: AbortSignal.timeout(this.config.requestTimeoutMs),
+      });
+    } catch (error: unknown) {
+      this.logLlmGenerateRequestFailure({
+        endpoint,
+        status: 'NETWORK_ERROR',
+        request,
+        requestBody: loggableRequestBody,
+        responseBody: '<not_received>',
+        error,
+      });
+      throw new NerRequestException({ cause: error });
+    }
+
+    let responseBody: string | undefined;
+    try {
+      responseBody = await response.text();
+    } catch (error: unknown) {
+      this.logLlmGenerateRequestFailure({
+        endpoint,
+        status: String(response.status),
+        request,
+        requestBody: loggableRequestBody,
+        responseBody: '<unavailable>',
+        error,
+      });
+      throw new NerRequestException({ cause: error });
+    }
+
+    const loggableResponseBody = this.toLoggableBody(responseBody);
+    if (response.status !== HttpStatus.OK) {
+      this.logLlmGenerateRequestFailure({
+        endpoint,
+        status: String(response.status),
+        request,
+        requestBody: loggableRequestBody,
+        responseBody: loggableResponseBody,
+      });
+      throw new NerRequestException({ status: response.status });
+    }
+
+    try {
+      const result = this.toLplLlmGenerateResponse(JSON.parse(responseBody));
+      this.logger.log(
+        `event=lpl_llm_generate_response_received method=POST endpoint=${endpoint} status=${response.status} llm_deployment_id=${request.llmDeploymentId} text_chars=${request.text.length} request_body=${loggableRequestBody} response_body=${loggableResponseBody}`,
+      );
+      return result;
+    } catch (error: unknown) {
+      this.logLlmGenerateRequestFailure({
+        endpoint,
+        status: String(response.status),
+        request,
+        requestBody: loggableRequestBody,
+        responseBody: loggableResponseBody,
+        error,
+      });
+      throw new NerRequestException({ cause: error });
+    }
+  }
+
+  /** LPL Provider에 마스킹된 사용자 입력의 짧은 제목 생성을 요청합니다. */
+  async requestChatTitle(
+    request: Readonly<LplChatTitleRequest>,
+  ): Promise<LplChatTitleResponse> {
+    const endpoint = new URL(this.config.titlesUrl).pathname;
+    const requestBody = JSON.stringify(request);
+    const loggableRequestBody = this.toLoggableBody(requestBody);
+    let response: Response;
+
+    try {
+      response = await fetch(this.config.titlesUrl, {
+        method: 'POST',
+        headers: {
+          accept: 'application/json',
+          'content-type': 'application/json',
+        },
+        body: requestBody,
+        signal: AbortSignal.timeout(this.config.requestTimeoutMs),
+      });
+    } catch (error: unknown) {
+      this.logChatTitleRequestFailure({
+        endpoint,
+        status: 'NETWORK_ERROR',
+        request,
+        requestBody: loggableRequestBody,
+        responseBody: '<not_received>',
+        error,
+      });
+      throw new NerRequestException({ cause: error });
+    }
+
+    let responseBody: string | undefined;
+    try {
+      responseBody = await response.text();
+    } catch (error: unknown) {
+      this.logChatTitleRequestFailure({
+        endpoint,
+        status: String(response.status),
+        request,
+        requestBody: loggableRequestBody,
+        responseBody: '<unavailable>',
+        error,
+      });
+      throw new NerRequestException({ cause: error });
+    }
+
+    const loggableResponseBody = this.toLoggableBody(responseBody);
+    if (response.status !== HttpStatus.OK) {
+      this.logChatTitleRequestFailure({
+        endpoint,
+        status: String(response.status),
+        request,
+        requestBody: loggableRequestBody,
+        responseBody: loggableResponseBody,
+      });
+      throw new NerRequestException({ status: response.status });
+    }
+
+    try {
+      const result = this.toLplChatTitleResponse(JSON.parse(responseBody));
+      this.logger.log(
+        `event=lpl_chat_title_response_received method=POST endpoint=${endpoint} status=${response.status} llm_deployment_id=${request.llmDeploymentId} text_chars=${request.text.length} request_body=${loggableRequestBody} response_body=${loggableResponseBody}`,
+      );
+      return result;
+    } catch (error: unknown) {
+      this.logChatTitleRequestFailure({
+        endpoint,
+        status: String(response.status),
+        request,
+        requestBody: loggableRequestBody,
+        responseBody: loggableResponseBody,
+        error,
+      });
+      throw new NerRequestException({ cause: error });
+    }
+  }
+
+  /** NER 분석 요청·응답 본문은 로그 주입·과도한 적재를 막아 정규화해 남깁니다. */
   private toLoggableAnalyzeRequestBody(
     request: Readonly<NerAnalyzeRequest>,
   ): string {
@@ -172,10 +347,10 @@ export class NerClient {
     if (normalized === '') {
       return '<empty>';
     }
-    if (normalized.length <= MAX_NER_ANALYZE_LOG_BODY_LENGTH) {
+    if (normalized.length <= MAX_LPL_LOG_BODY_LENGTH) {
       return normalized;
     }
-    return `${normalized.slice(0, MAX_NER_ANALYZE_LOG_BODY_LENGTH)}…[truncated]`;
+    return `${normalized.slice(0, MAX_LPL_LOG_BODY_LENGTH)}…[truncated]`;
   }
 
   private logAnalyzeRequestFailure(input: Readonly<{
@@ -191,6 +366,150 @@ export class NerClient {
       : ` reason=${this.toLoggableErrorReason(input.error)}`;
     this.logger.error(
       `event=ner_analyze_request_failed method=POST endpoint=${input.endpoint} status=${input.status} text_chars=${input.request.text.length} existing_detection_count=${input.request.existingDetections.length} request_body=${input.requestBody} response_body=${input.responseBody}${reason}`,
+    );
+  }
+
+  private logLlmGenerateRequestFailure(input: Readonly<{
+    endpoint: string;
+    status: string;
+    request: LplLlmGenerateRequest;
+    requestBody: string;
+    responseBody: string;
+    error?: unknown;
+  }>): void {
+    const reason = input.error === undefined
+      ? ''
+      : ` reason=${this.toLoggableErrorReason(input.error)}`;
+    this.logger.error(
+      `event=lpl_llm_generate_request_failed method=POST endpoint=${input.endpoint} status=${input.status} llm_deployment_id=${input.request.llmDeploymentId} text_chars=${input.request.text.length} request_body=${input.requestBody} response_body=${input.responseBody}${reason}`,
+    );
+  }
+
+  private logChatTitleRequestFailure(input: Readonly<{
+    endpoint: string;
+    status: string;
+    request: LplChatTitleRequest;
+    requestBody: string;
+    responseBody: string;
+    error?: unknown;
+  }>): void {
+    const reason = input.error === undefined
+      ? ''
+      : ` reason=${this.toLoggableErrorReason(input.error)}`;
+    this.logger.error(
+      `event=lpl_chat_title_request_failed method=POST endpoint=${input.endpoint} status=${input.status} llm_deployment_id=${input.request.llmDeploymentId} text_chars=${input.request.text.length} request_body=${input.requestBody} response_body=${input.responseBody}${reason}`,
+    );
+  }
+
+  /**
+   * Deployment 등록·상태 변경·조회처럼 공통 LPL JSON 계약을 사용하는 요청의
+   * 요청/응답 본문을 성공·실패 모두 기록합니다.
+   */
+  private async requestLplJson<T>(input: Readonly<{
+    url: string;
+    method: 'GET' | 'POST' | 'PATCH';
+    requestBody?: string;
+    expectedStatus: number;
+    parseResponse: (payload: unknown) => T;
+  }>): Promise<T> {
+    const endpoint = new URL(input.url).pathname;
+    const requestBody = input.requestBody === undefined
+      ? '<empty>'
+      : this.toLoggableBody(input.requestBody);
+    const init: RequestInit = input.method === 'GET'
+      ? {
+        headers: { accept: 'application/json' },
+        signal: AbortSignal.timeout(this.config.requestTimeoutMs),
+      }
+      : {
+        method: input.method,
+        headers: {
+          accept: 'application/json',
+          'content-type': 'application/json',
+        },
+        body: input.requestBody,
+        signal: AbortSignal.timeout(this.config.requestTimeoutMs),
+      };
+    let response: Response;
+
+    try {
+      response = await fetch(input.url, init);
+    } catch (error: unknown) {
+      this.logLplRequestFailure({
+        method: input.method,
+        endpoint,
+        status: 'NETWORK_ERROR',
+        result: 'network_error',
+        requestBody,
+        responseBody: '<not_received>',
+        error,
+      });
+      throw new NerRequestException({ cause: error });
+    }
+
+    let responseBody: string;
+    try {
+      responseBody = await response.text();
+    } catch (error: unknown) {
+      this.logLplRequestFailure({
+        method: input.method,
+        endpoint,
+        status: String(response.status),
+        result: 'response_body_unavailable',
+        requestBody,
+        responseBody: '<unavailable>',
+        error,
+      });
+      throw new NerRequestException({ cause: error });
+    }
+
+    const loggableResponseBody = this.toLoggableBody(responseBody);
+    if (response.status !== input.expectedStatus) {
+      this.logLplRequestFailure({
+        method: input.method,
+        endpoint,
+        status: String(response.status),
+        result: 'http_error',
+        requestBody,
+        responseBody: loggableResponseBody,
+      });
+      throw new NerRequestException({ status: response.status });
+    }
+
+    try {
+      const result = input.parseResponse(JSON.parse(responseBody));
+      this.logger.log(
+        `event=lpl_response_received method=${input.method} endpoint=${endpoint} status=${response.status} request_body=${requestBody} response_body=${loggableResponseBody}`,
+      );
+      return result;
+    } catch (error: unknown) {
+      this.logLplRequestFailure({
+        method: input.method,
+        endpoint,
+        status: String(response.status),
+        result: 'invalid_response',
+        requestBody,
+        responseBody: loggableResponseBody,
+        error,
+      });
+      throw new NerRequestException({ cause: error });
+    }
+  }
+
+  private logLplRequestFailure(input: Readonly<{
+    method: 'GET' | 'POST' | 'PATCH';
+    endpoint: string;
+    status: string;
+    result: 'network_error' | 'response_body_unavailable' | 'http_error' | 'invalid_response';
+    requestBody: string;
+    responseBody: string;
+    error?: unknown;
+  }>): void {
+    const reason = input.error === undefined
+      ? ''
+      : ` reason=${this.toLoggableErrorReason(input.error)}`;
+    this.logger.error(
+      `event=lpl_request_failed method=${input.method} endpoint=${input.endpoint} status=${input.status} result=${input.result} request_body=${input.requestBody} response_body=${input.responseBody}${reason}`,
     );
   }
 
@@ -213,31 +532,13 @@ export class NerClient {
     url: string,
     request: Readonly<NerDeploymentCreateRequest | LlmDeploymentCreateRequest>,
   ): Promise<DeploymentCreateResponse> {
-    let response: Response;
-
-    try {
-      response = await fetch(url, {
-        method: 'POST',
-        headers: {
-          accept: 'application/json',
-          'content-type': 'application/json',
-        },
-        body: JSON.stringify(request),
-        signal: AbortSignal.timeout(this.config.requestTimeoutMs),
-      });
-    } catch (error: unknown) {
-      throw new NerRequestException({ cause: error });
-    }
-
-    if (response.status !== HttpStatus.CREATED) {
-      throw new NerRequestException({ status: response.status });
-    }
-
-    try {
-      return this.toDeploymentCreateResponse(await response.json());
-    } catch (error: unknown) {
-      throw new NerRequestException({ cause: error });
-    }
+    return this.requestLplJson({
+      url,
+      method: 'POST',
+      requestBody: JSON.stringify(request),
+      expectedStatus: HttpStatus.CREATED,
+      parseResponse: (payload) => this.toDeploymentCreateResponse(payload),
+    });
   }
 
   private async updateDeploymentEnabled<T>(
@@ -255,34 +556,13 @@ export class NerClient {
       });
     }
 
-    let response: Response;
-
-    try {
-      response = await fetch(
-        this.toDeploymentEnabledUrl(deploymentsUrl, normalizedDeploymentId),
-        {
-          method: 'PATCH',
-          headers: {
-            accept: 'application/json',
-            'content-type': 'application/json',
-          },
-          body: JSON.stringify(request),
-          signal: AbortSignal.timeout(this.config.requestTimeoutMs),
-        },
-      );
-    } catch (error: unknown) {
-      throw new NerRequestException({ cause: error });
-    }
-
-    if (response.status !== HttpStatus.OK) {
-      throw new NerRequestException({ status: response.status });
-    }
-
-    try {
-      return parseResponse(await response.json());
-    } catch (error: unknown) {
-      throw new NerRequestException({ cause: error });
-    }
+    return this.requestLplJson({
+      url: this.toDeploymentEnabledUrl(deploymentsUrl, normalizedDeploymentId),
+      method: 'PATCH',
+      requestBody: JSON.stringify(request),
+      expectedStatus: HttpStatus.OK,
+      parseResponse,
+    });
   }
 
   private toDeploymentCreateResponse(payload: unknown): DeploymentCreateResponse {
@@ -321,24 +601,90 @@ export class NerClient {
     return { detections };
   }
 
+  private toLplLlmGenerateResponse(payload: unknown): LplLlmGenerateResponse {
+    if (
+      typeof payload !== 'object'
+      || payload === null
+      || typeof (payload as { text?: unknown }).text !== 'string'
+    ) {
+      throw new TypeError('LPL LLM 응답 생성 응답 형식이 올바르지 않습니다.');
+    }
+
+    const value = payload as {
+      text: string;
+      modelName?: unknown;
+      finishReason?: unknown;
+      usage?: unknown;
+    };
+    const modelName = this.toOptionalLplResponseText(value.modelName, 'modelName');
+    const finishReason = this.toOptionalLplResponseText(
+      value.finishReason,
+      'finishReason',
+    );
+    const usage = value.usage === undefined
+      ? undefined
+      : this.toLplLlmGenerateUsage(value.usage);
+
+    return {
+      text: value.text,
+      ...(modelName === undefined ? {} : { modelName }),
+      ...(finishReason === undefined ? {} : { finishReason }),
+      ...(usage === undefined ? {} : { usage }),
+    };
+  }
+
+  private toOptionalLplResponseText(
+    value: unknown,
+    field: string,
+  ): string | undefined {
+    if (value === undefined) {
+      return undefined;
+    }
+    if (typeof value !== 'string') {
+      throw new TypeError(`LPL LLM 응답 생성 ${field} 형식이 올바르지 않습니다.`);
+    }
+    return value;
+  }
+
+  private toLplLlmGenerateUsage(value: unknown): LplLlmGenerateUsage {
+    if (typeof value !== 'object' || value === null) {
+      throw new TypeError('LPL LLM 응답 생성 usage 형식이 올바르지 않습니다.');
+    }
+
+    const usage = value as {
+      inputTokens?: unknown;
+      outputTokens?: unknown;
+      totalTokens?: unknown;
+    };
+    const tokenValues = [
+      usage.inputTokens,
+      usage.outputTokens,
+      usage.totalTokens,
+    ];
+    if (tokenValues.some((token) => (
+      typeof token !== 'number'
+      || !Number.isSafeInteger(token)
+      || token < 0
+    ))) {
+      throw new TypeError('LPL LLM 응답 생성 usage 토큰 형식이 올바르지 않습니다.');
+    }
+
+    return {
+      inputTokens: usage.inputTokens as number,
+      outputTokens: usage.outputTokens as number,
+      totalTokens: usage.totalTokens as number,
+    };
+  }
+
   private async getFirstDeploymentId(url: string): Promise<string> {
-    let response: Response;
-
+    let payload: unknown;
     try {
-      response = await fetch(url, {
-        headers: { accept: 'application/json' },
-        signal: AbortSignal.timeout(this.config.requestTimeoutMs),
+      payload = await this.requestLplJson({
+        url,
+        method: 'GET',
+        expectedStatus: HttpStatus.OK,
+        parseResponse: (value) => value,
       });
-    } catch (error: unknown) {
-      throw new NerRequestException({ cause: error });
-    }
-
-    if (!response.ok) {
-      throw new NerRequestException({ status: response.status });
-    }
-
-    try {
-      const payload: unknown = await response.json();
       if (
         typeof payload !== 'object'
         || payload === null
@@ -365,6 +711,9 @@ export class NerClient {
       }
       return (deployment as { deploymentId: string }).deploymentId;
     } catch (error: unknown) {
+      if (error instanceof NerRequestException) {
+        throw error;
+      }
       throw new NerRequestException({ cause: error });
     }
   }
@@ -405,29 +754,30 @@ export class NerClient {
     return this.getDeploymentSummaries(this.config.llmDeploymentsUrl);
   }
 
+  /**
+   * Gateway DB에 저장할 활성 로컬 LLM 식별자입니다. modelName이 아닌 LPL의
+   * deploymentId를 그대로 반환합니다. 등록 규칙상 이 값은 local-* 형식입니다.
+   */
+  async getEnabledLocalLlmDeploymentIds(): Promise<readonly string[]> {
+    const deployments = await this.getLlmDeployments();
+    return [...new Set(
+      deployments.flatMap(({ deploymentId, enabled }) => (
+        enabled && isLocalLlmModelName(deploymentId)
+          ? [deploymentId]
+          : []
+      )),
+    )];
+  }
+
   private async getDeploymentSummaries(
     url: string,
   ): Promise<readonly NerDeploymentSummary[]> {
-    let response: Response;
-
-    try {
-      response = await fetch(url, {
-        headers: { accept: 'application/json' },
-        signal: AbortSignal.timeout(this.config.requestTimeoutMs),
-      });
-    } catch (error: unknown) {
-      throw new NerRequestException({ cause: error });
-    }
-
-    if (!response.ok) {
-      throw new NerRequestException({ status: response.status });
-    }
-
-    try {
-      return this.toLlmDeployments(await response.json());
-    } catch (error: unknown) {
-      throw new NerRequestException({ cause: error });
-    }
+    return this.requestLplJson({
+      url,
+      method: 'GET',
+      expectedStatus: HttpStatus.OK,
+      parseResponse: (payload) => this.toLlmDeployments(payload),
+    });
   }
 
   /**
@@ -450,49 +800,21 @@ export class NerClient {
   }
 
   /**
-   * Gateway의 local-* 모델명에 대응하는 첫 활성 LPL LLM Deployment ID를 찾습니다.
-   * 신규 등록 Deployment는 ID 자체가 llm_detail_model.llm_name과 같으므로 목록에서
-   * 먼저 직접 찾고, 이전 ollama-* 등록 항목은 상세 modelName 비교로 호환합니다.
+   * llm_detail_model.llm_name과 동일한 local-* Deployment ID가 활성 상태인지
+   * 확인합니다. 레거시 modelName 보정은 새 등록 규칙과 혼동되므로 사용하지 않습니다.
    */
   async getEnabledLlmDeploymentIdByModelName(
     modelName: string,
   ): Promise<string | null> {
-    const normalizedModelName = toLocalLlmModelName(modelName);
-    if (normalizedModelName === null) {
+    const normalizedModelName = modelName.trim();
+    if (!isLocalLlmModelName(normalizedModelName)) {
       return null;
     }
 
-    const deployments = await this.getLlmDeployments();
-    const directDeployment = deployments.find((deployment) => (
-      deployment.enabled
-      && deployment.deploymentId.toLowerCase()
-        === normalizedModelName.toLowerCase()
-    ));
-    if (directDeployment !== undefined) {
-      return directDeployment.deploymentId;
-    }
-
-    for (const deployment of deployments) {
-      if (!deployment.enabled) {
-        continue;
-      }
-
-      const detail = await this.getLlmDeployment(deployment.deploymentId);
-      if (!detail.enabled || detail.modelName === undefined) {
-        continue;
-      }
-
-      const normalizedDetailModelName = toLocalLlmModelName(detail.modelName);
-      if (
-        normalizedDetailModelName !== null
-        && normalizedDetailModelName.toLowerCase()
-          === normalizedModelName.toLowerCase()
-      ) {
-        return detail.deploymentId;
-      }
-    }
-
-    return null;
+    const deploymentIds = await this.getEnabledLocalLlmDeploymentIds();
+    return deploymentIds.find((deploymentId) => (
+      deploymentId.toLowerCase() === normalizedModelName.toLowerCase()
+    )) ?? null;
   }
 
   /** LPL에서 특정 로컬 LLM Deployment의 상세 실행 설정을 조회합니다. */
@@ -500,29 +822,12 @@ export class NerClient {
     deploymentId: string,
   ): Promise<NerLlmDeploymentDetail> {
     const normalizedDeploymentId = this.normalizeDeploymentId(deploymentId);
-    let response: Response;
-
-    try {
-      response = await fetch(
-        this.toLlmDeploymentDetailUrl(normalizedDeploymentId),
-        {
-          headers: { accept: 'application/json' },
-          signal: AbortSignal.timeout(this.config.requestTimeoutMs),
-        },
-      );
-    } catch (error: unknown) {
-      throw new NerRequestException({ cause: error });
-    }
-
-    if (!response.ok) {
-      throw new NerRequestException({ status: response.status });
-    }
-
-    try {
-      return this.toLlmDeploymentDetail(await response.json());
-    } catch (error: unknown) {
-      throw new NerRequestException({ cause: error });
-    }
+    return this.requestLplJson({
+      url: this.toLlmDeploymentDetailUrl(normalizedDeploymentId),
+      method: 'GET',
+      expectedStatus: HttpStatus.OK,
+      parseResponse: (payload) => this.toLlmDeploymentDetail(payload),
+    });
   }
 
   private toLlmDeployments(payload: unknown): readonly NerLlmDeployment[] {

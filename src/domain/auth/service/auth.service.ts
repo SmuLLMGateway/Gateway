@@ -199,6 +199,39 @@ export class AuthService {
     );
   }
 
+  async updateDevelopmentPassword(
+    dto: Readonly<AuthReqDTO.DevelopmentUpdatePassword>,
+  ): Promise<AuthResDTO.UpdatePassword> {
+    if (!this.isValidEmail(dto.email) || !this.isValidPassword(dto.password)) {
+      throw new AuthException(AuthErrorStatus.PASSWORD_ERROR);
+    }
+
+    const email = dto.email.trim();
+    const member = await this.memberRepository.findOne({
+      select: { memberId: true },
+      where: { email },
+    });
+
+    if (member === null) {
+      throw new AuthException(AuthErrorStatus.USER_NOT_FOUND);
+    }
+
+    const encodedPassword = await this.passwordEncoder.encode(dto.password);
+    const updateResult = await this.memberRepository.update(
+      { memberId: member.memberId },
+      { password: encodedPassword },
+    );
+
+    if (updateResult.affected !== 1) {
+      throw new AuthException(AuthErrorStatus.USER_NOT_FOUND);
+    }
+
+    return AuthMapper.toUpdatePassword(
+      this.toUserId(member.memberId),
+      new Date(),
+    );
+  }
+
   private refreshTokensMatch(
     storedRefreshToken: string | null,
     presentedRefreshToken: string,
@@ -216,6 +249,10 @@ export class AuthService {
 
   private isValidPassword(password: unknown): password is string {
     return typeof password === 'string' && password.length > 0;
+  }
+
+  private isValidEmail(email: unknown): email is string {
+    return typeof email === 'string' && email.trim().length > 0;
   }
 
   private toUserId(memberId: string): number {

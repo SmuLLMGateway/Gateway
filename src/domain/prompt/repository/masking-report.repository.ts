@@ -1,5 +1,11 @@
 import { Injectable } from '@nestjs/common';
-import { DataSource, QueryFailedError, type EntityManager } from 'typeorm';
+import {
+  DataSource,
+  In,
+  Not,
+  QueryFailedError,
+  type EntityManager,
+} from 'typeorm';
 import { PromptErrorStatus } from '../code/prompt.status.js';
 import { MaskingDetailDAO } from '../dao/masking-detail.dao.js';
 import { MaskingReportDAO } from '../dao/masking-report.dao.js';
@@ -38,6 +44,8 @@ export class MaskingReportRepository {
         : MaskingReportStatus.DONE,
       memberId: String(memberId),
       originalText,
+      // 분석 완료 전에도 NOT NULL 제약을 만족시키며, 전송 직전에 최종 마스킹 본문으로 갱신합니다.
+      maskingText: originalText,
       recentMaskingReportId: recentTicket,
     });
 
@@ -298,6 +306,23 @@ export class MaskingReportRepository {
     return this.cancelBranch(ticket, 'nerStatus');
   }
 
+  /**
+   * 실제 LLM으로 전달할 마스킹 본문을 별도로 보존합니다. 분석 원문은 감사 및
+   * 탐지 인덱스 검증에 계속 사용하고, 이 컬럼은 전송 직전에 계산한 최종 본문만
+   * 저장합니다.
+   */
+  async updateMaskingText(ticket: string, maskingText: string): Promise<boolean> {
+    const result = await this.dataSource.getRepository(MaskingReportDAO).update(
+      {
+        maskingReportId: ticket,
+        status: Not(MaskingReportStatus.CANCEL),
+      },
+      { maskingText },
+    );
+
+    return result.affected === 1;
+  }
+
   async cancelForMember(ticket: string, memberId: number): Promise<boolean> {
     return this.dataSource.transaction(async (manager) => {
       const report = await manager.getRepository(MaskingReportDAO).findOne({
@@ -320,26 +345,32 @@ export class MaskingReportRepository {
           status: PromptLogStatus.MASKING,
           promptRoom: { memberId: String(memberId) },
         },
+        // LLM 전송 예약(update ... MASKING -> PENDING)과 경합하지 않도록
+        // 취소 대상 로그를 먼저 잠급니다. 이 트랜잭션이 끝난 뒤에는 PENDING
+        // 로그가 삭제될 수 없습니다.
+        lock: { mode: 'pessimistic_write' },
       });
-      if (maskingLogs.length > 0) {
-        await promptLogRepository.delete(
-          maskingLogs.map(({ promptLogId }) => promptLogId),
-        );
+      // LLM 전송이 시작된 PENDING/DONE/ERROR 로그는 취소하지 않습니다.
+      // 이 API의 취소 대상은 사용자가 아직 전송하지 않은 MASKING 로그뿐입니다.
+      if (maskingLogs.length === 0) {
+        return false;
       }
 
-      // 취소 이후 비동기 콜백이 리포트를 다시 완료로 전환하지 않도록 모든
-      // 분석 분기와 최종 상태를 함께 CANCEL로 고정합니다.
-      report.regexStatus = MaskingReportStatus.CANCEL;
-      report.nerStatus = MaskingReportStatus.CANCEL;
-      report.status = MaskingReportStatus.CANCEL;
+      const deleted = await promptLogRepository.delete({
+        promptLogId: In(maskingLogs.map(({ promptLogId }) => promptLogId)),
+        status: PromptLogStatus.MASKING,
+      });
+      if (deleted.affected !== maskingLogs.length) {
+        // 잠금 획득 전 이미 LLM 전송이 예약된 경우입니다. PENDING/DONE 로그를
+        // 취소하거나 report만 CANCEL로 바꾸지 않고, 호출자에게 취소 불가로 알립니다.
+        return false;
+      }
 
+      // 탐지 상세와 개별 분석 분기 상태는 감사 기록으로 남깁니다. 최종 리포트만
+      // CANCEL로 전환하면 LLM 전송 경로가 이 보고서를 다시 사용할 수 없습니다.
       await manager.getRepository(MaskingReportDAO).update(
         { maskingReportId: ticket },
-        {
-          regexStatus: report.regexStatus,
-          nerStatus: report.nerStatus,
-          status: report.status,
-        },
+        { status: MaskingReportStatus.CANCEL },
       );
 
       return true;

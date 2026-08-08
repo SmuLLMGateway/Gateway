@@ -60,6 +60,7 @@ export class PromptMapper {
       nerStatus: data.nerStatus,
       memberId: data.memberId,
       originalText: data.originalText,
+      maskingText: data.maskingText,
       recentMaskingReportId: data.recentMaskingReportId,
     });
   }
@@ -278,6 +279,10 @@ export class PromptMapper {
         return '주민등록번호';
       case MASKING_CONTENT.CARD:
         return '카드번호';
+      case MASKING_CONTENT.ACCOUNT:
+        return '계좌번호';
+      case MASKING_CONTENT.ADDRESS:
+        return '주소';
       case MASKING_CONTENT.EMAIL:
         return '이메일';
       case MASKING_CONTENT.API_KEY:

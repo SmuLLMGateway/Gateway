@@ -20,6 +20,7 @@ import {
 } from '../../../../global/config/swagger.response.js';
 import { PromptErrorStatus, PromptSuccessStatus } from '../../code/prompt.status.js';
 import { PromptResDTO } from '../../dto/prompt.response.dto.js';
+import { AdminResDTO } from '../../../admin/dto/admin.response.dto.js';
 
 const tokenExpiredStatus = {
   httpStatus: HttpStatus.UNAUTHORIZED,
@@ -38,6 +39,15 @@ const llmPendingStatus = {
   code: 'PROM200_4_1',
   message: '아직 결과 생성 중입니다.',
 } as const satisfies BaseStatus;
+
+const promptIdParam = () =>
+  ApiParam({
+    name: 'promptId',
+    required: true,
+    type: Number,
+    example: 101,
+    description: '프롬프트 로그 ID(prompt_log_id)',
+  });
 
 const maskingAnalysisMultipartBody = () =>
   ApiBody({
@@ -223,6 +233,7 @@ const analyzeRequestErrors = () =>
     PromptErrorStatus.INVALID_FILE_FORM,
     PromptErrorStatus.DUPLICATED_TICKET,
     PromptErrorStatus.FORBIDDEN_LLM_MODEL,
+    PromptErrorStatus.LLM_DEPLOYMENT_LIST_UNAVAILABLE,
     PromptErrorStatus.NOT_FOUND_RECENT_TICKET,
     PromptErrorStatus.NOT_FOUND_CHAT_ROOM,
     tokenExpiredStatus,
@@ -234,6 +245,8 @@ const llmSendErrors = () =>
     PromptErrorStatus.INVALID_FILE_FORM,
     PromptErrorStatus.DUPLICATED_TICKET,
     PromptErrorStatus.FORBIDDEN_LLM_MODEL,
+    PromptErrorStatus.FORBIDDEN_EXTERNAL_LLM_WITH_DETECTIONS,
+    PromptErrorStatus.LLM_DEPLOYMENT_LIST_UNAVAILABLE,
     tokenExpiredStatus,
     ErrorStatus.INTERNAL_SERVER_ERROR,
   ]);
@@ -256,6 +269,8 @@ export const PromptControllerDocs = () =>
       PromptResDTO.RecentAnalyze,
       PromptResDTO.NerDeployment,
       PromptResDTO.NerList,
+      AdminResDTO.PromptDetection,
+      AdminResDTO.PromptDetail,
     ),
   );
 
@@ -339,6 +354,7 @@ export const LlmSendDocs = () =>
       summary: 'LLM 전송',
       description:
         '마스킹 요소 탐지 요청을 생성한 사용자만 분석 완료 ticket으로 LLM 전송을 요청할 수 있습니다. '
+        + '로컬 LLM은 활성 LPL Deployment로 전송합니다. 외부 LLM은 mustFiltering=false면 탐지 여부와 무관하게, true면 탐지 요소가 없을 때만 전송할 수 있습니다. '
         + '저장된 텍스트 마스킹 결과를 원문에 치환한 뒤 Provider로 전송하며, 요청은 즉시 반환되고 Provider 호출은 백그라운드에서 처리됩니다.',
     }),
     ApiBody({
@@ -482,6 +498,7 @@ export const PromptListDocs = () =>
       summary: '프롬프트 조회',
       description:
         '채팅방의 완료된 프롬프트 로그를 최신순으로 조회합니다. '
+        + 'promptId는 숫자 prompt_log_id이며, 분석 UUID는 ticket으로 별도 반환합니다. '
         + 'cursor에는 직전 응답의 nextCursor(UNIX timestamp ms)를 전달합니다. '
         + '프롬프트가 없으면 result는 null입니다.',
     }),
@@ -519,13 +536,36 @@ export const PromptListDocs = () =>
     ]),
   );
 
+export const PromptDetailDocs = () =>
+  applyDecorators(
+    ApiOperation({
+      summary: '프롬프트 상세 조회',
+      description:
+        '현재 사용자가 요청한 프롬프트의 원문, 전송문 및 탐지 상세를 조회합니다. '
+        + 'path의 promptId는 숫자 prompt_log_id이고 분석 UUID는 응답 ticket에 반환됩니다. '
+        + '프롬프트 요청자와 로그인 사용자가 일치해야 합니다.',
+    }),
+    promptIdParam(),
+    ApiSuccessResponse(
+      PromptSuccessStatus.PROMPT_DETAIL,
+      SwaggerResultSchema.model(getSchemaPath(AdminResDTO.PromptDetail)),
+    ),
+    ...ApiErrorResponses([
+      PromptErrorStatus.FORBIDDEN_PROMPT_DETAIL,
+      PromptErrorStatus.NOT_FOUND_PROMPT,
+      tokenExpiredStatus,
+      ErrorStatus.INTERNAL_SERVER_ERROR,
+    ]),
+  );
+
 export const FileDownloadDocs = () =>
   applyDecorators(
     ApiOperation({
       summary: '파일 다운로드',
       description:
         'Query Parameter로 전달한 분석 결과의 fileUrl을 이용해 파일 다운로드 '
-        + 'URL을 조회합니다.',
+        + 'URL을 조회합니다. 일반 사용자는 본인 파일만, 부서 관리자는 자기 부서 '
+        + '일반 사용자(USER) 파일만, 총 관리자는 모든 파일을 조회할 수 있습니다.',
     }),
     ApiQuery({
       name: 'fileUrl',

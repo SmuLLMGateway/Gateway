@@ -72,8 +72,7 @@ export const MessageHistoryDocs = () =>
   applyDecorators(
     ApiOperation({
       summary: '대화 기록 조회',
-      description: '조회 기간에 전송된 대화 기록을 프롬프트 단위로 조회합니다. '
-        + 'llmModel은 생성 시점의 active_api_key.service_type이며 로컬 LLM은 Local LLM으로 반환합니다.',
+      description: '조회 기간에 전송된 대화 기록을 프롬프트 단위로 조회합니다. promptId는 숫자 prompt_log_id이고, 분석 UUID는 ticket으로 별도 반환합니다. model·query·sort는 함께 사용할 수 있습니다.',
     }),
     ApiQuery({
       name: 'recent',
@@ -98,17 +97,24 @@ export const MessageHistoryDocs = () =>
       description: '현재 페이지 번호(1부터 시작)',
     }),
     ApiQuery({
-      name: 'orderBy',
+      name: 'model',
       type: String,
       required: false,
-      enum: ['claude', 'gpt', 'local'],
-      description: '정렬 기준. query와 동시에 사용할 수 없습니다.',
+      enum: ['claude', 'gpt', 'gemini', 'local'],
+      description: 'LLM 서비스 또는 로컬 LLM 필터',
     }),
     ApiQuery({
       name: 'query',
       type: String,
       required: false,
-      description: '검색 키워드. orderBy와 동시에 사용할 수 없습니다.',
+      description: '프롬프트 요약 또는 원문 검색 키워드',
+    }),
+    ApiQuery({
+      name: 'sort',
+      type: String,
+      required: false,
+      enum: ['recent', 'oldest'],
+      description: '정렬 방향. 생략 시 recent(최신순)',
     }),
     ApiSuccessResponse(
       UserSuccessStatus.MESSAGE_LIST,

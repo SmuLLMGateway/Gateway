@@ -30,6 +30,7 @@ export namespace PromptData {
     nerStatus: MaskingReportStatus;
     memberId: string;
     originalText: string;
+    maskingText: string;
     recentMaskingReportId: string | null;
   }
 

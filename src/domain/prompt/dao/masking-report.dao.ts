@@ -48,6 +48,10 @@ export class MaskingReportDAO {
   @Column({ name: 'original_text', type: 'text', nullable: false })
   originalText!: string;
 
+  /** 실제 LLM 전송 시 사용한 마스킹 완료 본문입니다. 분석 직후에는 원문으로 초기화됩니다. */
+  @Column({ name: 'masking_text', type: 'text', nullable: false })
+  maskingText!: string;
+
   @Column({
     name: 'created_at',
     type: 'timestamp',

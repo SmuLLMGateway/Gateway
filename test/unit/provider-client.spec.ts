@@ -52,6 +52,16 @@ describe('ProviderClient', () => {
       expect(loggerLogSpy).toHaveBeenCalledWith(expect.stringContaining(
         `response_body=${responseBody}`,
       ));
+      expect(loggerLogSpy).toHaveBeenCalledWith(expect.stringContaining(
+        `event=provider_response_received ticket=${request.ticket}`,
+      ));
+      const responseLog = loggerLogSpy.mock.calls
+        .flat()
+        .find((message) => message.includes('event=provider_response_received'));
+      expect(responseLog).toContain(
+        'request_body={"model":"gpt-5.4-nano","api_key":"[REDACTED]"',
+      );
+      expect(responseLog).toContain(`response_body=${responseBody}`);
       expect(loggerLogSpy.mock.calls.flat().join(' '))
         .not.toContain(request.apiKey);
     } finally {

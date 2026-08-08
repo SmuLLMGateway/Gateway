@@ -65,6 +65,15 @@ NER 서버 요청은 아직 실행하지 않습니다. 비활성화 기간에는
 생성 시점부터 `DONE`으로 두므로, 정규식 완료 후 정상 접수 상태는
 `status=DONE`, `regex_status=DONE`, `ner_status=DONE`입니다.
 
+파일은 탐지 정책을 기록하기 위한 원본으로 보관하며, 실제로 가린 별도 파일을
+생성하지 않습니다. 파일 NER 분석이 재개되면 `masking_detail`에는 파일 URL과
+일치한 정책만 저장하고, 파일 객체 자체는 변경하지 않습니다.
+
+전송으로 이어지지 않은 `MASKING` 프롬프트 로그는 보고서 생성 시점부터 24시간이
+지나면 정리 워커가 삭제합니다. 이때 `masking_report.status`만 `CANCEL`로 전환하며
+탐지 상세와 파일 메타데이터는 감사 기록으로 보존합니다. `PENDING`/`DONE` 로그는
+이 만료·취소 대상이 아닙니다.
+
 ## 외부 LLM API 키와 모델 접근 권한
 
 `POST /admin/v1/departments/{departmentId}/apis`는 `TOTAL_ADMIN`이 부서에
@@ -78,6 +87,11 @@ NER 서버 요청은 아직 실행하지 않습니다. 비활성화 기간에는
 `Claude → claude`이며 접두사 비교도 대소문자를 구분하지 않습니다. 분석과
 모델 목록 조회는 이 `active_api_key → active_llm → llm_detail_model` 경로로
 부서의 사용 가능 모델을 판별합니다.
+
+`mustFiltering=true`인 부서는 탐지 상세가 하나라도 있으면 외부 LLM 전송을
+거부합니다. 탐지 상세가 없을 때는 외부 전송을 허용하며, `mustFiltering=false`이면
+탐지 여부와 관계없이 허용합니다. 이 설정은 로컬 LLM의 LPL `/generate` 호출에는
+적용하지 않습니다.
 
 ## 운영 전 정책
 

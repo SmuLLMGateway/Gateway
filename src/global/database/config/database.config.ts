@@ -13,6 +13,8 @@ import { AddPromptLogActiveApiKey2026080200007 } from '../migration/add-prompt-l
 import { AddPromptLogModelName2026080200008 } from '../migration/add-prompt-log-model-name.migration.js';
 import { AddLocalLlmActiveApiKeys2026080400000 } from '../migration/add-local-llm-active-api-keys.migration.js';
 import { ChangeMaskingReportNerStatusDefaultToDone2026080600000 } from '../migration/change-masking-report-ner-status-default-to-done.migration.js';
+import { AddDepartmentActiveLocalLlm2026080800000 } from '../migration/add-department-active-local-llm.migration.js';
+import { AddMaskingReportMaskingText2026080800001 } from '../migration/add-masking-report-masking-text.migration.js';
 
 export function createDatabaseConfig(): TypeOrmModuleOptions {
     return {
@@ -42,7 +44,9 @@ export function createDatabaseConfig(): TypeOrmModuleOptions {
             AddPromptLogActiveApiKey2026080200007,
             AddPromptLogModelName2026080200008,
             AddLocalLlmActiveApiKeys2026080400000,
-            ChangeMaskingReportNerStatusDefaultToDone2026080600000
+            ChangeMaskingReportNerStatusDefaultToDone2026080600000,
+            AddDepartmentActiveLocalLlm2026080800000,
+            AddMaskingReportMaskingText2026080800001
         ],
         migrationsRun: true,
         migrationsTransactionMode: 'each',

@@ -6,6 +6,7 @@ import {
   HttpCode,
   HttpStatus,
   Param,
+  ParseIntPipe,
   ParseUUIDPipe,
   Post,
   Query,
@@ -18,6 +19,7 @@ import { GeneralResponse } from '../../../global/apiPayload/general.response.js'
 import { PromptSuccessStatus } from '../code/prompt.status.js';
 import { PromptReqDTO } from '../dto/prompt.request.dto.js';
 import { PromptResDTO } from '../dto/prompt.response.dto.js';
+import { AdminResDTO } from '../../admin/dto/admin.response.dto.js';
 import { PromptService } from '../service/prompt.service.js';
 import { ParsePrePromptJsonPipe } from '../pipe/parse-pre-prompt-json.pipe.js';
 import { ParseOptionalPromptFileFieldPipe } from '../pipe/parse-optional-prompt-file-field.pipe.js';
@@ -42,6 +44,7 @@ import {
   MaskingElementDetectionRequestDocs,
   ModelListDocs,
   NerListDocs,
+  PromptDetailDocs,
   PromptListDocs,
   PromptControllerDocs,
   RecentMaskingElementDetectionDocs,
@@ -196,6 +199,19 @@ export class PromptController {
       authentication,
     );
     return GeneralResponse.onSuccess(PromptSuccessStatus.PROMPT_LIST, result);
+  }
+
+  @PromptDetailDocs()
+  @Get('/api/v1/prompts/:promptId')
+  async getPromptDetail(
+    @Param('promptId', ParseIntPipe) promptId: number,
+    @CurrentUser() authentication: AuthenticatedUser,
+  ): Promise<GeneralResponse<AdminResDTO.PromptDetail>> {
+    const result = await this.promptService.getPromptDetail(
+      promptId,
+      authentication,
+    );
+    return GeneralResponse.onSuccess(PromptSuccessStatus.PROMPT_DETAIL, result);
   }
 
   @FileDownloadDocs()

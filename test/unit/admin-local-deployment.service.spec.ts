@@ -43,7 +43,7 @@ describe('AdminService 전역 로컬 Deployment 등록·목록·상태 변경', 
     updateLlmDeploymentEnabled: jest.fn(),
     updateNerDeploymentEnabled: jest.fn(),
     getLlmDeployments: jest.fn(),
-    getEnabledLlmModelNames: jest.fn(),
+    getEnabledLocalLlmDeploymentIds: jest.fn(),
   };
 
   const service = new AdminService(
@@ -106,7 +106,7 @@ describe('AdminService 전역 로컬 Deployment 등록·목록·상태 변경', 
     jest.clearAllMocks();
     memberRepository.findOneBy.mockResolvedValue({ memberName: '총관리자' });
     adminLogRepository.save.mockResolvedValue(undefined);
-    nerClient.getEnabledLlmModelNames.mockResolvedValue([]);
+    nerClient.getEnabledLocalLlmDeploymentIds.mockResolvedValue([]);
     nerClient.getLlmDeployments.mockResolvedValue([]);
     llmDetailModelRepository.find.mockResolvedValue([]);
     llmDetailModelRepository.insert.mockResolvedValue(undefined);
@@ -270,10 +270,10 @@ describe('AdminService 전역 로컬 Deployment 등록·목록·상태 변경', 
     nerClient.createLlmDeployment.mockResolvedValue({
       deploymentId: llmRequest.deploymentId,
     });
-    nerClient.getEnabledLlmModelNames.mockResolvedValue([
-      'qwen3:8b',
-      'mistral:7b',
-      'qwen3:8b',
+    nerClient.getEnabledLocalLlmDeploymentIds.mockResolvedValue([
+      'local-qwen3:8b',
+      'local-mistral:7b',
+      'local-qwen3:8b',
     ]);
     llmDetailModelRepository.find
       .mockResolvedValueOnce([{ llmName: 'local-qwen3:8b' }])
@@ -306,7 +306,7 @@ describe('AdminService 전역 로컬 Deployment 등록·목록·상태 변경', 
 
   it('총 관리자가 로컬 LLM을 활성화하면 LPL 응답을 반환하고 Local LLM 키에 동기화한다', async () => {
     const deployment = {
-      deploymentId: 'ollama-qwen3-8b',
+      deploymentId: 'local-qwen3:8b',
       enabled: true,
       adapterType: 'openai_compatible',
       baseUrl: 'http://ollama:11434/v1',
@@ -314,9 +314,9 @@ describe('AdminService 전역 로컬 Deployment 등록·목록·상태 변경', 
       timeoutMs: 300_000,
     };
     nerClient.updateLlmDeploymentEnabled.mockResolvedValue(deployment);
-    nerClient.getEnabledLlmModelNames.mockResolvedValue([
-      'qwen3:8b',
-      'mistral:7b',
+    nerClient.getEnabledLocalLlmDeploymentIds.mockResolvedValue([
+      'local-qwen3:8b',
+      'local-mistral:7b',
     ]);
     llmDetailModelRepository.find
       .mockResolvedValueOnce([{ llmName: 'local-qwen3:8b' }])
@@ -330,13 +330,13 @@ describe('AdminService 전역 로컬 Deployment 등록·목록·상태 변경', 
     ]);
 
     await expect(service.updateLocalLlmStatus(
-      '  ollama-qwen3-8b  ',
+      '  local-qwen3:8b  ',
       { enabled: true },
       totalAdmin,
     )).resolves.toEqual(deployment);
 
     expect(nerClient.updateLlmDeploymentEnabled).toHaveBeenCalledWith(
-      'ollama-qwen3-8b',
+      'local-qwen3:8b',
       true,
     );
     expect(llmDetailModelRepository.insert).toHaveBeenCalledWith([
@@ -357,14 +357,14 @@ describe('AdminService 전역 로컬 Deployment 등록·목록·상태 변경', 
 
   it('로컬 LLM을 비활성화하면 llm_detail_model은 보존하고 active_llm 연결만 삭제한다', async () => {
     nerClient.updateLlmDeploymentEnabled.mockResolvedValue({
-      deploymentId: 'ollama-qwen3-8b',
+      deploymentId: 'local-qwen3:8b',
       enabled: false,
       adapterType: 'openai_compatible',
       baseUrl: 'http://ollama:11434/v1',
       modelName: 'qwen3:8b',
       timeoutMs: 300_000,
     });
-    nerClient.getEnabledLlmModelNames.mockResolvedValue([]);
+    nerClient.getEnabledLocalLlmDeploymentIds.mockResolvedValue([]);
     llmDetailModelRepository.find.mockResolvedValue([
       { llmDetailModelId: '301' },
     ]);
@@ -373,7 +373,7 @@ describe('AdminService 전역 로컬 Deployment 등록·목록·상태 변경', 
     ]);
 
     await expect(service.updateLocalLlmStatus(
-      'ollama-qwen3-8b',
+      'local-qwen3:8b',
       { enabled: false },
       totalAdmin,
     )).resolves.toMatchObject({ enabled: false });
@@ -394,7 +394,7 @@ describe('AdminService 전역 로컬 Deployment 등록·목록·상태 변경', 
     expect(llmDetailModelRepository.insert).not.toHaveBeenCalled();
   });
 
-  it('같은 modelName을 사용하는 다른 활성 LLM Deployment가 있으면 연결을 삭제하지 않는다', async () => {
+  it('레거시 non-local Deployment 상태 변경은 DB active_llm을 변경하지 않는다', async () => {
     nerClient.updateLlmDeploymentEnabled.mockResolvedValue({
       deploymentId: 'ollama-qwen3-8b',
       enabled: false,
@@ -403,8 +403,6 @@ describe('AdminService 전역 로컬 Deployment 등록·목록·상태 변경', 
       modelName: 'qwen3:8b',
       timeoutMs: 300_000,
     });
-    nerClient.getEnabledLlmModelNames.mockResolvedValue(['qwen3:8b']);
-
     await expect(service.updateLocalLlmStatus(
       'ollama-qwen3-8b',
       { enabled: false },
@@ -432,7 +430,7 @@ describe('AdminService 전역 로컬 Deployment 등록·목록·상태 변경', 
       adapterType: 'mock',
     });
 
-    expect(nerClient.getEnabledLlmModelNames).not.toHaveBeenCalled();
+    expect(nerClient.getEnabledLocalLlmDeploymentIds).not.toHaveBeenCalled();
     expect(dataSource.transaction).not.toHaveBeenCalled();
     expect(llmDetailModelRepository.find).not.toHaveBeenCalled();
     expect(activeLlmRepository.upsert).not.toHaveBeenCalled();

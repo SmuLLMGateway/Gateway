@@ -165,10 +165,30 @@ export namespace PromptResDTO {
 
     export class PromptListItem {
         @ApiProperty({
+            type: Number,
+            example: 101,
+            description: '프롬프트 로그 ID(prompt_log_id)'
+        })
+        promptId!: number;
+
+        @ApiProperty({
+            example: '8e88c068-722e-4c04-93c5-906cea400be2',
+            format: 'uuid',
+            description: '마스킹 분석 요청 식별자(masking_report_id). 프롬프트 상세 path에는 사용하지 않습니다.'
+        })
+        ticket!: string;
+
+        @ApiProperty({
             example: '다음 주 A사와 체결 예정인...',
             description: 'LLM 요청 내용'
         })
         request!: string;
+
+        @ApiProperty({
+            example: '다음 주 [마스킹됨]와 체결 예정인...',
+            description: '실제 LLM으로 전송한 마스킹 본문(masking_report.masking_text)'
+        })
+        sendText!: string;
 
         @ApiProperty({
             example: '다음은 A사와 체결할 보고서 초안입니다...',
