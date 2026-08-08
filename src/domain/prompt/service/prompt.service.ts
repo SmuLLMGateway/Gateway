@@ -492,6 +492,13 @@ export class PromptService {
           error instanceof Error ? error.stack : undefined,
         );
       });
+      this.schedulePromptSummaryGeneration({
+        ticket,
+        promptLogId: promptLog.promptLogId,
+        departmentId,
+        text: maskedText,
+        llmDeploymentId: localModelName,
+      });
       return null;
     }
 
@@ -550,6 +557,12 @@ export class PromptService {
     }).catch(async (error: unknown) => {
       await this.markLlmRequestFailed(ticket, 'Provider');
       this.logger.error(`Provider LLM 전송 실패: ticket=${ticket}`, error instanceof Error ? error.stack : undefined);
+    });
+    this.schedulePromptSummaryGeneration({
+      ticket,
+      promptLogId: promptLog.promptLogId,
+      departmentId,
+      text: maskedText,
     });
     return null;
   }
@@ -639,6 +652,54 @@ export class PromptService {
         activeApiKeyId: null,
       },
     );
+  }
+
+  /**
+   * 제목 생성은 본 LLM 응답 전송과 분리합니다. LPL 제목 생성 실패가 LLM 요청
+   * 상태를 ERROR로 바꾸지 않도록 하고, 기존 50자 요약값은 그대로 남깁니다.
+   */
+  private schedulePromptSummaryGeneration(data: Readonly<{
+    ticket: string;
+    promptLogId: string;
+    departmentId: string;
+    text: string;
+    llmDeploymentId?: string;
+  }>): void {
+    void this.generatePromptSummary(data).catch((error: unknown) => {
+      this.logger.error(
+        `LPL 프롬프트 요약 생성 실패: ticket=${data.ticket}`,
+        error instanceof Error ? error.stack : undefined,
+      );
+    });
+  }
+
+  private async generatePromptSummary(data: Readonly<{
+    ticket: string;
+    promptLogId: string;
+    departmentId: string;
+    text: string;
+    llmDeploymentId?: string;
+  }>): Promise<void> {
+    // 부서가 Local LLM 사용을 꺼둔 경우에는 LPL 호출 없이 기존 요약을 보존합니다.
+    if (!await this.isDepartmentLocalLlmEnabled(data.departmentId)) {
+      return;
+    }
+
+    const llmDeploymentId = data.llmDeploymentId
+      ?? await this.nerClient.getFirstLlmDeploymentId();
+    const { title } = await this.nerClient.requestChatTitle({
+      text: data.text,
+      llmDeploymentId,
+    });
+    const updated = await this.promptLogRepository.updatePromptSummary(
+      data.promptLogId,
+      title,
+    );
+    if (!updated) {
+      this.logger.warn(
+        `LPL 프롬프트 요약 저장 대상이 없습니다: ticket=${data.ticket}`,
+      );
+    }
   }
 
   private async markLlmRequestFailed(

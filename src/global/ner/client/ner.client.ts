@@ -633,6 +633,28 @@ export class NerClient {
     };
   }
 
+  private toLplChatTitleResponse(payload: unknown): LplChatTitleResponse {
+    if (
+      typeof payload !== 'object'
+      || payload === null
+      || typeof (payload as { title?: unknown }).title !== 'string'
+    ) {
+      throw new TypeError('LPL 채팅방 제목 생성 응답 형식이 올바르지 않습니다.');
+    }
+
+    const title = (payload as { title: string }).title.trim();
+    if (
+      title.length === 0
+      || Array.from(title).length > MAX_LPL_CHAT_TITLE_LENGTH
+      || /[\r\n]/.test(title)
+      || Buffer.byteLength(title, 'utf8') > MAX_LPL_CHAT_TITLE_BYTES
+    ) {
+      throw new TypeError('LPL 채팅방 제목 생성 응답 title 형식이 올바르지 않습니다.');
+    }
+
+    return { title };
+  }
+
   private toOptionalLplResponseText(
     value: unknown,
     field: string,

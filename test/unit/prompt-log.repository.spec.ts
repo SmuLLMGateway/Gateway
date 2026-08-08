@@ -12,6 +12,7 @@ describe('PromptLogRepository', () => {
   const manager = { getRepository: jest.fn() };
   const repository = {
     find: jest.fn(),
+    update: jest.fn(),
     manager: { transaction: jest.fn() },
   };
   const promptLogRepository = new PromptLogRepository(
@@ -130,6 +131,19 @@ describe('PromptLogRepository', () => {
       promptLogId: expect.anything(),
       status: PromptLogStatus.MASKING,
     });
+  });
+
+  it('LPL이 생성한 제목으로 특정 prompt_log의 prompt_summary를 교체한다', async () => {
+    repository.update.mockResolvedValueOnce({ affected: 1 });
+
+    await expect(
+      promptLogRepository.updatePromptSummary('31', '문의 내용 요약'),
+    ).resolves.toBe(true);
+
+    expect(repository.update).toHaveBeenCalledWith(
+      { promptLogId: '31' },
+      { promptSummary: '문의 내용 요약' },
+    );
   });
 
   function createLog(promptLogId: string, communicatedAt: Date) {

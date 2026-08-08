@@ -4,6 +4,7 @@ import { NerConfig } from '../../src/global/ner/config/ner.config.js';
 import { NerRequestException } from '../../src/global/ner/exception/ner-request.exception.js';
 import type { NerAnalyzeRequest } from '../../src/global/ner/type/ner-analyze-request.type.js';
 import type { LplLlmGenerateRequest } from '../../src/global/ner/type/lpl-llm-generate.type.js';
+import type { LplChatTitleRequest } from '../../src/global/ner/type/lpl-chat-title.type.js';
 
 describe('NerConfig', () => {
   const originalServerIp = process.env.NER_SERVER_IP;
@@ -29,6 +30,7 @@ describe('NerConfig', () => {
     const config = new NerConfig();
     expect(config.analyzeUrl).toBe('http://127.0.0.1:8000/detect');
     expect(config.generateUrl).toBe('http://127.0.0.1:8000/generate');
+    expect(config.titlesUrl).toBe('http://127.0.0.1:8000/titles');
     expect(config.requestTimeoutMs).toBe(360_000);
   });
 
@@ -115,6 +117,7 @@ describe('NerClient', () => {
     baseUrl: 'http://127.0.0.1:8000/',
     analyzeUrl: 'http://127.0.0.1:8000/detect',
     generateUrl: 'http://127.0.0.1:8000/generate',
+    titlesUrl: 'http://127.0.0.1:8000/titles',
     healthUrl: 'http://127.0.0.1:8000/health',
     nerDeploymentsUrl: 'http://127.0.0.1:8000/deployments/ner',
     llmDeploymentsUrl: 'http://127.0.0.1:8000/deployments/llm',
@@ -279,6 +282,60 @@ describe('NerClient', () => {
         text: '마스킹된 본문',
         llmDeploymentId: 'local-qwen3:8b',
       })).rejects.toBeInstanceOf(NerRequestException);
+    } finally {
+      loggerErrorSpy.mockRestore();
+    }
+  });
+
+  it('LPL /titles에 마스킹된 본문과 LLM Deployment를 전송해 제목을 반환한다', async () => {
+    const request: LplChatTitleRequest = {
+      text: '담당자 연락처는 [ 전화번호 ]입니다.',
+      llmDeploymentId: 'local-qwen3:8b',
+    };
+    const response = { title: '담당자 연락처 문의' };
+    const loggerLogSpy = jest.spyOn(Logger.prototype, 'log')
+      .mockImplementation();
+    fetchSpy.mockResolvedValueOnce(new Response(JSON.stringify(response), {
+      status: 200,
+    }));
+
+    try {
+      await expect(client.requestChatTitle(request)).resolves.toEqual(response);
+      expect(fetchSpy).toHaveBeenCalledWith(config.titlesUrl, {
+        method: 'POST',
+        headers: {
+          accept: 'application/json',
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify(request),
+        signal: expect.any(AbortSignal),
+      });
+      expect(loggerLogSpy).toHaveBeenCalledWith(expect.stringContaining(
+        'event=lpl_chat_title_response_received method=POST endpoint=/titles status=200',
+      ));
+    } finally {
+      loggerLogSpy.mockRestore();
+    }
+  });
+
+  it('LPL /titles 응답이 계약에 맞지 않으면 요청·응답 본문을 로그로 남기고 실패한다', async () => {
+    const loggerErrorSpy = jest.spyOn(Logger.prototype, 'error')
+      .mockImplementation();
+    fetchSpy.mockResolvedValueOnce(new Response(JSON.stringify({ title: '' }), {
+      status: 200,
+    }));
+
+    try {
+      await expect(client.requestChatTitle({
+        text: '마스킹된 본문',
+        llmDeploymentId: 'local-qwen3:8b',
+      })).rejects.toBeInstanceOf(NerRequestException);
+      expect(loggerErrorSpy).toHaveBeenCalledWith(expect.stringContaining(
+        'event=lpl_chat_title_request_failed method=POST endpoint=/titles status=200',
+      ));
+      expect(loggerErrorSpy).toHaveBeenCalledWith(expect.stringContaining(
+        'request_body={"text":"마스킹된 본문","llmDeploymentId":"local-qwen3:8b"}',
+      ));
     } finally {
       loggerErrorSpy.mockRestore();
     }

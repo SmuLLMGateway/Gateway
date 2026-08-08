@@ -69,6 +69,7 @@ describe('PromptService 부서 접근 및 정책 조회', () => {
   };
   const promptLogRepository = {
     replaceMasking: jest.fn(),
+    updatePromptSummary: jest.fn(),
     deleteByMaskingReportId: jest.fn(),
   };
   const maskingDetailRepository = {
@@ -104,6 +105,7 @@ describe('PromptService 부서 접근 및 정책 조회', () => {
     getNerDeployments: jest.fn(),
     requestAnalyze: jest.fn(),
     requestLlmGenerate: jest.fn(),
+    requestChatTitle: jest.fn(),
   };
   const promptFileOcrService = {
     extractText: jest.fn(),
@@ -175,6 +177,7 @@ describe('PromptService 부서 접근 및 정책 조회', () => {
     promptRoomRepository.deleteByIdAndMemberId.mockResolvedValue(undefined);
     promptRoomRepository.existsByIdAndMemberId.mockResolvedValue(true);
     promptLogRepository.replaceMasking.mockResolvedValue(undefined);
+    promptLogRepository.updatePromptSummary.mockResolvedValue(true);
     promptLogRepository.deleteByMaskingReportId.mockResolvedValue(undefined);
     promptFileRepository.findByReportId.mockResolvedValue([]);
     promptFileRepository.findDownloadReferenceByFileUrl.mockResolvedValue(null);
@@ -197,6 +200,7 @@ describe('PromptService 부서 접근 및 정책 조회', () => {
     nerClient.getNerDeployments.mockResolvedValue([]);
     nerClient.requestAnalyze.mockResolvedValue({ detections: [] });
     nerClient.requestLlmGenerate.mockResolvedValue({ text: '로컬 LLM 응답' });
+    nerClient.requestChatTitle.mockResolvedValue({ title: 'LPL 생성 요약' });
     promptFileOcrService.extractText.mockResolvedValue('OCR 추출 텍스트');
     objectStorage.parseObjectUrl.mockReturnValue(
       'masking/a81cc17e-e10a-46ae-8113-dceffb932d6c.pdf',
@@ -475,6 +479,14 @@ describe('PromptService 부서 접근 및 정책 조회', () => {
       text: '담당자 연락처는 [ 전화번호 ]입니다.',
       llmDeploymentId: 'local-qwen3:8b',
     });
+    expect(nerClient.requestChatTitle).toHaveBeenCalledWith({
+      text: '담당자 연락처는 [ 전화번호 ]입니다.',
+      llmDeploymentId: 'local-qwen3:8b',
+    });
+    expect(promptLogRepository.updatePromptSummary).toHaveBeenCalledWith(
+      '91',
+      'LPL 생성 요약',
+    );
     expect(providerClient.request).not.toHaveBeenCalled();
     expect(apiKeyEncryption.decrypt).not.toHaveBeenCalled();
 
@@ -588,9 +600,37 @@ describe('PromptService 부서 접근 및 정책 조회', () => {
       text: '외부 LLM 전송 본문',
       files: [],
     });
+    expect(nerClient.getFirstLlmDeploymentId).toHaveBeenCalled();
+    expect(nerClient.requestChatTitle).toHaveBeenCalledWith({
+      text: '외부 LLM 전송 본문',
+      llmDeploymentId: 'llm-qwen3-14b',
+    });
+    expect(promptLogRepository.updatePromptSummary).toHaveBeenCalledWith(
+      '93',
+      'LPL 생성 요약',
+    );
     if (!mustFiltering) {
       expect(maskingDetailRepository.findOne).not.toHaveBeenCalled();
     }
+  });
+
+  it('부서의 activeLocalLLM이 false이면 외부 LLM 전송은 유지하고 LPL 제목 생성만 건너뛴다', async () => {
+    promptLogDataRepository.findOne.mockResolvedValueOnce(
+      createExternalMaskingPromptLog(),
+    );
+    activeLlmRepository.findOne.mockResolvedValueOnce(
+      createExternalActiveLlm(),
+    );
+    departmentRepository.findOne
+      .mockResolvedValueOnce({ departmentId: '10', mustFiltering: false })
+      .mockResolvedValueOnce({ departmentId: '10', activeLocalLLM: false });
+
+    await expect(service.requestLlm({ ticket }, authentication)).resolves.toBeNull();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    expect(providerClient.request).toHaveBeenCalled();
+    expect(nerClient.requestChatTitle).not.toHaveBeenCalled();
+    expect(promptLogRepository.updatePromptSummary).not.toHaveBeenCalled();
   });
 
   it('비활성화된 local-* LLM mapping은 PROM403_1로 거부하고 리포트를 생성하지 않는다', async () => {

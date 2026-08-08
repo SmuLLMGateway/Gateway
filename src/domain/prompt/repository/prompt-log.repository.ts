@@ -55,6 +55,18 @@ export class PromptLogRepository {
     }));
   }
 
+  /** LPL이 생성한 짧은 제목으로 해당 프롬프트 로그의 요약을 교체합니다. */
+  async updatePromptSummary(
+    promptLogId: string,
+    promptSummary: string,
+  ): Promise<boolean> {
+    const result = await this.repository.update(
+      { promptLogId },
+      { promptSummary },
+    );
+    return result.affected === 1;
+  }
+
   /**
    * 24시간 동안 LLM 전송으로 이어지지 않은 MASKING 로그를 만료 처리합니다.
    *
